@@ -27,7 +27,7 @@ Vue 3 纯静态演示门户：覆盖数据接入 → 资产治理 → 开发发�
 # 安装依赖
 npm install
 
-# 开发（默认 http://localhost:5173 ）
+# 开发（本机 http://localhost:5173 ，局域网用终端打印的 Network 地址）
 npm run dev
 
 # 生产构建 → dist/
