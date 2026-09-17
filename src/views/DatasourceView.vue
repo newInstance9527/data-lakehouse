@@ -1,0 +1,443 @@
+<script setup>
+import { computed, reactive, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
+import PageHeader from '@/components/common/PageHeader.vue'
+import PageSizeSelect from '@/components/common/PageSizeSelect.vue'
+import SourceDrawer from '@/components/datasource/SourceDrawer.vue'
+import RegisterSourceModal from '@/components/datasource/RegisterSourceModal.vue'
+import { useToast } from '@/composables/useToast'
+import { useDatasources } from '@/composables/useDatasources'
+import {
+  DS_CAT_LABEL,
+  DS_CAT_OPTIONS,
+  dsCategory,
+  endpointOf,
+  groupTypesByCategory,
+  sortTypesByCategory,
+  statusMeta,
+  typeCategoryKey,
+} from '@/data/datasources'
+import { schemaSummary } from '@/utils/schemaList'
+import { pageGuideOf } from '@/data/pageGuides'
+
+const dsGuide = pageGuideOf('datasource')
+
+const router = useRouter()
+const { showToast } = useToast()
+const { sources, getSource, upsertSource, updateSource } = useDatasources()
+
+const filters = reactive({
+  kw: '',
+  type: '',
+  status: '',
+  cat: '',
+})
+const view = ref('card')
+const page = ref(1)
+const pageSize = ref(10)
+const drawerOpen = ref(false)
+const current = ref(null)
+const regOpen = ref(false)
+const editing = ref(null)
+
+const typeOptions = computed(() => {
+  const map = {}
+  sources.value.forEach((s) => {
+    map[s.type] = (map[s.type] || 0) + 1
+  })
+  return Object.keys(map).map((t) => ({ value: t, count: map[t] }))
+})
+
+const typeGroups = computed(() => groupTypesByCategory(typeOptions.value))
+
+const list = computed(() => {
+  const kw = filters.kw.trim().toLowerCase()
+  const filtered = sources.value.filter((s) => {
+    if (filters.type && s.type !== filters.type) return false
+    if (filters.status && s.status !== filters.status) return false
+    if (filters.cat && dsCategory(s) !== filters.cat) return false
+    if (!kw) return true
+    return `${s.id} ${s.name} ${s.type} ${s.host} ${s.owner} ${s.database} ${s.desc || ''}`
+      .toLowerCase()
+      .includes(kw)
+  })
+  const typeOrder = sortTypesByCategory([...new Set(filtered.map((s) => s.type))])
+  const typeIdx = Object.fromEntries(typeOrder.map((t, i) => [t, i]))
+  return filtered.slice().sort((a, b) => {
+    const ca = typeCategoryKey(a.type)
+    const cb = typeCategoryKey(b.type)
+    if (ca !== cb) {
+      const ia = DS_CAT_OPTIONS.findIndex((c) => c.value === ca)
+      const ib = DS_CAT_OPTIONS.findIndex((c) => c.value === cb)
+      return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib)
+    }
+    const ta = typeIdx[a.type] ?? 999
+    const tb = typeIdx[b.type] ?? 999
+    if (ta !== tb) return ta - tb
+    return String(a.name).localeCompare(String(b.name), 'zh')
+  })
+})
+
+const totalPages = computed(() => Math.max(1, Math.ceil(list.value.length / pageSize.value)))
+
+const pagedList = computed(() => {
+  if (view.value === 'topology') return list.value
+  const start = (page.value - 1) * pageSize.value
+  return list.value.slice(start, start + pageSize.value)
+})
+
+const pageNums = computed(() => {
+  const total = totalPages.value
+  const cur = page.value
+  const nums = []
+  const push = (n) => {
+    if (!nums.includes(n) && n >= 1 && n <= total) nums.push(n)
+  }
+  push(1)
+  for (let i = cur - 1; i <= cur + 1; i++) push(i)
+  push(total)
+  return nums.sort((a, b) => a - b)
+})
+
+watch([() => filters.kw, () => filters.type, () => filters.status, () => filters.cat, pageSize, view], () => {
+  page.value = 1
+})
+
+watch(list, () => {
+  if (page.value > totalPages.value) page.value = totalPages.value
+})
+
+const kpis = computed(() => {
+  const all = sources.value
+  const types = new Set(all.map((s) => s.type))
+  return [
+    { label: '数据源总数', value: all.length, sub: '已注册', icon: '📚', color: 'var(--primary)' },
+    { label: '● 在线', value: all.filter((s) => s.status === 'online').length, sub: '正常可用', icon: '✅', color: 'var(--success)' },
+    { label: '⚠ 告警', value: all.filter((s) => s.status === 'warn').length, sub: '需处理', icon: '⚠', color: 'var(--warning)' },
+    { label: '⏸ 停用', value: all.filter((s) => s.status === 'paused').length, sub: '维护中', icon: '⏸', color: 'var(--text-3)' },
+    { label: '覆盖类型', value: types.size, sub: '种异构源', icon: '🧩', color: '#722ed1' },
+  ]
+})
+
+const topoLayers = [
+  { key: 'rdb', label: '① 关系型 / 云仓 JDBC' },
+  { key: 'storage', label: '② 文件 / 对象 / Drive' },
+  { key: 'mq', label: '③ 消息队列 / 流' },
+  { key: 'nosql', label: '④ NoSQL' },
+  { key: 'search', label: '⑤ 搜索引擎' },
+  { key: 'api', label: '⑥ API / OpenAPI' },
+  { key: 'dw', label: '⑦ 湖仓 / 查询引擎' },
+  { key: 'dashboard', label: '⑧ BI / Dashboard（仅目录）' },
+  { key: 'pipeline', label: '⑨ Pipeline / ML（仅目录）' },
+]
+
+const catColors = {
+  rdb: '#08979c',
+  dw: '#1890ff',
+  mq: '#722ed1',
+  nosql: '#52c41a',
+  search: '#f5222d',
+  storage: '#595959',
+  api: '#722ed1',
+  dashboard: '#389e0d',
+  pipeline: '#13c2c2',
+  outbound: '#fa541c',
+}
+
+function clearFilter() {
+  filters.kw = ''
+  filters.type = ''
+  filters.status = ''
+  filters.cat = ''
+  page.value = 1
+}
+
+function openDetail(id) {
+  const s = getSource(id)
+  if (!s) return
+  current.value = s
+  drawerOpen.value = true
+}
+
+function closeDrawer() {
+  drawerOpen.value = false
+}
+
+function test(id) {
+  const s = getSource(id)
+  showToast(`🧪 连通性测试 ${s?.name || id} · 成功`, 'success')
+}
+
+function openRegister() {
+  editing.value = null
+  regOpen.value = true
+}
+
+function openEdit(id) {
+  const s = getSource(id)
+  if (!s) return
+  editing.value = { ...s }
+  drawerOpen.value = false
+  regOpen.value = true
+}
+
+function openTables(id, e) {
+  e?.stopPropagation?.()
+  router.push(`/datasource/${id}/tables`)
+}
+
+function toggleStatus(id) {
+  const s = getSource(id)
+  if (!s) return
+  if (s.status === 'online') {
+    updateSource(id, { status: 'paused' })
+    showToast(`⏸ 已停用 ${s.name}`, 'warning')
+  } else {
+    updateSource(id, { status: 'online' })
+    showToast(`▶ 已启用 ${s.name}`, 'success')
+  }
+  if (current.value?.id === id) current.value = getSource(id)
+}
+
+function onRegisterSubmit(payload) {
+  const existed = !!getSource(payload.id)
+  upsertSource(payload)
+  if (existed) {
+    showToast(`✅ 已更新数据源 ${payload.name}`, 'success')
+  } else {
+    showToast(`✅ 已注册数据源 ${payload.name}`, 'success')
+    page.value = 1
+  }
+}
+
+function batchSync() {
+  const n = list.value.length
+  showToast(`🔄 批量同步 ${n} 个数据源 Schema…`, 'info')
+  setTimeout(() => {
+    showToast(`✅ 同步完成：${n * 18 + 37} 张表 · ${n * 112} 列`, 'success')
+  }, 800)
+}
+
+function goPage(p) {
+  if (p < 1 || p > totalPages.value) return
+  page.value = p
+}
+</script>
+
+<template>
+  <div>
+    <PageHeader
+      title="🔌 数据源管理中心"
+      subtitle="多类型异构源注册 · 连通性管理 · Schema 同步 · 分类分级"
+      :guide-title="dsGuide.title"
+      :guide="dsGuide"
+    >
+      <button class="btn btn-sm" @click="batchSync">🔄 批量同步</button>
+      <button class="btn btn-sm btn-primary" @click="openRegister">＋ 注册数据源</button>
+    </PageHeader>
+
+    <div class="ds-filters">
+      <input
+        v-model="filters.kw"
+        class="input"
+        style="width: 280px"
+        placeholder="搜索名称 / 域名 / IP / 类型 / 负责人..."
+      />
+      <select v-model="filters.type" class="select">
+        <option value="">全部类型（{{ typeOptions.length }}）</option>
+        <optgroup v-for="g in typeGroups" :key="g.value" :label="g.label">
+          <option v-for="t in g.types" :key="t.value" :value="t.value">
+            {{ t.value }} · {{ t.count }}
+          </option>
+        </optgroup>
+      </select>
+      <select v-model="filters.status" class="select">
+        <option value="">全部状态</option>
+        <option value="online">● 在线</option>
+        <option value="warn">⚠ 告警</option>
+        <option value="paused">⏸ 停用</option>
+      </select>
+      <select v-model="filters.cat" class="select">
+        <option value="">全部分类</option>
+        <option v-for="c in DS_CAT_OPTIONS" :key="c.value" :value="c.value">{{ c.label }}</option>
+      </select>
+      <button class="btn btn-sm" @click="clearFilter">重置筛选</button>
+    </div>
+
+    <div class="kpi-grid ds-kpi-grid">
+      <div v-for="k in kpis" :key="k.label" class="kpi-card ds-kpi">
+        <div class="ds-kpi-top">
+          <span :style="{ color: k.color }">{{ k.icon }}</span>
+          <span style="color: var(--text-3); font-size: 11px">{{ k.sub }}</span>
+        </div>
+        <div class="kpi-value" :style="{ color: k.color, fontSize: '22px' }">{{ k.value }}</div>
+        <div class="kpi-label">{{ k.label }}</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">
+          📚 全部数据源
+          <span class="tag tag-blue">筛选 {{ list.length }} / 共 {{ sources.length }}</span>
+        </div>
+        <div class="std-tabs" style="margin: 0">
+          <span class="std-tab" :class="{ active: view === 'card' }" @click="view = 'card'">卡片视图</span>
+          <span class="std-tab" :class="{ active: view === 'list' }" @click="view = 'list'">列表视图</span>
+          <span class="std-tab" :class="{ active: view === 'topology' }" @click="view = 'topology'">架构拓扑</span>
+        </div>
+      </div>
+      <div class="card-body" style="min-height: 520px">
+          <div v-if="view === 'card'">
+            <div v-if="!list.length" class="ds-empty">无匹配数据源，请调整筛选条件</div>
+            <div v-else class="ds-card-grid">
+              <div
+                v-for="s in pagedList"
+                :key="s.id"
+                class="ds-card"
+                @click="openDetail(s.id)"
+              >
+                <div class="ds-card-bar" :style="{ background: catColors[dsCategory(s)] || '#ccc' }" />
+                <div class="ds-card-head">
+                  <div class="ds-card-icon" :style="{ background: s.bg, color: s.color }">{{ s.icon }}</div>
+                  <div style="flex: 1; min-width: 0">
+                    <div class="ds-card-name">{{ s.name }}</div>
+                    <div class="ds-card-meta">
+                      {{ s.id }} · {{ s.ver }}
+                      <span class="tag tag-gray">{{ DS_CAT_LABEL[dsCategory(s)] }}</span>
+                      <span class="tag tag-gray">{{ s.type }}</span>
+                    </div>
+                  </div>
+                  <span class="tag" :class="statusMeta(s.status).tag">{{ statusMeta(s.status).label }}</span>
+                </div>
+                <div class="ds-card-endpoint">{{ endpointOf(s) }}</div>
+                <div class="ds-card-schema">
+                  <button class="btn-link btn-sm ds-schema-link" @click="openTables(s.id, $event)">
+                    📋 {{ schemaSummary(s.schema).text }}
+                  </button>
+                  <span style="margin-left: auto; color: var(--text-3)">👤 {{ s.owner }}</span>
+                </div>
+                <div class="ds-card-actions" @click.stop>
+                  <button class="btn-link btn-sm" @click="openTables(s.id)">表清单</button>
+                  <button class="btn-link btn-sm" @click="test(s.id)">🧪 测试</button>
+                  <button class="btn-link btn-sm" @click="openEdit(s.id)">✎ 编辑</button>
+                  <button
+                    class="btn-link btn-sm"
+                    :style="{ color: s.status === 'online' ? 'var(--warning)' : 'var(--success)' }"
+                    @click="toggleStatus(s.id)"
+                  >
+                    {{ s.status === 'online' ? '⏸ 停用' : '▶ 启用' }}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div v-else-if="view === 'list'">
+            <div v-if="!list.length" class="ds-empty">无匹配数据源</div>
+            <div v-else style="overflow: auto">
+              <table class="std-table" style="font-size: 12px">
+                <thead>
+                  <tr>
+                    <th style="width: 24%">数据源</th>
+                    <th>连接</th>
+                    <th style="width: 9%">状态</th>
+                    <th style="width: 14%">延迟</th>
+                    <th style="width: 10%">负责人</th>
+                    <th style="width: 14%">版本/创建</th>
+                    <th style="width: 12%">操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="s in pagedList" :key="s.id" style="cursor: pointer" @click="openDetail(s.id)">
+                    <td>
+                      <span style="display: inline-flex; align-items: center; gap: 5px">
+                        <span class="ds-mini-icon" :style="{ background: s.bg, color: s.color }">{{ s.icon }}</span>
+                        {{ s.name }}
+                        <span class="tag tag-gray">{{ s.type }}</span>
+                      </span>
+                    </td>
+                    <td style="font-family: monospace; font-size: 11px; color: var(--text-2)">{{ endpointOf(s) }}</td>
+                    <td><span class="tag" :class="statusMeta(s.status).tag">{{ statusMeta(s.status).short }}</span></td>
+                    <td>{{ s.lag || '-' }}</td>
+                    <td>{{ s.owner || '-' }}</td>
+                    <td style="font-size: 11px; color: var(--text-3)">{{ s.ver }} · {{ s.created }}</td>
+                    <td @click.stop style="white-space: nowrap">
+                      <button class="btn-link btn-sm" @click="openTables(s.id)">表</button>
+                      <button class="btn-link btn-sm" @click="test(s.id)">🧪</button>
+                      <button class="btn-link btn-sm" @click="openEdit(s.id)">✎</button>
+                      <button
+                        class="btn-link btn-sm"
+                        :style="{ color: s.status === 'online' ? 'var(--warning)' : 'var(--success)' }"
+                        @click="toggleStatus(s.id)"
+                      >
+                        {{ s.status === 'online' ? '⏸' : '▶' }}
+                      </button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div v-else class="ds-topo">
+            <div style="font-size: 11px; color: var(--text-3); margin-bottom: 10px">
+              登记类型对齐 OpenMetadata 连接器分类 · 数据入湖 ≠ 仅采元数据 · 点击查看详情
+            </div>
+            <div v-for="L in topoLayers" :key="L.key" style="margin-bottom: 10px">
+              <div style="font-weight: 600; font-size: 12px; color: var(--text-2); margin-bottom: 4px">{{ L.label }}</div>
+              <template v-if="list.filter((s) => dsCategory(s) === L.key).length">
+                <div
+                  v-for="s in list.filter((x) => dsCategory(x) === L.key)"
+                  :key="s.id"
+                  class="ds-topo-chip"
+                  :style="{ background: s.bg || '#fff' }"
+                  @click="openDetail(s.id)"
+                >
+                  <span>{{ s.icon }}</span>
+                  <b>{{ s.name.split('-')[0] }}</b>
+                  <span style="color: var(--text-3)">{{ s.type }}</span>
+                </div>
+              </template>
+              <span v-else style="color: var(--text-3); font-size: 11px">无该类别</span>
+            </div>
+          </div>
+
+          <div v-if="view !== 'topology' && list.length" class="ds-pager">
+            <div class="ds-pager-info">
+              第 {{ page }} / {{ totalPages }} 页 · 本页 {{ pagedList.length }} 条 · 共 {{ list.length }} 条
+            </div>
+            <div class="ds-pager-controls">
+              <PageSizeSelect v-model="pageSize" />
+              <button class="btn btn-sm" :disabled="page <= 1" @click="goPage(page - 1)">上一页</button>
+              <template v-for="(n, i) in pageNums" :key="n">
+                <span v-if="i > 0 && n - pageNums[i - 1] > 1" class="ds-pager-ellipsis">…</span>
+                <button
+                  class="btn btn-sm"
+                  :class="{ 'btn-primary': n === page }"
+                  @click="goPage(n)"
+                >{{ n }}</button>
+              </template>
+              <button class="btn btn-sm" :disabled="page >= totalPages" @click="goPage(page + 1)">下一页</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    <SourceDrawer
+      :open="drawerOpen"
+      :source="current"
+      @close="closeDrawer"
+      @toggle-status="toggleStatus"
+      @edit="openEdit"
+      @open-tables="openTables"
+    />
+
+    <RegisterSourceModal
+      :open="regOpen"
+      :edit-source="editing"
+      @close="regOpen = false"
+      @submit="onRegisterSubmit"
+    />
+  </div>
+</template>
