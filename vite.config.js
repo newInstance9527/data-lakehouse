@@ -10,10 +10,16 @@ export default defineConfig({
     },
   },
   server: {
-    host: true, // 0.0.0.0，允许局域网访问
+    host: true,
     port: 5173,
     strictPort: true,
     open: true,
+    proxy: {
+      '/lh': {
+        target: process.env.VITE_API_PROXY || 'http://127.0.0.1:82',
+        changeOrigin: true,
+      },
+    },
   },
   build: {
     outDir: 'lakehouse',

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
 import PageSizeSelect from '@/components/common/PageSizeSelect.vue'
@@ -19,12 +19,21 @@ import {
 } from '@/data/datasources'
 import { schemaSummary } from '@/utils/schemaList'
 import { pageGuideOf } from '@/data/pageGuides'
+import { fetchDatasourceKpi } from '@/api/datasource'
 
 const dsGuide = pageGuideOf('datasource')
 
 const router = useRouter()
 const { showToast } = useToast()
-const { sources, getSource, upsertSource, updateSource } = useDatasources()
+const {
+  sources,
+  getSource,
+  upsertSource,
+  loadSources,
+  testSource,
+  toggleStatus: apiToggle,
+  batchSync: apiBatchSync,
+} = useDatasources()
 
 const filters = reactive({
   kw: '',
@@ -39,6 +48,17 @@ const drawerOpen = ref(false)
 const current = ref(null)
 const regOpen = ref(false)
 const editing = ref(null)
+const kpiRemote = ref(null)
+
+onMounted(async () => {
+  try {
+    await loadSources()
+    kpiRemote.value = await fetchDatasourceKpi()
+  } catch (e) {
+    showToast(`加载数据源失败：${e.message || e}`, 'error')
+  }
+})
+
 
 const typeOptions = computed(() => {
   const map = {}
@@ -109,13 +129,14 @@ watch(list, () => {
 
 const kpis = computed(() => {
   const all = sources.value
+  const remote = kpiRemote.value
   const types = new Set(all.map((s) => s.type))
   return [
-    { label: '数据源总数', value: all.length, sub: '已注册', icon: '📚', color: 'var(--primary)' },
-    { label: '● 在线', value: all.filter((s) => s.status === 'online').length, sub: '正常可用', icon: '✅', color: 'var(--success)' },
-    { label: '⚠ 告警', value: all.filter((s) => s.status === 'warn').length, sub: '需处理', icon: '⚠', color: 'var(--warning)' },
-    { label: '⏸ 停用', value: all.filter((s) => s.status === 'paused').length, sub: '维护中', icon: '⏸', color: 'var(--text-3)' },
-    { label: '覆盖类型', value: types.size, sub: '种异构源', icon: '🧩', color: '#722ed1' },
+    { label: '数据源总数', value: remote?.total ?? all.length, sub: '已注册', icon: '📚', color: 'var(--primary)' },
+    { label: '● 在线', value: remote?.online ?? all.filter((s) => s.status === 'online').length, sub: '正常可用', icon: '✅', color: 'var(--success)' },
+    { label: '⚠ 告警', value: remote?.warn ?? all.filter((s) => s.status === 'warn').length, sub: '需处理', icon: '⚠', color: 'var(--warning)' },
+    { label: '⏸ 停用', value: remote?.paused ?? all.filter((s) => s.status === 'paused').length, sub: '维护中', icon: '⏸', color: 'var(--text-3)' },
+    { label: '覆盖类型', value: remote?.typeCount ?? types.size, sub: '种异构源', icon: '🧩', color: '#722ed1' },
   ]
 })
 
@@ -163,9 +184,17 @@ function closeDrawer() {
   drawerOpen.value = false
 }
 
-function test(id) {
+async function test(id) {
   const s = getSource(id)
-  showToast(`🧪 连通性测试 ${s?.name || id} · 成功`, 'success')
+  try {
+    const res = await testSource({ id })
+    if (res?.ok) showToast(`🧪 连通性测试 ${s?.name || id} · 成功`, 'success')
+    else showToast(`连通失败：${res?.error || '未知错误'}`, 'error')
+    await loadSources()
+    if (current.value?.id === id) current.value = getSource(id)
+  } catch (e) {
+    showToast(`连通失败：${e.message || e}`, 'error')
+  }
 }
 
 function openRegister() {
@@ -186,36 +215,48 @@ function openTables(id, e) {
   router.push(`/datasource/${id}/tables`)
 }
 
-function toggleStatus(id) {
+async function toggleStatus(id) {
   const s = getSource(id)
   if (!s) return
-  if (s.status === 'online') {
-    updateSource(id, { status: 'paused' })
-    showToast(`⏸ 已停用 ${s.name}`, 'warning')
-  } else {
-    updateSource(id, { status: 'online' })
-    showToast(`▶ 已启用 ${s.name}`, 'success')
+  try {
+    const res = await apiToggle(id)
+    const next = res?.status || getSource(id)?.status
+    if (next === 'paused') showToast(`⏸ 已停用 ${s.name}`, 'warning')
+    else showToast(`▶ 已启用 ${s.name}`, 'success')
+    if (current.value?.id === id) current.value = getSource(id)
+    kpiRemote.value = await fetchDatasourceKpi()
+  } catch (e) {
+    showToast(`启停失败：${e.message || e}`, 'error')
   }
-  if (current.value?.id === id) current.value = getSource(id)
 }
 
-function onRegisterSubmit(payload) {
+async function onRegisterSubmit(payload) {
   const existed = !!getSource(payload.id)
-  upsertSource(payload)
-  if (existed) {
-    showToast(`✅ 已更新数据源 ${payload.name}`, 'success')
-  } else {
-    showToast(`✅ 已注册数据源 ${payload.name}`, 'success')
-    page.value = 1
+  try {
+    const saved = await upsertSource(payload)
+    // 新建时前端曾带临时 id，以服务端返回为准
+    if (!existed && saved?.id) page.value = 1
+    if (existed) showToast(`✅ 已更新数据源 ${payload.name}`, 'success')
+    else showToast(`✅ 已注册数据源 ${payload.name}`, 'success')
+    kpiRemote.value = await fetchDatasourceKpi()
+  } catch (e) {
+    showToast(`保存失败：${e.message || e}`, 'error')
   }
 }
 
-function batchSync() {
-  const n = list.value.length
-  showToast(`🔄 批量同步 ${n} 个数据源 Schema…`, 'info')
-  setTimeout(() => {
-    showToast(`✅ 同步完成：${n * 18 + 37} 张表 · ${n * 112} 列`, 'success')
-  }, 800)
+async function batchSync() {
+  const ids = list.value.map((s) => s.id)
+  showToast(`🔄 批量同步 ${ids.length} 个数据源 Schema…`, 'info')
+  try {
+    const res = await apiBatchSync(ids)
+    showToast(
+      `✅ 同步完成：${res?.tableAdded ?? 0} 张表 · 约 ${res?.columnEstimate ?? 0} 列`,
+      'success',
+    )
+    await loadSources()
+  } catch (e) {
+    showToast(`批量同步失败：${e.message || e}`, 'error')
+  }
 }
 
 function goPage(p) {

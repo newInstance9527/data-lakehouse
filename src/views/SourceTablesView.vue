@@ -1,11 +1,11 @@
 <script setup>
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
 import PageSizeSelect from '@/components/common/PageSizeSelect.vue'
 import { useDatasources } from '@/composables/useDatasources'
 import { useToast } from '@/composables/useToast'
-import { enrichTableMeta, resolveTables } from '@/utils/schemaList'
+import { enrichTableMeta } from '@/utils/schemaList'
 import { endpointOf, statusMeta } from '@/data/datasources'
 import { pageGuideOf } from '@/data/pageGuides'
 
@@ -15,6 +15,7 @@ const { showToast } = useToast()
 const tablesGuide = pageGuideOf('source-tables')
 const {
   getSource,
+  loadSources,
   ensureTables,
   syncTables,
   addTable,
@@ -38,12 +39,34 @@ const draft = reactive({
   engine: '',
 })
 
+onMounted(async () => {
+  if (!getSource(sourceId.value)) {
+    try {
+      await loadSources()
+    } catch (e) {
+      showToast(`加载失败：${e.message || e}`, 'error')
+    }
+  }
+  if (sourceId.value && getSource(sourceId.value)) {
+    try {
+      await ensureTables(sourceId.value)
+    } catch (e) {
+      showToast(`加载表清单失败：${e.message || e}`, 'error')
+    }
+  }
+})
+
 watch(
   sourceId,
-  (id) => {
-    if (id && getSource(id)) ensureTables(id)
+  async (id) => {
+    if (id && getSource(id)) {
+      try {
+        await ensureTables(id)
+      } catch (e) {
+        showToast(`加载表清单失败：${e.message || e}`, 'error')
+      }
+    }
   },
-  { immediate: true },
 )
 
 watch([kw, pageSize], () => {
@@ -53,8 +76,7 @@ watch([kw, pageSize], () => {
 const tables = computed(() => {
   const s = source.value
   if (!s) return []
-  if (Array.isArray(s.tables) && s.tables.length) return s.tables
-  return resolveTables(s)
+  return Array.isArray(s.tables) ? s.tables : []
 })
 
 const filtered = computed(() => {
@@ -96,17 +118,20 @@ function goPage(p) {
   page.value = p
 }
 
-function onSync() {
+async function onSync() {
   if (!source.value) return
   syncing.value = true
   showToast(`🔄 正在同步 ${source.value.name} 表清单…`, 'info')
-  setTimeout(() => {
+  try {
     const before = tables.value.length
-    syncTables(source.value.id)
+    await syncTables(source.value.id)
     const after = getSource(source.value.id)?.tables?.length || 0
-    syncing.value = false
     showToast(`✅ 同步完成 · 新增 ${Math.max(0, after - before)} 张 · 共 ${after} 张`, 'success')
-  }, 500)
+  } catch (e) {
+    showToast(`同步失败：${e.message || e}`, 'error')
+  } finally {
+    syncing.value = false
+  }
 }
 
 function openAdd() {
@@ -118,7 +143,7 @@ function openAdd() {
   showAdd.value = true
 }
 
-function submitAdd() {
+async function submitAdd() {
   const name = draft.name.trim()
   if (!name) {
     showToast('请填写表名', 'warning')
@@ -130,23 +155,33 @@ function submitAdd() {
     encoding: draft.encoding.trim() || undefined,
     engine: draft.engine.trim() || undefined,
   })
-  const res = addTable(source.value.id, item)
-  if (!res.ok) {
-    showToast('表名已存在', 'warning')
-    return
+  try {
+    const res = await addTable(source.value.id, item)
+    if (!res.ok) {
+      showToast('表名已存在', 'warning')
+      return
+    }
+    showAdd.value = false
+    showToast(`✅ 已添加 ${name}`, 'success')
+  } catch (e) {
+    showToast(`添加失败：${e.message || e}`, 'error')
   }
-  showAdd.value = false
-  showToast(`✅ 已添加 ${name}`, 'success')
 }
 
-function onRemove(name) {
-  removeTable(source.value.id, name)
-  showToast(`已移除 ${name}`, 'info')
+async function onRemove(name) {
+  try {
+    await removeTable(source.value.id, name)
+    showToast(`已移除 ${name}`, 'info')
+  } catch (e) {
+    showToast(`删除失败：${e.message || e}`, 'error')
+  }
 }
 
 function onPatch(row, key, e) {
   const val = e.target.value
-  patchTable(source.value.id, row.name, { [key]: val })
+  patchTable(source.value.id, row.name, { [key]: val }).catch((err) => {
+    showToast(`保存失败：${err.message || err}`, 'error')
+  })
 }
 
 function fmtRows(n) {

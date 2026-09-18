@@ -5,6 +5,7 @@ import { DS_COMMON_FIELDS, dsTypeFields, dsTypeMeta } from '@/data/dsForm'
 import { groupTypesByCategory } from '@/data/datasources'
 import { isInventoryField } from '@/utils/schemaList'
 import { useToast } from '@/composables/useToast'
+import { testDatasource } from '@/api/datasource'
 
 const props = defineProps({
   open: { type: Boolean, default: false },
@@ -109,15 +110,28 @@ function validate() {
   return true
 }
 
-function testConn() {
+async function testConn() {
   if (!validate()) return
   testing.value = true
   showToast(`🧪 正在测试 ${form.type} 连通性…`, 'info')
-  setTimeout(() => {
+  try {
+    const res = await testDatasource({
+      ...form,
+      id: props.editSource?.id,
+    })
+    if (res?.ok) {
+      tested.value = true
+      showToast('✅ 连通性测试通过', 'success')
+    } else {
+      tested.value = false
+      showToast(`连通失败：${res?.error || '未知错误'}`, 'error')
+    }
+  } catch (e) {
+    tested.value = false
+    showToast(`连通失败：${e.message || e}`, 'error')
+  } finally {
     testing.value = false
-    tested.value = true
-    showToast('✅ 连通性测试通过', 'success')
-  }, 700)
+  }
 }
 
 function submit() {
@@ -140,7 +154,7 @@ function submit() {
   const database =
     form.database || form.sid || form.namespace || form.vhost || form.tenant || form.db || form.path || ''
   const payload = {
-    id: props.editSource?.id || `ds_${Date.now().toString(36)}`,
+    id: props.editSource?.id,
     name: form.name.trim(),
     type: form.type,
     purpose: form.purpose,
@@ -150,19 +164,15 @@ function submit() {
     port: String(port),
     database: String(database),
     user: form.user || form.accessKey || '',
-    password: form.password || form.secretKey || form.token || '******',
+    password: form.password || form.secretKey || form.token || '',
     extra: form.extra || form.feNodes || form.warehouse || '',
     schema: form.schema || form.topics || form.queues || '',
-    icon: meta.icon,
-    bg: meta.bg,
-    color: meta.color,
     lag: form.access || form.pollCycle || '待探测',
-    status: 'online',
-    health: 96,
-    asset: null,
-    ver: props.editSource?.ver || 'v1.0',
-    created: props.editSource?.created || new Date().toISOString().slice(0, 10),
     access: form.access || '',
+    // 类型专属原字段一并带上，后端写入 conn
+    ...Object.fromEntries(
+      typeFields.value.map((f) => [f.n, form[f.n]]).filter(([, v]) => v != null && v !== ''),
+    ),
   }
   emit('submit', payload)
   close()
