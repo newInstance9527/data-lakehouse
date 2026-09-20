@@ -1,9 +1,10 @@
 /**
- * 数据服务 API（对齐 /lh/dataapi · SQLREST + APISIX）
+ * 数据服务 API（对齐 /lh/dataapi · 治理壳 + SQLREST Manager）
  */
 import { http } from './http.js'
 
 const BASE = '/lh/dataapi'
+const DS = '/lh/datasource'
 
 export function fetchDataapiOverview(ws) {
   return http.get(`${BASE}/overview`, { ws })
@@ -52,4 +53,24 @@ export function fetchDataapiKeys(ws) {
 
 export function fetchDataapiEmbedUrl() {
   return http.get(`${BASE}/embedUrl`)
+}
+
+export function fetchDataapiWorkbench() {
+  return http.get(`${BASE}/workbench`)
+}
+
+export function syncFromSqlrest(ws) {
+  return http.post(`${BASE}/syncFromSqlrest${ws ? `?ws=${encodeURIComponent(ws)}` : ''}`, {})
+}
+
+export function registerDataapi(payload) {
+  return http.post(`${BASE}/register`, payload)
+}
+
+export function fetchListForSqlrest() {
+  return http.get(`${DS}/listForSqlrest`)
+}
+
+export function projectToSqlrest(ids = []) {
+  return http.post(`${DS}/projectToSqlrest`, ids.map((id) => ({ id })))
 }

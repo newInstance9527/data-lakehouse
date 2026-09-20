@@ -686,30 +686,30 @@ export const PAGE_GUIDES = {
       heading: '模块功能',
       type: 'text',
       content: [
-        '基于 SQLREST 分步构建查询 API：选指标/表 → 配参（入参 + 出参映射转换：wrapped/origin/nil、list/object/page、列改名与分转元等）→ 鉴权 → 全局限流 → 试跑 → 发布到 APISIX；各应用配额经申请中心签发令牌。',
-        'API 定义 SoT = SQLREST；门户只存绑定与 APISIX 路由投影；查询经 Trino（正式）。',
+        '门户为治理壳：在 SQLREST Manager 用 SQL 或 Groovy 构建接口（元数据树、入参解析、认证/流量控制）；默认对外边缘为 SQLREST Gateway。',
+        '门户负责数据源投影、同步接口目录、登记资产/指标绑定与概览；简易草稿向导仅作可选兜底。APISIX 仅在 edge-mode=apisix|both 时启用。',
       ],
     },
     {
       heading: '适用场景',
       type: 'list',
-      items: ['对业务系统提供稳定取数 API', '替换直连数仓', '按应用限流与监控'],
+      items: ['对业务系统提供稳定取数 API', '替换直连数仓', '按客户端限流与监控（SQLREST）'],
     },
     {
       heading: '使用示例',
       type: 'steps',
       items: [
-        '点「构建 API」完成六步向导：配参需定义入参、响应封装与出参映射转换',
-        '发布后可在卡片或「详情」中查看 SQL、入参/出参、网关路由与订阅方',
-        '在调用监控与 APISIX 路由表中查看状态；申请凭证走申请中心',
+        '先「投影待同步源」，再点「打开 SQLREST 构建」在 Manager 完成 SQL/Groovy 与调试',
+        '「同步接口目录」或「登记绑定」拉回门户并关联资产/指标',
+        '调用方走 SQLREST Gateway；需要统一平台边缘时再开 APISIX',
       ],
     },
     {
       heading: '相关模块',
       type: 'kv',
       items: [
-        { label: '上游', value: '资产目录、指标中心、安全与权限、即席查询' },
-        { label: '下游', value: '链路调用监控、申请中心' },
+        { label: '上游', value: '数据源中心、资产目录、指标中心' },
+        { label: '下游', value: '申请中心、链路调用监控' },
       ],
     },
   ]),

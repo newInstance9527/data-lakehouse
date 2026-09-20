@@ -6,6 +6,7 @@ import ListPager from '@/components/common/ListPager.vue'
 import AppDrawer from '@/components/common/AppDrawer.vue'
 import SqlEditor from '@/components/etl/SqlEditor.vue'
 import ApiBuildWizard from '@/components/dataservice/ApiBuildWizard.vue'
+import RegisterBindingModal from '@/components/dataservice/RegisterBindingModal.vue'
 import { useToast } from '@/composables/useToast'
 import { usePager } from '@/composables/usePager'
 import { useDataservice } from '@/composables/useDataservice'
@@ -27,18 +28,37 @@ const {
   kpis,
   callRank,
   degraded,
+  workbench,
+  sqlrestDs,
+  embed,
   ensureLoaded,
   openDetail,
   runSyncApisix,
+  runSyncFromSqlrest,
+  runProjectDs,
+  runRegister,
+  openManager,
 } = useDataservice()
 
 onMounted(() => ensureLoaded())
 
 const apiSearch = ref('')
 const createOpen = ref(false)
+const registerOpen = ref(false)
+const projecting = ref(false)
 
 const detailOpen = ref(false)
 const detail = ref(null)
+
+const edgeMode = computed(() => embed.value?.edgeMode || workbench.value?.edgeMode || 'gateway')
+const gatewayUrl = computed(() => embed.value?.gateway || workbench.value?.gatewayUrl || '')
+const assignmentList = computed(() => {
+  const a = workbench.value?.assignments
+  if (Array.isArray(a?.data)) return a.data
+  if (Array.isArray(a)) return a
+  return []
+})
+const pendingProject = computed(() => (sqlrestDs.value || []).filter((d) => !d.projected && d.projectable))
 
 const filteredApis = computed(() => {
   const f = apiSearch.value.trim().toLowerCase()
@@ -82,7 +102,17 @@ function transformLabel(v) {
   return FIELD_TRANSFORM_OPTIONS.find((o) => o.value === v)?.label || v || '原样'
 }
 
-function buildApi() {
+function openSqlrestBuild() {
+  const url = openManager('interfaceCreate')
+  if (!url) showToast('未配置 SQLREST Manager 地址', 'warning')
+}
+
+function openSqlrestList() {
+  const url = openManager('interfaceList')
+  if (!url) showToast('未配置 SQLREST Manager 地址', 'warning')
+}
+
+function openDraftWizard() {
   createOpen.value = true
 }
 
@@ -102,12 +132,55 @@ function goApply(apiPath) {
 async function syncApisix() {
   try {
     const r = await runSyncApisix()
+    if (r?.skipped) {
+      showToast(r.message || '当前边缘为 SQLREST Gateway，无需同步 APISIX', 'info')
+      return
+    }
     showToast(
       r?.ok ? `已同步 ${r.synced || 0} 条路由` : `同步部分失败 · 成功 ${r?.synced || 0} / 失败 ${r?.failed || 0}`,
       r?.ok ? 'success' : 'warning',
     )
   } catch (e) {
     showToast(`同步失败：${e?.message || e}`, 'warning')
+  }
+}
+
+async function syncFromSqlrest() {
+  try {
+    const r = await runSyncFromSqlrest()
+    showToast(
+      `已从 SQLREST 同步 · 写入 ${r?.upserted ?? 0} · 跳过 ${r?.skipped ?? 0}`,
+      'success',
+    )
+  } catch (e) {
+    showToast(`同步失败：${e?.message || e}`, 'warning')
+  }
+}
+
+async function projectDatasources() {
+  projecting.value = true
+  try {
+    const ids = pendingProject.value.map((d) => d.id).filter(Boolean)
+    const r = await runProjectDs(ids)
+    showToast(
+      `投影完成 · 成功 ${r?.projected ?? 0} · 失败 ${r?.failed ?? 0}`,
+      r?.ok === false ? 'warning' : 'success',
+    )
+  } catch (e) {
+    showToast(`投影失败：${e?.message || e}`, 'warning')
+  } finally {
+    projecting.value = false
+  }
+}
+
+async function onRegister(payload) {
+  try {
+    const r = await runRegister(payload)
+    registerOpen.value = false
+    showToast('登记成功', 'success')
+    if (r?.binding) openApiDetail(r.binding)
+  } catch (e) {
+    showToast(`登记失败：${e?.message || e}`, 'warning')
   }
 }
 
@@ -120,6 +193,15 @@ async function openApiDetail(a) {
 
 function closeApiDetail() {
   detailOpen.value = false
+}
+
+function openInManager(row) {
+  const link = row?.managerDeepLink
+  if (link) {
+    window.open(link, '_blank', 'noopener')
+    return
+  }
+  openSqlrestList()
 }
 
 function copyPath() {
@@ -142,14 +224,74 @@ function goAsset(asset) {
   <div class="ds-page">
     <PageHeader
       title="数据服务中心"
-      subtitle="SQLREST SQL2API 构建 / 试跑 · APISIX 运行时 · 查询经 Trino · 订阅与调用审计 · SLA 99.9%"
+      subtitle="治理壳：SQL/Groovy 在 SQLREST Manager 构建 · 默认边缘 SQLREST Gateway · 门户负责投影绑定与目录"
       :guide="guide"
     >
-      <button type="button" class="btn btn-sm" @click="buildApi">📝 构建 API</button>
-      <button type="button" class="btn btn-sm btn-primary" @click="goApply()">🔑 申请凭证</button>
+      <button type="button" class="btn btn-sm btn-primary" @click="openSqlrestBuild">打开 SQLREST 构建</button>
+      <button type="button" class="btn btn-sm" @click="syncFromSqlrest">同步接口目录</button>
+      <button type="button" class="btn btn-sm" @click="registerOpen = true">登记绑定</button>
+      <button type="button" class="btn btn-sm" @click="goApply()">申请凭证</button>
+      <button type="button" class="btn btn-sm btn-ghost" @click="openDraftWizard">简易草稿</button>
     </PageHeader>
 
     <ApiBuildWizard :open="createOpen" @close="createOpen = false" @publish="onPublishApi" />
+    <RegisterBindingModal
+      :open="registerOpen"
+      :assignments="assignmentList"
+      @close="registerOpen = false"
+      @submit="onRegister"
+    />
+
+    <div class="ds-flow card">
+      <div class="ds-flow-steps">
+        <div class="ds-step">
+          <span class="ds-step-n">1</span>
+          <div>
+            <div class="ds-step-t">投影数据源</div>
+            <div class="tip">门户数据源 → SQLREST（可映射类型）</div>
+          </div>
+        </div>
+        <div class="ds-step">
+          <span class="ds-step-n">2</span>
+          <div>
+            <div class="ds-step-t">Manager 构建</div>
+            <div class="tip">元数据树 · SQL/Groovy · 入参解析 · 认证/限流</div>
+          </div>
+        </div>
+        <div class="ds-step">
+          <span class="ds-step-n">3</span>
+          <div>
+            <div class="ds-step-t">同步 / 登记</div>
+            <div class="tip">拉回接口目录并绑定资产/指标</div>
+          </div>
+        </div>
+        <div class="ds-step">
+          <span class="ds-step-n">4</span>
+          <div>
+            <div class="ds-step-t">上线调用</div>
+            <div class="tip">
+              边缘
+              <code>{{ edgeMode }}</code>
+              <template v-if="gatewayUrl"> · {{ gatewayUrl }}</template>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="ds-flow-actions">
+        <button
+          type="button"
+          class="btn btn-sm"
+          :disabled="projecting || !pendingProject.length"
+          @click="projectDatasources"
+        >
+          投影待同步源 ({{ pendingProject.length }})
+        </button>
+        <button type="button" class="btn btn-sm" @click="openSqlrestList">接口列表</button>
+        <button type="button" class="btn btn-sm" @click="openManager('client')">客户端</button>
+        <button type="button" class="btn btn-sm" @click="openManager('online')">在线服务</button>
+      </div>
+      <p v-if="workbench?.hint" class="tip ds-hint">{{ workbench.hint }}</p>
+    </div>
 
     <div class="kpi-grid ds-kpi">
       <div v-for="(k, i) in kpis" :key="i" class="kpi-card ds-kpi-card">
@@ -164,7 +306,7 @@ function goAsset(asset) {
 
     <div class="card ds-api-card">
       <div class="card-header">
-        <div class="card-title">🔌 已发布 API（按业务域）</div>
+        <div class="card-title">已发布 / 已绑定 API</div>
         <input
           v-model="apiSearch"
           class="input input-sm ds-search"
@@ -193,8 +335,8 @@ function goAsset(asset) {
             </div>
             <div class="ac-desc">{{ a.desc }}</div>
             <div class="ac-foot">
-              <span>👥 {{ a.sub }} 订阅 · ⏱ {{ a.rt }} · <span class="ac-qps">{{ a.qps }} QPS</span></span>
-              <span class="tag" :class="a.levelCls">{{ a.level }}</span>
+              <span>{{ a.sub || 0 }} 订阅 · {{ a.rt || '—' }} · {{ a.qps || '—' }} QPS</span>
+              <span class="tag" :class="a.levelCls">{{ a.level || a.state || '—' }}</span>
             </div>
             <div class="ac-bind">
               绑定：
@@ -207,13 +349,15 @@ function goAsset(asset) {
                 资产 →
               </button>
               <span v-else class="muted">无</span>
-              <button type="button" class="btn btn-sm ac-detail-btn" @click.stop="openApiDetail(a)">
-                详情
+              <button type="button" class="btn btn-sm ac-detail-btn" @click.stop="openInManager(a)">
+                Manager
               </button>
             </div>
           </div>
         </div>
-        <div v-else class="ds-empty">无匹配 API</div>
+        <div v-else class="ds-empty">
+          暂无绑定 · 请先在 SQLREST 构建，再「同步接口目录」或「登记绑定」
+        </div>
         <ListPager
           v-model:page="page"
           v-model:page-size="pageSize"
@@ -229,8 +373,8 @@ function goAsset(asset) {
     <div class="grid grid-2 ds-mid">
       <div class="card">
         <div class="card-header">
-          <div class="card-title">📊 调用量 Top（近 7 天）</div>
-          <span class="tag tag-green">APISIX 审计</span>
+          <div class="card-title">调用量 Top</div>
+          <span class="tag tag-green">SQLREST 概览</span>
         </div>
         <div class="card-body ds-rank">
           <div v-for="(r, ri) in callRank" :key="ri" class="call-bar-row">
@@ -245,8 +389,8 @@ function goAsset(asset) {
 
       <div class="card">
         <div class="card-header">
-          <div class="card-title">🧾 订阅凭证</div>
-          <span class="tag tag-orange">3 待审批</span>
+          <div class="card-title">订阅 / 客户端</div>
+          <button type="button" class="btn btn-sm" @click="openManager('client')">SQLREST 客户端</button>
         </div>
         <div class="card-body" style="padding: 0">
           <table class="table ds-sub-table">
@@ -273,10 +417,21 @@ function goAsset(asset) {
 
     <div class="card ds-apisix">
       <div class="card-header">
-        <div class="card-title">🌐 APISIX 路由与策略 <span class="tip">· 同步状态：15s 前</span></div>
+        <div class="card-title">
+          对外边缘
+          <span class="tip">· mode={{ edgeMode }}</span>
+        </div>
         <div class="ds-apisix-actions">
-          <span class="tag tag-green">● 网关集群正常 3 节点</span>
-          <button type="button" class="btn btn-sm" @click="syncApisix">♻️ 与 APISIX 同步</button>
+          <span v-if="edgeMode === 'gateway'" class="tag tag-green">SQLREST Gateway</span>
+          <span v-else class="tag tag-orange">含 APISIX</span>
+          <button
+            v-if="edgeMode !== 'gateway'"
+            type="button"
+            class="btn btn-sm"
+            @click="syncApisix"
+          >
+            与 APISIX 同步
+          </button>
         </div>
       </div>
       <div class="card-body" style="padding: 0">
@@ -284,11 +439,9 @@ function goAsset(asset) {
           <thead>
             <tr>
               <th>路由</th>
-              <th>上游（APISIX → SQLREST → Trino）</th>
+              <th>上游</th>
               <th>鉴权</th>
               <th>限流</th>
-              <th>熔断</th>
-              <th>计量</th>
               <th>状态</th>
             </tr>
           </thead>
@@ -298,8 +451,6 @@ function goAsset(asset) {
               <td style="font-size: 12px">{{ r.upstream }}</td>
               <td><span class="tag tag-purple" style="font-size: 10px">{{ r.auth }}</span></td>
               <td style="font-size: 12px">{{ r.rate }}</td>
-              <td style="text-align: center">{{ r.breaker }}</td>
-              <td style="text-align: center">{{ r.meter }}</td>
               <td>
                 <span class="tag" :class="apisixStatusMeta(r.status).tag" style="font-size: 10px">
                   {{ apisixStatusMeta(r.status).label }}
@@ -308,6 +459,9 @@ function goAsset(asset) {
             </tr>
           </tbody>
         </table>
+        <p v-if="!routes?.length" class="tip" style="padding: 12px 16px">
+          暂无已发布绑定。在 Manager 调试/保存/发版后，同步到本页即可。
+        </p>
       </div>
     </div>
 
@@ -336,20 +490,19 @@ function goAsset(asset) {
           <div><span>业务域</span><div>{{ detail.domain || '—' }}</div></div>
           <div>
             <span>等级</span>
-            <div><span class="tag" :class="detail.levelCls">{{ detail.level }}</span></div>
+            <div><span class="tag" :class="detail.levelCls">{{ detail.level || detail.state || '—' }}</span></div>
           </div>
           <div><span>鉴权</span><div>{{ detail.auth || 'Token' }}</div></div>
           <div><span>环境</span><div>{{ detail.publishEnv || 'prod' }}</div></div>
           <div><span>全局限流</span><div>{{ detail.qps }} QPS · Burst {{ detail.burst || '—' }}</div></div>
-          <div><span>延迟 / 订阅</span><div>{{ detail.rt }} · {{ detail.sub }} 应用</div></div>
+          <div><span>引擎</span><div>{{ detail.sqlrest?.engine || detail.engine || 'SQL/Groovy' }}</div></div>
           <div><span>负责人</span><div>{{ detail.owner || '—' }}</div></div>
           <div><span>发布时间</span><div>{{ detail.publishedAt || '—' }}</div></div>
           <div v-if="detail.metric && detail.metric !== '-'"><span>指标</span><div><code>{{ detail.metric }}</code></div></div>
-          <div v-if="detail.datasourceLabel || detail.datasourceId">
+          <div v-if="detail.datasourceLabel || detail.datasourceId || detail.portalDsId">
             <span>数据源</span>
-            <div><code>{{ detail.datasourceLabel || detail.datasourceId }}</code></div>
+            <div><code>{{ detail.datasourceLabel || detail.datasourceId || detail.portalDsId }}</code></div>
           </div>
-          <div v-if="detail.srcType"><span>来源类型</span><div>{{ detail.srcType }}</div></div>
           <div v-if="detail.asset && detail.asset !== '-'">
             <span>资产</span>
             <div>
@@ -361,10 +514,9 @@ function goAsset(asset) {
             <span>响应封装</span>
             <div>{{ formatLabel }} / {{ shapeLabel }}</div>
           </div>
-          <div><span>熔断</span><div>{{ detail.breaker || '—' }}</div></div>
         </div>
 
-        <div class="detail-sec-title">SQL 模板</div>
+        <div class="detail-sec-title">SQL / Groovy（只读预览）</div>
         <SqlEditor
           v-if="detail.sql"
           :model-value="detail.sql"
@@ -372,9 +524,9 @@ function goAsset(asset) {
           compact
           :rows="6"
           label="SQLREST"
-          hint="只读预览"
+          hint="完整编辑请打开 Manager"
         />
-        <p v-else class="tip detail-empty">暂无 SQL 模板（可能为代理或非 SQL 接口）</p>
+        <p v-else class="tip detail-empty">正文在 SQLREST；点下方在 Manager 中打开</p>
 
         <div class="detail-sec-title">入参</div>
         <table v-if="detail.params?.length" class="table detail-table">
@@ -397,7 +549,7 @@ function goAsset(asset) {
             </tr>
           </tbody>
         </table>
-        <p v-else class="tip detail-empty">未配置入参</p>
+        <p v-else class="tip detail-empty">未配置入参（或仅存于 Manager）</p>
 
         <div class="detail-sec-title">出参映射</div>
         <table v-if="detail.responses?.length" class="table detail-table">
@@ -420,7 +572,7 @@ function goAsset(asset) {
         </table>
         <p v-else class="tip detail-empty">未配置出参映射</p>
 
-        <div class="detail-sec-title">APISIX 路由</div>
+        <div class="detail-sec-title">边缘路由</div>
         <div v-if="detailRoute" class="detail-route">
           <div><span>匹配</span><code>{{ detailRoute.path }}</code></div>
           <div><span>上游</span><span>{{ detailRoute.upstream }}</span></div>
@@ -432,7 +584,7 @@ function goAsset(asset) {
           </div>
           <div v-if="detailRoute.note" class="wide tip">{{ detailRoute.note }}</div>
         </div>
-        <p v-else class="tip detail-empty">未匹配到网关路由</p>
+        <p v-else class="tip detail-empty">未匹配到边缘路由记录</p>
 
         <div class="detail-sec-title">订阅方</div>
         <table v-if="detailSubs.length" class="table detail-table">
@@ -454,7 +606,8 @@ function goAsset(asset) {
         <p v-else class="tip detail-empty">暂无订阅记录 · 可申请调用凭证</p>
 
         <div class="detail-actions">
-          <button type="button" class="btn btn-sm" @click="goApply(detail.path)">🔑 申请凭证</button>
+          <button type="button" class="btn btn-sm btn-primary" @click="openInManager(detail)">在 Manager 打开</button>
+          <button type="button" class="btn btn-sm" @click="goApply(detail.path)">申请凭证</button>
           <button
             v-if="detail.asset && detail.asset !== '-'"
             type="button"
@@ -470,6 +623,46 @@ function goAsset(asset) {
 </template>
 
 <style scoped>
+.ds-flow {
+  padding: 14px 16px;
+  margin-bottom: 16px;
+}
+.ds-flow-steps {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+}
+.ds-step {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+.ds-step-n {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--primary, #1e6fff);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.ds-step-t {
+  font-weight: 600;
+  font-size: 13px;
+}
+.ds-flow-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+.ds-hint {
+  margin: 10px 0 0;
+}
 .ds-kpi {
   grid-template-columns: repeat(4, 1fr);
   margin-bottom: 16px;
@@ -561,178 +754,140 @@ function goAsset(asset) {
   gap: 8px;
   flex-wrap: wrap;
 }
-.ac-qps {
-  font-weight: 600;
-  color: var(--text-2);
-}
 .ac-bind {
-  margin-top: 6px;
-  font-size: 11px;
-  color: var(--text-3);
+  margin-top: 8px;
+  font-size: 12px;
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-wrap: wrap;
 }
 .ac-detail-btn {
   margin-left: auto;
-  font-size: 11px;
-  padding: 2px 8px;
-}
-.muted {
-  color: var(--text-4);
 }
 .ds-empty {
-  text-align: center;
   padding: 24px;
+  text-align: center;
   color: var(--text-3);
+  font-size: 13px;
 }
 .ds-mid {
-  margin-bottom: 14px;
+  margin-bottom: 16px;
+}
+.ds-rank {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 .call-bar-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: 140px 1fr 56px;
+  gap: 8px;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 10px;
+  font-size: 12px;
 }
 .cbr-name {
-  width: 38%;
-  font-size: 11px;
-  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  flex-shrink: 0;
+  white-space: nowrap;
 }
 .cbr-bar {
-  flex: 1;
-  height: 8px;
-  background: var(--bg-2);
-  border-radius: 4px;
-  overflow: hidden;
+  height: 6px;
+  background: var(--bg-2, #f0f2f5);
+  border-radius: 3px;
 }
 .cbr-bar-fill {
   height: 100%;
-  background: linear-gradient(90deg, var(--primary), #69c0ff);
-  border-radius: 4px;
+  background: var(--primary, #1e6fff);
+  border-radius: 3px;
 }
 .cbr-val {
-  font-size: 11px;
-  font-weight: 600;
-  width: 52px;
   text-align: right;
-  flex-shrink: 0;
-}
-.ds-sub-table {
-  font-size: 12px;
+  color: var(--text-3);
 }
 .ds-apisix {
-  margin-top: 0;
+  margin-bottom: 16px;
 }
 .ds-apisix-actions {
   display: flex;
-  align-items: center;
   gap: 8px;
-  margin-left: auto;
-  flex-wrap: wrap;
-}
-.ds-route-table {
-  font-size: 12px;
+  align-items: center;
 }
 .route-path {
   font-size: 12px;
-  font-weight: 600;
 }
-
 .api-detail {
-  padding: 16px 18px 28px;
-  height: 100%;
-  overflow: auto;
+  padding: 4px 4px 24px;
 }
 .detail-head {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  gap: 12px;
   margin-bottom: 12px;
 }
 .detail-title {
-  font-size: 16px;
-  font-weight: 600;
+  font-weight: 700;
+  font-size: 15px;
 }
 .detail-path-row {
   display: flex;
-  align-items: center;
   gap: 8px;
-  margin-bottom: 14px;
+  align-items: center;
+  margin-bottom: 12px;
   flex-wrap: wrap;
 }
 .detail-path {
   font-size: 13px;
-  font-weight: 600;
-  word-break: break-all;
 }
 .detail-kv {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 10px 14px;
-  font-size: 13px;
-  margin-bottom: 16px;
-}
-.detail-kv > div {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-.detail-kv > div.wide {
-  grid-column: 1 / -1;
+  gap: 10px 12px;
+  font-size: 12px;
+  margin-bottom: 14px;
 }
 .detail-kv span {
+  display: block;
   color: var(--text-3);
-  font-size: 12px;
+  margin-bottom: 2px;
+}
+.detail-kv .wide {
+  grid-column: 1 / -1;
 }
 .detail-sec-title {
-  font-size: 13px;
   font-weight: 600;
+  font-size: 13px;
   margin: 14px 0 8px;
-}
-.detail-table {
-  font-size: 12px;
-  margin-bottom: 4px;
 }
 .detail-empty {
   margin: 0 0 8px;
 }
+.detail-table {
+  font-size: 12px;
+}
 .detail-route {
   display: grid;
-  gap: 8px;
+  gap: 6px;
   font-size: 12px;
-  padding: 10px 12px;
-  background: var(--bg-2);
-  border-radius: 8px;
 }
-.detail-route > div {
-  display: flex;
-  gap: 10px;
-  align-items: flex-start;
-}
-.detail-route > div > span:first-child {
+.detail-route span:first-child {
   color: var(--text-3);
-  min-width: 40px;
-  flex-shrink: 0;
-}
-.detail-route .wide {
-  display: block;
+  margin-right: 8px;
 }
 .detail-actions {
   display: flex;
-  gap: 8px;
-  margin-top: 18px;
   flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
 }
-.tip {
-  font-size: 12px;
-  color: var(--text-3);
+.btn-ghost {
+  opacity: 0.85;
+}
+@media (max-width: 960px) {
+  .ds-flow-steps {
+    grid-template-columns: 1fr 1fr;
+  }
+  .ds-kpi {
+    grid-template-columns: 1fr 1fr;
+  }
 }
 </style>

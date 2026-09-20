@@ -1,16 +1,22 @@
 /**
- * 数据服务中心：接 /lh/dataapi；失败时保留本地种子便于演示
+ * 数据服务中心：治理壳 — SQLREST Manager 构建（SQL/Groovy）+ 门户绑定/APISIX
  */
 import { computed, ref } from 'vue'
 import {
   buildDataapi,
   fetchDataapiApis,
   fetchDataapiDetail,
+  fetchDataapiEmbedUrl,
   fetchDataapiKeys,
   fetchDataapiOverview,
   fetchDataapiRoutes,
+  fetchDataapiWorkbench,
+  fetchListForSqlrest,
+  projectToSqlrest,
   publishDataapi,
+  registerDataapi,
   syncDataapiApisix,
+  syncFromSqlrest,
   trialDataapi,
 } from '@/api/dataapi.js'
 import {
@@ -29,29 +35,32 @@ const routes = ref(APISIX_ROUTES.map((r) => ({ ...r })))
 const subs = ref(SUB_LIST.map((s) => ({ ...s })))
 const kpis = ref(DS_KPIS.map((k) => ({ ...k })))
 const callRank = ref(API_CALL_RANK.map((r) => ({ ...r })))
+const workbench = ref(null)
+const sqlrestDs = ref([])
+const embed = ref(null)
 
 function mapOverview(ov) {
   if (!ov) return DS_KPIS.map((k) => ({ ...k }))
   return [
     {
-      label: '已发布 API',
+      label: '门户已发布',
       value: String(ov.publishedApis ?? 0),
       unit: '个',
       delta: ov.draftApis ? `草稿 ${ov.draftApis}` : '—',
       deltaCls: '',
     },
     {
-      label: '近 24h 调用量',
-      value: ov.calls24h != null ? String(ov.calls24h) : '—',
-      unit: '',
-      delta: ov.callsNote || '待接 APISIX 审计',
+      label: 'SQLREST 接口',
+      value: ov.sqlrestTotal != null ? String(ov.sqlrestTotal) : '—',
+      unit: '个',
+      delta: ov.sqlrestOnline != null ? `上线 ${ov.sqlrestOnline}` : '来自 Manager',
       deltaCls: '',
     },
     {
-      label: '平均延迟',
-      value: ov.avgLatencyMs != null ? String(ov.avgLatencyMs) : '—',
-      unit: ov.avgLatencyMs != null ? 'ms' : '',
-      delta: '',
+      label: 'SQLREST 数据源',
+      value: ov.sqlrestDatasourceCount != null ? String(ov.sqlrestDatasourceCount) : '—',
+      unit: '个',
+      delta: '投影自数据源中心',
       deltaCls: '',
     },
     {
@@ -64,21 +73,34 @@ function mapOverview(ov) {
   ]
 }
 
+function mapTrendToRank(wb) {
+  const top = wb?.topPath?.data
+  if (Array.isArray(top) && top.length) {
+    const max = Math.max(...top.map((t) => Number(t.total || t.count || 0)), 1)
+    return top.slice(0, 8).map((t) => ({
+      name: t.path || t.name || '—',
+      calls: String(t.total ?? t.count ?? 0),
+      pct: Math.round(((Number(t.total || t.count || 0) / max) * 100)),
+    }))
+  }
+  return API_CALL_RANK.map((r) => ({ ...r }))
+}
+
 export function useDataservice() {
   async function ensureLoaded(force = false) {
     if (loaded.value && !force) return
     loading.value = true
     try {
-      const [list, ov, routePack, keyList] = await Promise.all([
+      const [list, ov, routePack, keyList, wb, dsList, emb] = await Promise.all([
         fetchDataapiApis({}).catch(() => null),
         fetchDataapiOverview().catch(() => null),
         fetchDataapiRoutes().catch(() => null),
         fetchDataapiKeys().catch(() => null),
+        fetchDataapiWorkbench().catch(() => null),
+        fetchListForSqlrest().catch(() => null),
+        fetchDataapiEmbedUrl().catch(() => null),
       ])
-      if (Array.isArray(list) && list.length) {
-        apis.value = list
-        degraded.value = false
-      } else if (Array.isArray(list)) {
+      if (Array.isArray(list)) {
         apis.value = list
         degraded.value = false
       } else {
@@ -99,9 +121,14 @@ export function useDataservice() {
           note: r.id || '',
         }))
       }
-      if (Array.isArray(keyList) && keyList.length) {
-        subs.value = keyList
+      if (Array.isArray(keyList) && keyList.length) subs.value = keyList
+      if (wb) {
+        workbench.value = wb
+        callRank.value = mapTrendToRank(wb)
+        if (wb.embed) embed.value = wb.embed
       }
+      if (emb) embed.value = { ...(embed.value || {}), ...emb }
+      if (Array.isArray(dsList)) sqlrestDs.value = dsList
       loaded.value = true
     } catch {
       degraded.value = true
@@ -114,8 +141,7 @@ export function useDataservice() {
   async function openDetail(row) {
     if (!row?.id) return row
     try {
-      const d = await fetchDataapiDetail(row.id, true)
-      return { ...row, ...d }
+      return { ...row, ...(await fetchDataapiDetail(row.id, true)) }
     } catch {
       return row
     }
@@ -126,6 +152,9 @@ export function useDataservice() {
       sql: form.sql,
       method: form.method,
       params: form.params,
+      datasourceId: undefined,
+      // portal ds → 后端投影
+      ...{},
     })
   }
 
@@ -140,6 +169,8 @@ export function useDataservice() {
       method: form.method || 'GET',
       sourceKind,
       sourceRef,
+      portalDsId: form.datasourceId || form.portalDsId,
+      dsId: form.datasourceId || form.portalDsId,
       authMode: form.auth,
       qpsLimit: Number(form.qps) || 100,
       burstLimit: Number(form.burst) || 200,
@@ -154,9 +185,7 @@ export function useDataservice() {
       description: form.desc || form.name,
     })
     const binding = buildRes?.binding
-    if (!binding?.id) {
-      throw new Error(buildRes?.sqlrest?.message || '构建失败')
-    }
+    if (!binding?.id) throw new Error(buildRes?.sqlrest?.message || '构建失败')
     const pub = await publishDataapi(binding.id)
     await ensureLoaded(true)
     return { build: buildRes, publish: pub, binding: pub?.binding || binding }
@@ -168,6 +197,31 @@ export function useDataservice() {
     return r
   }
 
+  async function runSyncFromSqlrest() {
+    const r = await syncFromSqlrest()
+    await ensureLoaded(true)
+    return r
+  }
+
+  async function runProjectDs(ids = []) {
+    const r = await projectToSqlrest(ids)
+    await ensureLoaded(true)
+    return r
+  }
+
+  async function runRegister(payload) {
+    const r = await registerDataapi(payload)
+    await ensureLoaded(true)
+    return r
+  }
+
+  function openManager(kind = 'interfaceList') {
+    const e = embed.value || {}
+    const url = e[kind] || e.sqlrest || e.interfaceList
+    if (url) window.open(url, '_blank', 'noopener')
+    return url
+  }
+
   return {
     loaded: computed(() => loaded.value),
     loading: computed(() => loading.value),
@@ -177,10 +231,17 @@ export function useDataservice() {
     subs,
     kpis,
     callRank,
+    workbench,
+    sqlrestDs,
+    embed,
     ensureLoaded,
     openDetail,
     runTrial,
     runBuildAndPublish,
     runSyncApisix,
+    runSyncFromSqlrest,
+    runProjectDs,
+    runRegister,
+    openManager,
   }
 }
