@@ -1,6 +1,7 @@
 import { computed, ref } from 'vue'
 import {
   addAsset as apiAddAsset,
+  deleteAsset as apiDeleteAsset,
   editAsset as apiEditAsset,
   fetchAssetDetail,
   fetchAssetPage,
@@ -81,6 +82,12 @@ export function useAssets() {
     return replaceLocal(saved)
   }
 
+  async function removeAsset(id) {
+    await apiDeleteAsset(id)
+    assets.value = assets.value.filter((a) => a.id !== id)
+    return true
+  }
+
   async function loadDetail(id) {
     const detail = await fetchAssetDetail(id)
     return replaceLocal(detail)
@@ -131,6 +138,7 @@ export function useAssets() {
     findAsset,
     addAsset,
     editAsset,
+    removeAsset,
     loadDetail,
     loadSchema,
     loadPreview,
@@ -148,15 +156,22 @@ export function normalizeAsset(vo) {
   const schema = vo.extras?.schema
   const fields = vo.fields || mapSchemaFields(schema) || []
   const owner = vo.techOwner || vo.owner || ''
+  const ownerName = vo.techOwnerName || vo.ownerName || ''
   const tags = Array.isArray(vo.tags) && vo.tags.length
     ? vo.tags
-    : buildDefaultTags(vo, layer)
+    : buildDefaultTags(vo)
   const quality =
     vo.qualityScore ??
     vo.quality ??
     vo.extras?.quality?.score ??
     (vo.extras?.quality && vo.extras.quality.score == null ? '—' : undefined) ??
     '—'
+
+  // 列表无 schema 时 fields 为空，length=0 不能当成「0 列」
+  let cols = null
+  if (vo.cols != null && vo.cols !== '' && Number(vo.cols) > 0) cols = Number(vo.cols)
+  else if (schema?.columnCount != null && Number(schema.columnCount) > 0) cols = Number(schema.columnCount)
+  else if (fields.length > 0) cols = fields.length
 
   return {
     id: vo.id,
@@ -170,12 +185,18 @@ export function normalizeAsset(vo) {
     domainLabel: vo.domainLabel || domain.label,
     desc: vo.description || vo.desc || '',
     size: vo.size || '',
-    cols: vo.cols ?? schema?.columnCount ?? fields.length ?? '—',
+    cols,
     partitions: vo.partitions || '',
     updated: formatUpdated(vo.updateTime || vo.updated),
     owner,
-    ownerAvatar: avatarOf(owner),
+    ownerName,
+    ownerAvatar: avatarOf(ownerName || owner),
+    techOwner: vo.techOwner || owner || '',
+    techOwnerName: vo.techOwnerName || ownerName || '',
     bizOwner: vo.bizOwner || '',
+    bizOwnerName: vo.bizOwnerName || '',
+    createUser: vo.createUser || '',
+    createUserName: vo.createUserName || '',
     level,
     levelClass: levelClass(level),
     quality,
@@ -184,10 +205,11 @@ export function normalizeAsset(vo) {
     engine: vo.engine || '',
     storage: vo.storage || '',
     tags,
-    metrics: vo.metrics || { read7d: '—' },
+    metrics: vo.metrics && typeof vo.metrics === 'object' ? vo.metrics : null,
     sourceId: vo.primaryDsId || vo.sourceId || null,
-    sourceName: vo.primaryDsName || vo.sourceName || vo.sourceSummary || null,
-    sourceType: vo.sourceType || null,
+    sourceName: vo.primaryDsName || vo.sourceName || null,
+    sourceType: vo.primaryDsType || vo.sourceType || null,
+    sourceCode: vo.primaryDsCode || vo.sourceCode || null,
     tableName: vo.objectName || vo.tableName || null,
     objectName: vo.objectName || vo.tableName || null,
     omFqn: vo.omFqn || '',
@@ -202,12 +224,12 @@ export function normalizeAsset(vo) {
   }
 }
 
-function buildDefaultTags(vo, layer) {
+function buildDefaultTags(vo) {
   const tags = []
   if (vo.status && vo.status !== 'active') {
     tags.push([vo.status, 'tag-gray'])
   }
-  if (layer?.label) tags.push([layer.label, 'tag-cyan'])
+  // 分层已在卡片 layer 徽标展示，不再重复塞进 tags
   if (vo.assetKind && vo.assetKind !== 'table') {
     tags.push([vo.assetKind, 'tag-blue'])
   }
@@ -231,7 +253,13 @@ function mapSchemaFields(schema) {
 function avatarOf(owner) {
   const s = String(owner || '').trim()
   if (!s) return '—'
-  return s.slice(0, 2).toUpperCase().replace(/\s/g, '') || '—'
+  // 中文名取首字，避免「张三」头像整段再叠一次全名
+  if (/^[\u4e00-\u9fff]/.test(s)) return s.slice(0, 1)
+  const parts = s.replace(/[()（）].*$/, '').trim().split(/\s+/)
+  if (parts.length >= 2) {
+    return (parts[0][0] + parts[1][0]).toUpperCase()
+  }
+  return s.slice(0, 2).toUpperCase()
 }
 
 function formatUpdated(v) {

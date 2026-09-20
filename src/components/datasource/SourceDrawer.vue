@@ -1,7 +1,8 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import AppDrawer from '@/components/common/AppDrawer.vue'
+import DsTypeIcon from '@/components/datasource/DsTypeIcon.vue'
 import {
   DS_CAT_LABEL,
   dsCategory,
@@ -10,21 +11,34 @@ import {
 } from '@/data/datasources'
 import { schemaSummary } from '@/utils/schemaList'
 import { useToast } from '@/composables/useToast'
+import { useSession } from '@/composables/useSession'
 import { testDatasource } from '@/api/datasource'
+import { displayUser } from '@/utils/displayUser'
 
 const props = defineProps({
   source: { type: Object, default: null },
   open: { type: Boolean, default: false },
 })
-const emit = defineEmits(['close', 'toggle-status', 'edit', 'open-tables', 'tested'])
+const emit = defineEmits(['close', 'toggle-status', 'edit', 'open-tables', 'tested', 'apply-manage', 'delete'])
 
 const router = useRouter()
 const { showToast } = useToast()
+const { canEditDatasource, canDeleteDatasource, refreshManageGrant } = useSession()
 
 const cat = computed(() => (props.source ? dsCategory(props.source) : ''))
 const st = computed(() => statusMeta(props.source?.status))
 const summary = computed(() => schemaSummary(props.source?.schema, 5))
 const testing = ref(false)
+const canEdit = computed(() => canEditDatasource(props.source))
+const canDelete = computed(() => canDeleteDatasource(props.source))
+
+watch(
+  () => [props.open, props.source?.id],
+  async ([open, id]) => {
+    if (!open || !id) return
+    await refreshManageGrant('datasource', id, props.source)
+  },
+)
 
 function close() {
   emit('close')
@@ -55,6 +69,11 @@ function edit() {
 
 function toggle() {
   emit('toggle-status', props.source.id)
+}
+
+function requestDelete() {
+  if (!props.source?.id) return
+  emit('delete', props.source.id)
 }
 
 function openTables() {
@@ -95,7 +114,9 @@ const linkedAssets = computed(() => {
             <div
               class="ds-icon"
               :style="{ background: source.bg, color: source.color }"
-            >{{ source.icon }}</div>
+            >
+              <DsTypeIcon :type="source.type" :type-code="source.typeCode" :size="22" />
+            </div>
             <div>
               <div class="drawer-title">{{ source.name }}</div>
               <div class="drawer-subtitle">
@@ -108,7 +129,20 @@ const linkedAssets = computed(() => {
           <button class="btn btn-sm" :disabled="testing" @click="test">
             {{ testing ? '测试中…' : '🧪 测试' }}
           </button>
-          <button class="btn btn-sm btn-primary" @click="edit">✎ 编辑</button>
+          <button v-if="canEdit" class="btn btn-sm btn-primary" @click="edit">✎ 编辑</button>
+          <button v-else-if="!canDelete" class="btn btn-sm" @click="emit('apply-manage', source?.id)">🔐 申请操作权限</button>
+          <button
+            v-if="canEdit"
+            class="btn btn-sm"
+            @click="toggle"
+          >{{ source?.status === 'online' ? '⏸ 停用' : '▶ 启用' }}</button>
+          <button
+            v-if="canDelete"
+            class="btn btn-sm"
+            style="color: var(--danger)"
+            @click="requestDelete"
+          >删除</button>
+          <button v-else-if="canEdit" class="btn btn-sm" @click="emit('apply-manage', source?.id)">🔐 申请删除权</button>
           <button class="btn btn-sm" @click="close">✕</button>
         </div>
       </div>
@@ -138,7 +172,7 @@ const linkedAssets = computed(() => {
           </div>
           <div>
             <div class="info-label">Owner / 版本</div>
-            <div class="info-value">{{ source.owner }} · {{ source.ver }} · {{ source.created }}</div>
+            <div class="info-value">{{ displayUser(source.ownerName, source.owner) }} · {{ source.ver }} · {{ source.created }}</div>
           </div>
           <div>
             <div class="info-label">关联资产</div>
@@ -189,16 +223,6 @@ const linkedAssets = computed(() => {
 
         <div class="detail-section-title">描述</div>
         <p style="margin: 8px 0 18px; color: var(--text-2); line-height: 1.7">{{ source.desc }}</p>
-
-        <div style="display: flex; gap: 8px; flex-wrap: wrap">
-          <button
-            class="btn btn-sm"
-            :style="{ color: source.status === 'online' ? 'var(--warning)' : 'var(--success)' }"
-            @click="toggle"
-          >
-            {{ source.status === 'online' ? '⏸ 停用' : '▶ 启用' }}
-          </button>
-        </div>
       </div>
     </template>
   </AppDrawer>
@@ -212,7 +236,6 @@ const linkedAssets = computed(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 20px;
   flex-shrink: 0;
 }
 .schema-preview {

@@ -147,6 +147,12 @@ export function fetchStdDetects(filters = {}, { current = 1, size = 200 } = {}) 
   })
 }
 
+/** 运行落地检测（写入 gov_std_detect_result） */
+export function runStdLandingDetect(ws) {
+  const q = ws ? `?ws=${encodeURIComponent(ws)}` : ''
+  return http.post(`${STD}/detects/run${q}`, {})
+}
+
 export function fetchStdMetaOptions() {
   return http.get(`${STD}/metaOptions`)
 }

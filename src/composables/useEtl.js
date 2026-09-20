@@ -5,6 +5,7 @@ import { computed, ref } from 'vue'
 import {
   backfillEtlDag,
   createEtlDag,
+  deleteEtlDag,
   deployEtlDag,
   editEtlDag,
   fetchEtlDags,
@@ -22,6 +23,7 @@ import {
   uid,
 } from '@/data/etl'
 import { formatNow } from '@/utils/etlRuns'
+import { useSession } from '@/composables/useSession'
 
 const tasks = ref([])
 const currentId = ref('')
@@ -89,6 +91,9 @@ function normalizeDag(row) {
     desc: row.description || row.desc || '',
     cron: row.cron || '0 2 * * *',
     owner: row.owner || '',
+    ownerName: row.ownerName || '',
+    createUser: row.createUser || '',
+    createUserName: row.createUserName || '',
     status: row.status || 'draft',
     ver: row.ver || 'v0.1',
     env: row.env || 'dev',
@@ -166,6 +171,7 @@ function markDirty() {
 }
 
 export function useEtl() {
+  const { user } = useSession()
   const taskList = computed(() => tasks.value)
   const current = computed(() => tasks.value.find((t) => t.id === currentId.value) || null)
   const selectedNode = computed(() => {
@@ -272,7 +278,7 @@ export function useEtl() {
       name: payload.name || payload.title || '新建 ETL 任务',
       description: payload.desc || '新建 ETL 任务',
       cron: payload.cron || '0 2 * * *',
-      owner: payload.owner || '当前用户',
+      owner: payload.owner || user.value?.id || '',
       defaultEngine: payload.engine || 'flink',
       sla: payload.sla || '06:00',
       env: payload.env || 'dev',
@@ -284,6 +290,41 @@ export function useEtl() {
     tasks.value.unshift(row)
     await selectTask(row.id, { force: true })
     return row
+  }
+
+  /** 软删当前任务；运行中由后端拦截 */
+  async function deleteCurrent() {
+    const t = current.value
+    if (!t) return null
+    const running = (t.logs || []).some((l) => {
+      const s = String(l.status || '').toUpperCase()
+      return s === 'RUNNING' || s === 'SUBMITTED' || s === 'PENDING'
+    })
+    if (running) {
+      throw new Error('任务运行中，请等待完成后再删除')
+    }
+    saving.value = true
+    lastError.value = null
+    try {
+      const resp = await deleteEtlDag(t.id)
+      const idx = tasks.value.findIndex((x) => x.id === t.id)
+      if (idx >= 0) tasks.value.splice(idx, 1)
+      selNodeId.value = null
+      selEdgeIdx.value = null
+      connectFrom.value = null
+      const next = tasks.value[Math.min(idx, tasks.value.length - 1)] || tasks.value[0]
+      if (next) {
+        await selectTask(next.id, { force: !next.nodes?.length })
+      } else {
+        currentId.value = ''
+      }
+      return resp
+    } catch (e) {
+      lastError.value = e
+      throw e
+    } finally {
+      saving.value = false
+    }
   }
 
   async function persistMeta(patch = {}) {
@@ -695,6 +736,7 @@ export function useEtl() {
     selectEdge,
     clearSelection,
     createTask,
+    deleteCurrent,
     updateTaskMeta,
     persistMeta,
     setScheduleStatus,

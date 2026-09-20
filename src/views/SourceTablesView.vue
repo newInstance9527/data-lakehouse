@@ -8,10 +8,13 @@ import { useToast } from '@/composables/useToast'
 import { enrichTableMeta } from '@/utils/schemaList'
 import { endpointOf, statusMeta } from '@/data/datasources'
 import { pageGuideOf } from '@/data/pageGuides'
+import { confirmDelete } from '@/composables/useConfirmDelete'
+import { useSession, isNeedOwnerApplyError } from '@/composables/useSession'
 
 const route = useRoute()
 const router = useRouter()
 const { showToast } = useToast()
+const { canEditDatasource, canDeleteDatasource, refreshManageGrant } = useSession()
 const tablesGuide = pageGuideOf('source-tables')
 const {
   getSource,
@@ -25,6 +28,35 @@ const {
 
 const sourceId = computed(() => String(route.params.id || ''))
 const source = computed(() => getSource(sourceId.value))
+const canEdit = computed(() => canEditDatasource(source.value))
+const canDelete = computed(() => canDeleteDatasource(source.value))
+const needApplyOps = computed(() => !canEdit.value && !canDelete.value)
+
+function goApplyManage() {
+  const s = source.value
+  if (!s) return
+  router.push({
+    path: '/apply',
+    query: {
+      type: 'manage',
+      resourceType: 'datasource',
+      resourceId: s.id,
+      name: s.name || '',
+    },
+  })
+}
+
+function assertEditOrGuide(action) {
+  if (canEdit.value) return true
+  showToast(`无${action}权，请申请操作权限`, 'warning')
+  return false
+}
+
+function assertDeleteOrGuide() {
+  if (canDelete.value) return true
+  showToast('无删除权，请申请操作权限', 'warning')
+  return false
+}
 
 const kw = ref('')
 const page = ref(1)
@@ -49,7 +81,10 @@ onMounted(async () => {
   }
   if (sourceId.value && getSource(sourceId.value)) {
     try {
-      await ensureTables(sourceId.value)
+      await Promise.all([
+        ensureTables(sourceId.value),
+        refreshManageGrant('datasource', sourceId.value, getSource(sourceId.value)),
+      ])
     } catch (e) {
       showToast(`加载表清单失败：${e.message || e}`, 'error')
     }
@@ -61,7 +96,10 @@ watch(
   async (id) => {
     if (id && getSource(id)) {
       try {
-        await ensureTables(id)
+        await Promise.all([
+          ensureTables(id),
+          refreshManageGrant('datasource', id, getSource(id)),
+        ])
       } catch (e) {
         showToast(`加载表清单失败：${e.message || e}`, 'error')
       }
@@ -120,6 +158,10 @@ function goPage(p) {
 
 async function onSync() {
   if (!source.value) return
+  if (!assertEditOrGuide('同步')) {
+    goApplyManage()
+    return
+  }
   syncing.value = true
   showToast(`🔄 正在同步 ${source.value.name} 表清单…`, 'info')
   try {
@@ -128,13 +170,22 @@ async function onSync() {
     const after = getSource(source.value.id)?.tables?.length || 0
     showToast(`✅ 同步完成 · 新增 ${Math.max(0, after - before)} 张 · 共 ${after} 张`, 'success')
   } catch (e) {
-    showToast(`同步失败：${e.message || e}`, 'error')
+    if (isNeedOwnerApplyError(e)) {
+      showToast(e.message || '无编辑权不可同步', 'warning')
+      goApplyManage()
+    } else {
+      showToast(`同步失败：${e.message || e}`, 'error')
+    }
   } finally {
     syncing.value = false
   }
 }
 
 function openAdd() {
+  if (!assertEditOrGuide('添加表')) {
+    goApplyManage()
+    return
+  }
   draft.name = ''
   draft.cnName = ''
   draft.comment = ''
@@ -147,6 +198,10 @@ async function submitAdd() {
   const name = draft.name.trim()
   if (!name) {
     showToast('请填写表名', 'warning')
+    return
+  }
+  if (!assertEditOrGuide('添加表')) {
+    goApplyManage()
     return
   }
   const item = enrichTableMeta(name, source.value?.type, {
@@ -164,23 +219,52 @@ async function submitAdd() {
     showAdd.value = false
     showToast(`✅ 已添加 ${name}`, 'success')
   } catch (e) {
-    showToast(`添加失败：${e.message || e}`, 'error')
+    if (isNeedOwnerApplyError(e)) {
+      showToast(e.message || '无编辑权不可添加', 'warning')
+      goApplyManage()
+    } else {
+      showToast(`添加失败：${e.message || e}`, 'error')
+    }
   }
 }
 
 async function onRemove(name) {
+  if (!assertDeleteOrGuide()) {
+    goApplyManage()
+    return
+  }
+  const ok = await confirmDelete({
+    title: `删除表「${name}」`,
+    message: `将从数据源「${source.value?.name || sourceId.value}」的表清单中移除该表登记。`,
+    confirmLabel: '确认删除',
+  })
+  if (!ok) return
   try {
     await removeTable(source.value.id, name)
     showToast(`已移除 ${name}`, 'info')
   } catch (e) {
-    showToast(`删除失败：${e.message || e}`, 'error')
+    if (isNeedOwnerApplyError(e)) {
+      showToast(e.message || '无删除权', 'warning')
+      goApplyManage()
+    } else {
+      showToast(`删除失败：${e.message || e}`, 'error')
+    }
   }
 }
 
 function onPatch(row, key, e) {
+  if (!assertEditOrGuide('编辑')) {
+    goApplyManage()
+    return
+  }
   const val = e.target.value
   patchTable(source.value.id, row.name, { [key]: val }).catch((err) => {
-    showToast(`保存失败：${err.message || err}`, 'error')
+    if (isNeedOwnerApplyError(err)) {
+      showToast(err.message || '无编辑权不可编辑', 'warning')
+      goApplyManage()
+    } else {
+      showToast(`保存失败：${err.message || err}`, 'error')
+    }
   })
 }
 
@@ -209,10 +293,11 @@ function fmtRows(n) {
       :guide="tablesGuide"
     >
       <button class="btn btn-sm" @click="goBack">← 返回数据源</button>
-      <button class="btn btn-sm" :disabled="syncing" @click="onSync">
+      <button v-if="canEdit" class="btn btn-sm" :disabled="syncing" @click="onSync">
         {{ syncing ? '同步中…' : '🔄 同步清单' }}
       </button>
-      <button class="btn btn-sm btn-primary" @click="openAdd">＋ 手动添加</button>
+      <button v-if="canEdit" class="btn btn-sm btn-primary" @click="openAdd">＋ 手动添加</button>
+      <button v-if="needApplyOps" class="btn btn-sm" @click="goApplyManage">🔐 申请操作权限</button>
     </PageHeader>
 
     <div class="ds-filters">
@@ -249,36 +334,50 @@ function fmtRows(n) {
                 </td>
                 <td>
                   <input
+                    v-if="canEdit"
                     class="input input-sm tbl-edit"
                     :value="row.cnName"
                     @change="onPatch(row, 'cnName', $event)"
                   />
+                  <span v-else>{{ row.cnName || '—' }}</span>
                 </td>
                 <td>
                   <input
+                    v-if="canEdit"
                     class="input input-sm tbl-edit"
                     :value="row.comment"
                     @change="onPatch(row, 'comment', $event)"
                   />
+                  <span v-else>{{ row.comment || '—' }}</span>
                 </td>
                 <td>
                   <input
+                    v-if="canEdit"
                     class="input input-sm tbl-edit"
                     :value="row.encoding"
                     @change="onPatch(row, 'encoding', $event)"
                   />
+                  <span v-else>{{ row.encoding || '—' }}</span>
                 </td>
                 <td>
                   <input
+                    v-if="canEdit"
                     class="input input-sm tbl-edit"
                     :value="row.engine"
                     @change="onPatch(row, 'engine', $event)"
                   />
+                  <span v-else>{{ row.engine || '—' }}</span>
                 </td>
                 <td style="color: var(--text-2)">{{ fmtRows(row.rowCount) }}</td>
                 <td style="font-size: 11px; color: var(--text-3)">{{ row.syncedAt || '—' }}</td>
                 <td>
-                  <button class="btn-link btn-sm" @click="onRemove(row.name)">删除</button>
+                  <button
+                    v-if="canDelete"
+                    class="btn-link btn-sm"
+                    style="color: var(--danger)"
+                    @click="onRemove(row.name)"
+                  >删除</button>
+                  <span v-else style="color: var(--text-3)">—</span>
                 </td>
               </tr>
             </tbody>

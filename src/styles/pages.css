@@ -311,14 +311,20 @@
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: 14px;
   padding: 16px 18px;
+  align-items: stretch;
 }
 .asset-card {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 198px;
   background: var(--bg-1);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   padding: 14px 16px;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
+  box-sizing: border-box;
 }
 .asset-card:hover {
   border-color: var(--primary);
@@ -327,9 +333,28 @@
 }
 .asset-header {
   display: flex;
-  justify-content: space-between;
   align-items: flex-start;
+  gap: 10px;
   margin-bottom: 10px;
+  flex-shrink: 0;
+}
+.asset-ds-badge {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+.asset-ds-badge .ds-type-icon,
+.asset-ds-badge img {
+  display: block;
+}
+.asset-header-main {
+  flex: 1;
+  min-width: 0;
 }
 .asset-name {
   font-size: 14px;
@@ -337,13 +362,22 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  min-height: 22px;
+  overflow: hidden;
+}
+.asset-name-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .asset-layer {
   font-size: 10px;
   padding: 2px 6px;
   border-radius: 3px;
   font-weight: 600;
+  flex-shrink: 0;
 }
 .layer-ods {
   background: #e6f7ff;
@@ -365,12 +399,55 @@
   background: #f9f0ff;
   color: #531dab;
 }
+.asset-origin {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  height: 20px;
+  overflow: hidden;
+}
 .asset-desc {
   font-size: 12px;
   color: var(--text-2);
   line-height: 1.5;
+  height: 36px;
   margin-bottom: 10px;
-  min-height: 36px;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  flex-shrink: 0;
+}
+.asset-source-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-1);
+  min-width: 0;
+  max-width: 48%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.asset-source-name.muted {
+  font-weight: 400;
+  color: var(--text-3);
+}
+.asset-object-name {
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--text-3);
+  min-width: 0;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.asset-object-name::before {
+  content: '·';
+  margin-right: 4px;
+  color: var(--text-4);
 }
 .asset-source {
   font-size: 11px;
@@ -383,15 +460,23 @@
 .asset-tags {
   display: flex;
   flex-wrap: wrap;
+  align-content: flex-start;
   gap: 4px;
+  height: 48px;
   margin-bottom: 10px;
+  overflow: hidden;
+  flex-shrink: 0;
 }
 .asset-footer {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 8px;
+  margin-top: auto;
   padding-top: 10px;
   border-top: 1px dashed var(--border);
+  min-height: 32px;
+  flex-shrink: 0;
 }
 .asset-owner {
   display: flex;
@@ -399,6 +484,13 @@
   gap: 6px;
   font-size: 11px;
   color: var(--text-3);
+  min-width: 0;
+  overflow: hidden;
+}
+.asset-owner > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .owner-avatar {
   width: 20px;
@@ -411,12 +503,28 @@
   align-items: center;
   justify-content: center;
   font-weight: 600;
+  flex-shrink: 0;
 }
-.asset-metrics {
+.asset-type-label {
+  max-width: 88px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 5px;
   display: flex;
-  gap: 12px;
+  align-items: center;
+  justify-content: center;
   font-size: 11px;
+  font-weight: 600;
+  flex-shrink: 0;
+  line-height: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.asset-type-label.muted {
+  background: transparent;
   color: var(--text-3);
+  font-weight: 400;
 }
 .quality-score {
   display: inline-flex;
@@ -552,16 +660,22 @@
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: 12px;
+  align-items: stretch;
 }
 .ds-card {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 198px;
   cursor: pointer;
   padding: 12px;
   border: 1px solid var(--border);
   border-radius: 10px;
-  background: #fff;
-  transition: all 0.2s;
+  background: var(--bg-1);
+  transition: border-color 0.2s, box-shadow 0.2s;
   position: relative;
   overflow: hidden;
+  box-sizing: border-box;
 }
 .ds-card:hover {
   border-color: var(--primary);
@@ -578,6 +692,10 @@
   display: flex;
   align-items: flex-start;
   gap: 10px;
+  flex-shrink: 0;
+}
+.ds-card-head > .tag {
+  flex-shrink: 0;
 }
 .ds-card-icon {
   width: 36px;
@@ -586,31 +704,53 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 18px;
+  flex-shrink: 0;
+}
+.ds-mini-icon {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex-shrink: 0;
 }
 .ds-card-name {
   font-weight: 600;
   font-size: 13px;
+  line-height: 1.35;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .ds-card-meta {
   font-size: 10px;
   color: var(--text-3);
   margin-top: 1px;
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 4px;
   align-items: center;
+  min-width: 0;
+  overflow: hidden;
 }
 .ds-card-endpoint {
   margin-top: 9px;
   font-size: 11px;
   color: var(--text-2);
-  font-family: monospace;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   padding: 4px 8px;
   background: var(--bg-2);
   border-radius: 5px;
+  line-height: 1.4;
+  max-height: calc(1.4em * 2 + 8px);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   word-break: break-all;
+  flex-shrink: 0;
 }
 .ds-card-schema {
   margin-top: 7px;
@@ -619,30 +759,34 @@
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
+  flex-shrink: 0;
 }
 .ds-schema-link {
   text-align: left;
-  white-space: normal;
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   line-height: 1.4;
-  max-width: 100%;
+}
+.ds-card-schema > span {
+  flex-shrink: 0;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .ds-card-actions {
-  margin-top: 9px;
+  margin-top: auto;
   padding-top: 8px;
   border-top: 1px dashed var(--border);
   display: flex;
   gap: 3px;
   flex-wrap: wrap;
   align-items: center;
-}
-.ds-mini-icon {
-  width: 20px;
-  height: 20px;
-  border-radius: 4px;
-  font-size: 11px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+  flex-shrink: 0;
 }
 .ds-topo {
   padding: 16px;

@@ -5,6 +5,7 @@ import { CRUMBS } from '@/config/nav'
 import { useSession } from '@/composables/useSession'
 import { useToast } from '@/composables/useToast'
 import AppToast from '@/components/common/AppToast.vue'
+import ConfirmDeleteModal from '@/components/common/ConfirmDeleteModal.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -98,5 +99,6 @@ async function onLogout() {
     </div>
 
     <AppToast />
+    <ConfirmDeleteModal />
   </div>
 </template>

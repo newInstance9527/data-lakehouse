@@ -36,7 +36,14 @@ export function mapServerTicket(t, sideHint) {
   if (!t) return null
   const payload = parsePayload(t.payload)
   const isExport = t.ticketType === 'lake_export' || t.ticketType === 'export'
-  const type = isExport ? 'export' : t.ticketType === 'table_read' ? 'perm' : t.ticketType || 'perm'
+  const isOps = t.ticketType === 'resource_manage' || t.ticketType === 'manage'
+  const type = isExport
+    ? 'export'
+    : isOps
+      ? 'ops'
+      : t.ticketType === 'table_read'
+        ? 'perm'
+        : t.ticketType || 'perm'
   const status = t.status || sideHint || 'pending'
   const side = status === 'approved' ? 'approved' : status === 'rejected' ? 'rejected' : 'pending'
   const tableLabel = payload.exportTable || payload.assetCode || t.title || t.ticketNo
@@ -97,6 +104,49 @@ export function mapServerTicket(t, sideHint) {
         { label: '✓ 可配置脱敏/作业', cls: 'done' },
         { label: `✓ ticketNo ${ticketNo}`, cls: 'done' },
       ],
+    }
+  }
+
+  if (type === 'ops') {
+    const rt = payload.resourceType || 'asset'
+    const rn = payload.resourceName || payload.resourceId || t.title || id
+    const privilege = String(payload.privilege || 'MANAGE').toUpperCase()
+    const typeTag =
+      rt === 'datasource' ? '数据源' : rt === 'etl' ? 'ETL' : rt === 'asset' ? '资产' : rt
+    return {
+      id,
+      serverId: t.id,
+      fromServer: true,
+      ticketNo,
+      type: 'ops',
+      side,
+      resourceType: rt,
+      resourceId: payload.resourceId,
+      privilege,
+      asset: rn,
+      purpose: purposeText,
+      expire: expireLabel,
+      applicant: t.applicant || '我',
+      titleHtml:
+        side === 'approved'
+          ? `<span class="tag tag-green">已通过</span> ${typeTag}操作权 · ${rn}`
+          : `<span class="tag tag-blue">操作权限</span> 申请 ${typeTag}「${rn}」${privilege}权`,
+      statusTag: side === 'pending' ? '待审批' : side === 'approved' ? `已授 ${privilege}` : '已驳回',
+      statusCls: side === 'approved' ? 'tag-green' : 'tag-orange',
+      time: t.createTime || nowLabel(),
+      desc: purposeText || `privilege=${privilege} · ${rt}:${payload.resourceId || ''} · ${ticketNo}`,
+      timeline:
+        side === 'approved'
+          ? [
+              { label: '✓ 提交', cls: 'done' },
+              { label: '✓ 审批', cls: 'done' },
+              { label: `✓ ${privilege} 生效`, cls: 'done' },
+            ]
+          : [
+              { label: '✓ 提交', cls: 'done' },
+              { label: '● 审批', cls: 'current' },
+              { label: `写 ${privilege} grant`, cls: '' },
+            ],
     }
   }
 

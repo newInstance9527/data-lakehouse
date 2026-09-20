@@ -1,9 +1,9 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, ref, watch, onUnmounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import AppDrawer from '@/components/common/AppDrawer.vue'
 import { NODE_TYPES } from '@/data/etl'
-import { fetchEtlRunDetail } from '@/api/etl'
+import { fetchEtlRunDetail, fetchEtlRunNodeLog } from '@/api/etl'
 import { RUN_STATUS_META, buildRunDetail } from '@/utils/etlRuns'
 import { useToast } from '@/composables/useToast'
 
@@ -22,6 +22,16 @@ const activeRun = ref('')
 const detailTab = ref('overview') // overview | nodes | logs
 const activeNodeId = ref('')
 const detailCache = ref({})
+
+/** 单节点实时日志（DS） */
+const nodeLogText = ref('')
+const nodeLogMeta = ref(null)
+const nodeLogLoading = ref(false)
+const nodeLogError = ref('')
+const nodeLogLineNum = ref(0)
+const nodeLogAutoFollow = ref(true)
+const nodeLogPreRef = ref(null)
+let nodeLogPollTimer = null
 
 const logs = computed(() => props.task?.logs || [])
 
@@ -60,16 +70,100 @@ const detail = computed(() => {
 
 const activeNode = computed(() => detail.value?.nodes?.find((n) => n.nodeId === activeNodeId.value) || null)
 
+const activeNodeKey = computed(() => {
+  const n = activeNode.value
+  if (!n) return ''
+  const api = activeLogRow.value?.runNodes?.find(
+    (x) => (x.nodeKey || x.nodeId) === n.nodeId || x.nodeKey === n.name,
+  )
+  return api?.nodeKey || n.nodeId || ''
+})
+
+function stopNodeLogPoll() {
+  if (nodeLogPollTimer) {
+    clearInterval(nodeLogPollTimer)
+    nodeLogPollTimer = null
+  }
+}
+
+function resetNodeLog() {
+  stopNodeLogPoll()
+  nodeLogText.value = ''
+  nodeLogMeta.value = null
+  nodeLogError.value = ''
+  nodeLogLineNum.value = 0
+  nodeLogLoading.value = false
+}
+
+async function loadNodeLog({ append = false } = {}) {
+  const runId = activeRun.value
+  const nodeKey = activeNodeKey.value
+  if (!runId || !nodeKey || !props.open) return
+  if (nodeLogLoading.value && append) return
+  nodeLogLoading.value = true
+  nodeLogError.value = ''
+  try {
+    const skip = append ? nodeLogLineNum.value : 0
+    const d = await fetchEtlRunNodeLog(runId, nodeKey, { skipLineNum: skip, limit: 1000 })
+    const chunk = String(d?.content ?? '')
+    const nextLine = Number(d?.lineNum ?? skip)
+    if (append && skip > 0) {
+      if (chunk) {
+        nodeLogText.value = nodeLogText.value
+          ? `${nodeLogText.value}${nodeLogText.value.endsWith('\n') ? '' : '\n'}${chunk}`
+          : chunk
+      }
+    } else {
+      nodeLogText.value = chunk || (d?.message ? String(d.message) : '')
+    }
+    nodeLogLineNum.value = Number.isFinite(nextLine) ? nextLine : skip
+    nodeLogMeta.value = {
+      ok: d?.ok !== false,
+      source: d?.source || 'ds',
+      taskInstanceId: d?.taskInstanceId || '',
+      degraded: Boolean(d?.degraded),
+      status: d?.status || activeNode.value?.status,
+      message: d?.message || '',
+    }
+    if (d?.ok === false && d?.message) {
+      nodeLogError.value = String(d.message)
+    }
+    if (nodeLogAutoFollow.value) {
+      await nextTick()
+      const el = nodeLogPreRef.value
+      if (el) el.scrollTop = el.scrollHeight
+    }
+  } catch (e) {
+    nodeLogError.value = e?.message || '拉取节点日志失败'
+  } finally {
+    nodeLogLoading.value = false
+  }
+}
+
+function startNodeLogPollIfNeeded() {
+  stopNodeLogPoll()
+  const st = String(activeNode.value?.status || nodeLogMeta.value?.status || '').toLowerCase()
+  const running = st === 'running' || st === 'submitted' || st === 'pending'
+  if (!running || detailTab.value !== 'nodes' || !props.open) return
+  nodeLogPollTimer = setInterval(() => {
+    loadNodeLog({ append: true })
+  }, 3000)
+}
+
 watch(
   () => [props.open, props.task?.id],
   () => {
-    if (!props.open) return
+    if (!props.open) {
+      resetNodeLog()
+      return
+    }
     activeRun.value = props.task?.logs?.[0]?.run || ''
     detailTab.value = 'overview'
     activeNodeId.value = ''
     kw.value = ''
     statusFilter.value = 'ALL'
     triggerFilter.value = 'ALL'
+    resetNodeLog()
   },
 )
 
@@ -81,6 +175,7 @@ watch(detail, (d) => {
 
 watch(activeRun, async (runId) => {
   if (!runId || !props.open) return
+  resetNodeLog()
   if (detailCache.value[runId]?.runNodes) return
   try {
     const d = await fetchEtlRunDetail(runId)
@@ -109,9 +204,24 @@ watch(activeRun, async (runId) => {
   }
 })
 
+watch(
+  () => [activeNodeKey.value, detailTab.value, props.open],
+  async ([key, tab, open]) => {
+    if (!open || tab !== 'nodes' || !key) {
+      stopNodeLogPoll()
+      return
+    }
+    await loadNodeLog({ append: false })
+    startNodeLogPollIfNeeded()
+  },
+)
+
+onUnmounted(() => stopNodeLogPoll())
+
 function openRun(run) {
   activeRun.value = run
   detailTab.value = 'overview'
+  resetNodeLog()
 }
 
 function statusMeta(st) {
@@ -346,20 +456,49 @@ checkpoint: {{ detail.app.checkpoint }}</pre>
             <div v-if="activeNode" class="trd-node-log">
               <div class="trd-node-log-head">
                 <span>节点日志 · {{ activeNode.name }}</span>
-                <button type="button" class="btn btn-sm" @click="goNodeOnCanvas(activeNode.nodeId)">定位画布</button>
-              </div>
-              <div class="nel-lines">
-                <div
-                  v-for="(line, i) in activeNode.lines"
-                  :key="i"
-                  class="nel-line"
-                  :class="levelClass(line.level)"
-                >
-                  <span class="nel-t">{{ line.t }}</span>
-                  <span class="nel-lv">{{ line.level }}</span>
-                  <span>{{ line.msg }}</span>
+                <div class="trd-node-log-actions">
+                  <label class="trd-follow">
+                    <input v-model="nodeLogAutoFollow" type="checkbox" />
+                    跟随滚动
+                  </label>
+                  <button
+                    type="button"
+                    class="btn btn-sm"
+                    :disabled="nodeLogLoading"
+                    @click="loadNodeLog({ append: false })"
+                  >{{ nodeLogLoading ? '拉取中…' : '刷新' }}</button>
+                  <button
+                    type="button"
+                    class="btn btn-sm"
+                    :disabled="nodeLogLoading"
+                    @click="loadNodeLog({ append: true })"
+                  >续拉</button>
+                  <button type="button" class="btn btn-sm" @click="goNodeOnCanvas(activeNode.nodeId)">定位画布</button>
                 </div>
               </div>
+              <div v-if="nodeLogMeta" class="form-hint trd-log-meta">
+                来源 {{ nodeLogMeta.source === 'ds' ? 'DolphinScheduler' : '门户' }}
+                <template v-if="nodeLogMeta.taskInstanceId"> · taskInstanceId={{ nodeLogMeta.taskInstanceId }}</template>
+                · 已读 {{ nodeLogLineNum }} 行
+                <template v-if="nodeLogMeta.degraded"> · 降级</template>
+              </div>
+              <div v-if="nodeLogError" class="form-hint err-text">{{ nodeLogError }}</div>
+              <pre ref="nodeLogPreRef" class="log-pre trd-live-log">{{ nodeLogText || '暂无日志' }}</pre>
+              <details v-if="activeNode.lines?.length" class="trd-fallback-lines">
+                <summary class="form-hint">摘要时间线（本地）</summary>
+                <div class="nel-lines">
+                  <div
+                    v-for="(line, i) in activeNode.lines"
+                    :key="i"
+                    class="nel-line"
+                    :class="levelClass(line.level)"
+                  >
+                    <span class="nel-t">{{ line.t }}</span>
+                    <span class="nel-lv">{{ line.level }}</span>
+                    <span>{{ line.msg }}</span>
+                  </div>
+                </div>
+              </details>
             </div>
           </div>
 
@@ -609,9 +748,37 @@ checkpoint: {{ detail.app.checkpoint }}</pre>
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
   font-size: 12px;
   font-weight: 600;
   margin-bottom: 6px;
+}
+.trd-node-log-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.trd-follow {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-2);
+  font-weight: 400;
+}
+.trd-log-meta {
+  margin-bottom: 6px;
+}
+.trd-live-log {
+  max-height: 360px;
+  min-height: 160px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.trd-fallback-lines {
+  margin-top: 10px;
 }
 .nel-lines {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;

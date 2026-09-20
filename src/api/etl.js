@@ -47,6 +47,11 @@ export function editEtlDag(payload) {
   })
 }
 
+/** 软删 DAG（运行中后端拦截） */
+export function deleteEtlDag(id) {
+  return http.post(`${E}/dags/delete`, { id })
+}
+
 export function fetchEtlGraph(id) {
   return http.get(`${E}/dags/graph`, { id })
 }
@@ -94,6 +99,11 @@ export function fetchEtlRuns({ dagId, ws, current = 1, size = 50 } = {}) {
 
 export function fetchEtlRunDetail(runId) {
   return http.get(`${E}/dags/runs/detail`, { runId })
+}
+
+/** 单节点 DS 实时日志；skipLineNum 续拉，limit 默认 1000 */
+export function fetchEtlRunNodeLog(runId, nodeKey, { skipLineNum = 0, limit = 1000 } = {}) {
+  return http.get(`${E}/dags/runs/node-log`, { runId, nodeKey, skipLineNum, limit })
 }
 
 export function resolveEtlEngine(payload) {

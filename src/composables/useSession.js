@@ -1,6 +1,7 @@
 /**
  * 会话 / 权限：消费 Snowy getLoginUser + loginMenu
- * 表级读权限：超管短路；否则读 sec_auth_grant（门户 API）
+ * 表级读 / 预览：资产拥有者或 sec_auth_grant；超管不短路
+ * 改删：拥有者，或 privilege=EDIT|DELETE|MANAGE（MANAGE 覆盖改删）；超管不短路
  */
 import { computed, readonly, ref } from 'vue'
 import { clearToken, getLoginUser, getToken, loginMenu, doLogout as apiLogout } from '@/api/auth'
@@ -11,12 +12,35 @@ import { collectMenuNavIds } from '@/utils/menuNav'
 const currentUser = ref(null)
 const menuNavIds = ref(null)
 const grantCache = ref({})
+/** type:id — 兼容旧 MANAGE 缓存 */
+const manageCache = ref({})
+/** type:id:PRIV */
+const opsCache = ref({})
 const ready = ref(false)
 const bootstrapping = ref(false)
 
+export const NEED_OWNER_APPLY = 'NEED_OWNER_APPLY'
+
+function isSuperAdminRoles(roles) {
+  return (roles || []).some((r) => {
+    const c = typeof r === 'string' ? r : r?.code || r?.roleCode || ''
+    return normIdentity(c) === 'superadmin'
+  })
+}
+
+function isSuperAdminUser(user) {
+  if (!user) return false
+  if (isSuperAdminRoles(user.roles)) return true
+  return normIdentity(user.account) === 'superadmin'
+}
+
 function mapUser(raw) {
   if (!raw) return null
-  const roles = Array.isArray(raw.roleCodeList) ? raw.roleCodeList : []
+  const roles = Array.isArray(raw.roleCodeList)
+    ? raw.roleCodeList
+    : Array.isArray(raw.roles)
+      ? raw.roles
+      : []
   return {
     id: raw.id,
     name: raw.name || raw.nickname || raw.account || '用户',
@@ -32,14 +56,54 @@ function mapUser(raw) {
   }
 }
 
-function isSuperAdminRoles(roles) {
-  return (roles || []).includes('superAdmin')
+function normIdentity(s) {
+  return String(s || '')
+    .trim()
+    .toLowerCase()
+}
+
+function userIdentities(user) {
+  if (!user) return []
+  return [user.id, user.account, user.name, user.raw?.nickname].map(normIdentity).filter(Boolean)
+}
+
+function ownerFieldMatches(ownerField, identities) {
+  const raw = normIdentity(ownerField)
+  if (!raw || !identities.length) return false
+  if (identities.includes(raw)) return true
+  const bare = raw.split('(')[0].trim()
+  return Boolean(bare && identities.includes(bare))
+}
+
+/** 通用拥有者：createUser + 若干 owner 字段 */
+export function isResourceOwner(resource, user, fields = ['createUser', 'owner', 'techOwner', 'bizOwner']) {
+  if (!resource || !user) return false
+  const identities = userIdentities(user)
+  if (!identities.length) return false
+  return fields.some((f) => ownerFieldMatches(resource[f], identities))
+}
+
+export function isAssetOwner(asset, user) {
+  return isResourceOwner(asset, user, ['createUser', 'techOwner', 'bizOwner', 'owner'])
+}
+
+export function isDatasourceOwner(ds, user) {
+  return isResourceOwner(ds, user, ['createUser', 'owner'])
+}
+
+export function isEtlOwner(task, user) {
+  return isResourceOwner(task, user, ['createUser', 'owner'])
+}
+
+export function isNeedOwnerApplyError(err) {
+  const msg = String(err?.message || err || '')
+  return msg.includes(NEED_OWNER_APPLY) || msg.includes('非拥有者不可直接')
 }
 
 export function useSession() {
   const user = computed(() => currentUser.value)
   const isLoggedIn = computed(() => Boolean(getToken() && currentUser.value))
-  const isSuperAdmin = computed(() => isSuperAdminRoles(currentUser.value?.roles))
+  const isSuperAdmin = computed(() => isSuperAdminUser(currentUser.value))
 
   const allowedNavIds = computed(() => {
     if (isSuperAdmin.value) return null
@@ -67,7 +131,7 @@ export function useSession() {
   }
 
   function canPreviewAsset(asset) {
-    if (isSuperAdmin.value) return true
+    if (isAssetOwner(asset, currentUser.value)) return true
     const id = asset?.id || asset?.assetId
     if (!id) return false
     return Boolean(grantCache.value[id])
@@ -77,11 +141,82 @@ export function useSession() {
     return canPreviewAsset(asset)
   }
 
-  async function refreshGrant(assetId) {
-    if (!assetId || isSuperAdmin.value) {
-      if (assetId && isSuperAdmin.value) {
-        grantCache.value = { ...grantCache.value, [assetId]: true }
-      }
+  function manageCacheKey(resourceType, resourceId) {
+    return `${String(resourceType || 'asset').toLowerCase()}:${resourceId}`
+  }
+
+  function opsCacheKey(resourceType, resourceId, privilege) {
+    return `${manageCacheKey(resourceType, resourceId)}:${String(privilege || 'MANAGE').toUpperCase()}`
+  }
+
+  function hasCachedOps(resourceType, resourceId, needed) {
+    if (!resourceId) return false
+    const base = manageCacheKey(resourceType, resourceId)
+    if (manageCache.value[base] || (resourceType === 'asset' && manageCache.value[resourceId])) return true
+    if (opsCache.value[`${base}:MANAGE`]) return true
+    const need = String(needed || 'MANAGE').toUpperCase()
+    if (need === 'MANAGE') return false
+    return Boolean(opsCache.value[`${base}:${need}`])
+  }
+
+  function canManageAsset(asset) {
+    return canEditAsset(asset) || canDeleteAsset(asset)
+  }
+
+  function canManageDatasource(ds) {
+    return canEditDatasource(ds) || canDeleteDatasource(ds)
+  }
+
+  function canManageEtl(task) {
+    return canEditEtl(task) || canDeleteEtl(task)
+  }
+
+  function canEditAsset(asset) {
+    if (isAssetOwner(asset, currentUser.value)) return true
+    const id = asset?.id || asset?.assetId
+    return hasCachedOps('asset', id, 'EDIT')
+  }
+
+  function canDeleteAsset(asset) {
+    if (isAssetOwner(asset, currentUser.value)) return true
+    const id = asset?.id || asset?.assetId
+    return hasCachedOps('asset', id, 'DELETE')
+  }
+
+  function canEditDatasource(ds) {
+    if (isDatasourceOwner(ds, currentUser.value)) return true
+    return hasCachedOps('datasource', ds?.id, 'EDIT')
+  }
+
+  function canDeleteDatasource(ds) {
+    if (isDatasourceOwner(ds, currentUser.value)) return true
+    return hasCachedOps('datasource', ds?.id, 'DELETE')
+  }
+
+  function canEditEtl(task) {
+    if (isEtlOwner(task, currentUser.value)) return true
+    return hasCachedOps('etl', task?.id, 'EDIT')
+  }
+
+  function canDeleteEtl(task) {
+    if (isEtlOwner(task, currentUser.value)) return true
+    return hasCachedOps('etl', task?.id, 'DELETE')
+  }
+
+  function canManageResource(resourceType, resource, idField = 'id') {
+    const id = typeof resource === 'string' ? resource : resource?.[idField]
+    if (!id) return false
+    const type = String(resourceType || '').toLowerCase()
+    if (type === 'asset') return canManageAsset(typeof resource === 'object' ? resource : { id })
+    if (type === 'datasource') return canManageDatasource(typeof resource === 'object' ? resource : { id })
+    if (type === 'etl') return canManageEtl(typeof resource === 'object' ? resource : { id })
+    return hasCachedOps(type, id, 'MANAGE')
+  }
+
+  async function refreshGrant(assetId, asset) {
+    if (!assetId) return false
+    if (asset && isAssetOwner(asset, currentUser.value)) {
+      grantCache.value = { ...grantCache.value, [assetId]: true }
       return true
     }
     try {
@@ -92,6 +227,81 @@ export function useSession() {
       grantCache.value = { ...grantCache.value, [assetId]: false }
       return false
     }
+  }
+
+  /**
+   * @param {string} resourceType
+   * @param {string} resourceId
+   * @param {object} [resource]
+   * @param {string} [privilege] EDIT|DELETE|MANAGE
+   */
+  async function refreshOpsGrant(resourceType, resourceId, resource, privilege = 'MANAGE') {
+    const type = String(resourceType || 'asset').toLowerCase()
+    const id = resourceId
+    if (!id) return false
+    const privUp = String(privilege || 'MANAGE').toUpperCase()
+    const key = manageCacheKey(type, id)
+    const opsKey = opsCacheKey(type, id, privUp)
+
+    const ownerOk =
+      (type === 'asset' && resource && isAssetOwner(resource, currentUser.value)) ||
+      (type === 'datasource' && resource && isDatasourceOwner(resource, currentUser.value)) ||
+      (type === 'etl' && resource && isEtlOwner(resource, currentUser.value))
+    if (ownerOk) {
+      manageCache.value = {
+        ...manageCache.value,
+        [key]: true,
+        ...(type === 'asset' ? { [id]: true } : {}),
+      }
+      opsCache.value = { ...opsCache.value, [opsKey]: true, [`${key}:MANAGE`]: true }
+      return true
+    }
+    try {
+      const params =
+        type === 'asset'
+          ? { assetId: id, privilege: privUp }
+          : { resourceType: type, resourceId: id, privilege: privUp }
+      const ok = await http.get('/lh/sec/grants/check', params)
+      opsCache.value = { ...opsCache.value, [opsKey]: Boolean(ok) }
+      if (privUp === 'MANAGE') {
+        const next = { ...manageCache.value, [key]: Boolean(ok) }
+        if (type === 'asset') next[id] = Boolean(ok)
+        manageCache.value = next
+      }
+      return Boolean(ok)
+    } catch {
+      opsCache.value = { ...opsCache.value, [opsKey]: false }
+      if (privUp === 'MANAGE') {
+        const next = { ...manageCache.value, [key]: false }
+        if (type === 'asset') next[id] = false
+        manageCache.value = next
+      }
+      return false
+    }
+  }
+
+  /**
+   * 兼容旧签名：refreshManageGrant(assetId, asset?) 或 refreshManageGrant(type, id, resource?)
+   * 并行探测 EDIT / DELETE / MANAGE
+   */
+  async function refreshManageGrant(resourceTypeOrAssetId, resourceIdOrAsset, resource) {
+    let resourceType = 'asset'
+    let resourceId = ''
+    let res = resource
+    if (arguments.length === 1 || (arguments.length >= 2 && typeof resourceIdOrAsset === 'object')) {
+      resourceId = resourceTypeOrAssetId
+      res = resourceIdOrAsset
+    } else {
+      resourceType = String(resourceTypeOrAssetId || 'asset').toLowerCase()
+      resourceId = resourceIdOrAsset
+    }
+    if (!resourceId) return false
+    const [editOk, delOk, manageOk] = await Promise.all([
+      refreshOpsGrant(resourceType, resourceId, res, 'EDIT'),
+      refreshOpsGrant(resourceType, resourceId, res, 'DELETE'),
+      refreshOpsGrant(resourceType, resourceId, res, 'MANAGE'),
+    ])
+    return Boolean(editOk || delOk || manageOk)
   }
 
   async function bootstrapSession() {
@@ -109,9 +319,9 @@ export function useSession() {
       try {
         const tree = await loginMenu()
         const ids = collectMenuNavIds(tree)
-        menuNavIds.value = ids.size ? ids : isSuperAdminRoles(currentUser.value?.roles) ? null : new Set()
+        menuNavIds.value = ids.size ? ids : isSuperAdminUser(currentUser.value) ? null : new Set()
       } catch {
-        menuNavIds.value = isSuperAdminRoles(currentUser.value?.roles) ? null : new Set()
+        menuNavIds.value = isSuperAdminUser(currentUser.value) ? null : new Set()
       }
       ready.value = true
     } catch {
@@ -133,6 +343,8 @@ export function useSession() {
     currentUser.value = null
     menuNavIds.value = new Set()
     grantCache.value = {}
+    manageCache.value = {}
+    opsCache.value = {}
   }
 
   return {
@@ -144,8 +356,23 @@ export function useSession() {
     canAccessNav,
     canPreviewAsset,
     hasTableReadGrant,
+    canManageAsset,
+    canManageDatasource,
+    canManageEtl,
+    canManageResource,
+    canEditAsset,
+    canDeleteAsset,
+    canEditDatasource,
+    canDeleteDatasource,
+    canEditEtl,
+    canDeleteEtl,
+    isAssetOwner: (asset) => isAssetOwner(asset, currentUser.value),
+    isDatasourceOwner: (ds) => isDatasourceOwner(ds, currentUser.value),
+    isEtlOwner: (task) => isEtlOwner(task, currentUser.value),
     hasRole,
     refreshGrant,
+    refreshManageGrant,
+    refreshOpsGrant,
     bootstrapSession,
     logout,
     session: readonly(currentUser),

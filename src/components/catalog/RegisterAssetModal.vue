@@ -1,5 +1,5 @@
 <script setup>
-import { computed, reactive, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import SearchSelect from '@/components/common/SearchSelect.vue'
 import {
   ASSET_DOMAINS,
@@ -7,9 +7,10 @@ import {
   ASSET_LEVELS,
   buildAssetIdentity,
 } from '@/data/assetMeta'
+import { fetchAssetPage } from '@/api/catalog'
 import { useDatasources } from '@/composables/useDatasources'
+import { useSession } from '@/composables/useSession'
 import { resolveTables } from '@/utils/schemaList'
-import { getAssetFields } from '@/utils/fieldSchema'
 import { useToast } from '@/composables/useToast'
 
 const props = defineProps({
@@ -21,6 +22,7 @@ const emit = defineEmits(['close', 'submit'])
 
 const { showToast } = useToast()
 const { sources, getSource, ensureTables } = useDatasources()
+const { user } = useSession()
 
 const form = reactive({
   sourceId: '',
@@ -32,10 +34,16 @@ const form = reactive({
   name: '',
   cnName: '',
   desc: '',
-  owner: '李明',
+  owner: '',
   bizOwner: '',
   level: '内部',
 })
+
+/** 用户改过资产 ID / Key 后，不再被自动规则覆盖 */
+const identityTouched = ref(false)
+/** 当前数据源已注册为资产的源对象名（小写） */
+const registeredNames = ref(new Set())
+const registeredLoading = ref(false)
 
 const sourceSelectOptions = computed(() =>
   [...sources.value]
@@ -57,8 +65,16 @@ const allTables = computed(() => {
   return Array.isArray(s.tables) && s.tables.length ? s.tables : resolveTables(s)
 })
 
+const availableTables = computed(() =>
+  allTables.value.filter((t) => !registeredNames.value.has(String(t.name || '').toLowerCase())),
+)
+
+const registeredCount = computed(() =>
+  allTables.value.filter((t) => registeredNames.value.has(String(t.name || '').toLowerCase())).length,
+)
+
 const tableSelectOptions = computed(() =>
-  allTables.value.map((t) => ({
+  availableTables.value.map((t) => ({
     value: t.name,
     label: t.name,
     sub: t.cnName || t.comment || '',
@@ -67,9 +83,57 @@ const tableSelectOptions = computed(() =>
   })),
 )
 
+const tableEmptyText = computed(() => {
+  if (!form.sourceId) return '请先选择数据源'
+  if (registeredLoading.value) return '加载已注册资产…'
+  if (!allTables.value.length) return '无匹配表，请先到数据源同步表清单'
+  if (!availableTables.value.length) return '该数据源表均已注册为资产'
+  return '无匹配表'
+})
+
 const selectedTable = computed(() =>
-  allTables.value.find((t) => t.name === form.tableName) || null,
+  availableTables.value.find((t) => t.name === form.tableName) || null,
 )
+
+function seedRegisteredFromSource(dsId) {
+  const s = getSource(dsId)
+  const linked = Array.isArray(s?.linkedAssets) ? s.linkedAssets : []
+  const names = new Set()
+  linked.forEach((a) => {
+    const n = String(a?.objectName || a?.tableName || '').trim()
+    if (n) names.add(n.toLowerCase())
+  })
+  registeredNames.value = names
+}
+
+async function loadRegisteredObjects(dsId) {
+  if (!dsId) {
+    registeredNames.value = new Set()
+    return
+  }
+  seedRegisteredFromSource(dsId)
+  registeredLoading.value = true
+  try {
+    const page = await fetchAssetPage({ dsId }, { current: 1, size: 500 })
+    const names = new Set(registeredNames.value)
+    ;(page?.records || []).forEach((row) => {
+      const n = String(row?.objectName || row?.tableName || '').trim()
+      if (n) names.add(n.toLowerCase())
+    })
+    registeredNames.value = names
+    if (form.tableName && names.has(String(form.tableName).toLowerCase())) {
+      form.tableName = ''
+      form.key = ''
+      form.id = ''
+      form.name = ''
+      form.cnName = ''
+    }
+  } catch (e) {
+    console.warn('[catalog] load registered objects failed', e)
+  } finally {
+    registeredLoading.value = false
+  }
+}
 
 function resetForm() {
   const preset =
@@ -88,11 +152,16 @@ function resetForm() {
     name: '',
     cnName: '',
     desc: '',
-    owner: '李明',
+    owner: user.value?.id || '',
     bizOwner: '',
     level: '内部',
   })
-  if (preset?.id) ensureTables(preset.id)
+  identityTouched.value = false
+  registeredNames.value = new Set()
+  if (preset?.id) {
+    ensureTables(preset.id)
+    loadRegisteredObjects(preset.id)
+  }
 }
 
 watch(
@@ -112,7 +181,13 @@ watch(
     form.key = ''
     form.id = ''
     form.name = ''
-    if (id) ensureTables(id)
+    identityTouched.value = false
+    if (id) {
+      ensureTables(id)
+      loadRegisteredObjects(id)
+    } else {
+      registeredNames.value = new Set()
+    }
   },
 )
 
@@ -121,6 +196,7 @@ watch(
   (name) => {
     if (!name || !selectedSource.value) return
     const t = selectedTable.value
+    identityTouched.value = false
     applyIdentity()
     if (t) {
       form.cnName = t.cnName || form.cnName
@@ -131,16 +207,32 @@ watch(
 )
 
 watch([() => form.layer, () => form.domain], () => {
-  if (form.tableName) applyIdentity()
+  if (form.tableName && !identityTouched.value) applyIdentity()
 })
 
 function applyIdentity() {
   const s = selectedSource.value
   if (!s || !form.tableName) return
-  const ident = buildAssetIdentity(form.layer, form.domain, form.tableName, s.database)
+  const ident = buildAssetIdentity(form.layer, form.domain, form.tableName, {
+    database: s.database,
+    dsCode: s.dsCode,
+    dsId: s.id,
+    dsName: s.name,
+  })
   form.id = ident.id
   form.key = ident.key
   form.name = ident.name
+}
+
+function onIdInput() {
+  identityTouched.value = true
+  // 与 Key 同源，避免只改 ID 时仍提交旧 Key
+  form.key = form.id
+}
+
+function onKeyInput() {
+  identityTouched.value = true
+  form.id = String(form.key || '').replace(/\./g, '_')
 }
 
 function close() {
@@ -148,10 +240,14 @@ function close() {
 }
 
 function defaultEngine(type) {
-  if (/ClickHouse/i.test(type)) return 'ClickHouse'
-  if (/Hive|Iceberg|Delta|Trino/i.test(type)) return 'Iceberg'
-  if (/Kafka|Pulsar/i.test(type)) return type
-  return 'Iceberg'
+  const t = String(type || '').trim()
+  if (!t) return ''
+  if (/ClickHouse/i.test(t)) return 'ClickHouse'
+  if (/Iceberg|Delta/i.test(t)) return 'Iceberg'
+  if (/Hive/i.test(t)) return 'Hive'
+  if (/Trino/i.test(t)) return 'Trino'
+  // RDB / MQ / 对象存储等：用源类型本身，禁止一律写成 Iceberg
+  return t
 }
 
 function submit() {
@@ -163,6 +259,10 @@ function submit() {
     showToast('请选择表', 'warning')
     return
   }
+  if (registeredNames.value.has(String(form.tableName).toLowerCase())) {
+    showToast('该表已注册为资产，请选择其它表', 'warning')
+    return
+  }
   if (!form.layer) {
     showToast('请选择分层', 'warning')
     return
@@ -171,13 +271,14 @@ function submit() {
     showToast('请选择业务域', 'warning')
     return
   }
-  applyIdentity()
+  // 未手动改过身份时再补一次；已改过则保留用户输入
+  if (!identityTouched.value) applyIdentity()
+  if (!form.id?.trim() && !form.key?.trim()) {
+    showToast('请填写资产 ID 或物理名', 'warning')
+    return
+  }
   const s = selectedSource.value
   const t = selectedTable.value
-  const fields = getAssetFields(
-    { id: form.id, key: form.key, name: form.name, tableName: form.tableName },
-    s.type,
-  )
   emit('submit', {
     id: form.id,
     key: form.key,
@@ -186,18 +287,15 @@ function submit() {
     domain: form.domain,
     desc: form.desc || form.cnName || form.tableName,
     owner: form.owner,
-    bizOwner: form.bizOwner || form.owner,
+    bizOwner: form.bizOwner,
     level: form.level,
     engine: defaultEngine(s.type),
-    partitions: form.layer === 'dim' ? '无·小表广播' : 'dt 按天',
-    cols: fields.length,
     sourceId: s.id,
     sourceName: s.name,
     sourceType: s.type,
     tableName: form.tableName,
     cnName: form.cnName || t?.cnName || '',
     encoding: t?.encoding || '',
-    fields,
   })
   close()
 }
@@ -219,7 +317,7 @@ function submit() {
           <div class="form-section">
             <div class="form-section-title">1. 选择数据源与表</div>
             <div class="form-grid">
-              <label class="form-field wide">
+              <div class="form-field wide">
                 <span class="form-label"><span class="req">*</span>数据源</span>
                 <SearchSelect
                   v-model="form.sourceId"
@@ -230,8 +328,8 @@ function submit() {
                   :search-keys="['host', 'id']"
                   placeholder="搜索并选择数据源"
                 />
-              </label>
-              <label class="form-field wide">
+              </div>
+              <div class="form-field wide">
                 <span class="form-label"><span class="req">*</span>表</span>
                 <SearchSelect
                   v-model="form.tableName"
@@ -240,15 +338,17 @@ function submit() {
                   label-key="label"
                   sub-key="sub"
                   :search-keys="['cnName', 'comment']"
-                  :disabled="!form.sourceId"
-                  :placeholder="form.sourceId ? '搜索并选择表' : '请先选择数据源'"
-                  :empty-text="form.sourceId ? '无匹配表，请先到数据源同步表清单' : '请先选择数据源'"
+                  :disabled="!form.sourceId || registeredLoading"
+                  :placeholder="form.sourceId ? '搜索并选择未注册表' : '请先选择数据源'"
+                  :empty-text="tableEmptyText"
                 />
-              </label>
+              </div>
             </div>
             <div v-if="selectedSource" class="form-hint" style="margin-top: 8px">
-              {{ selectedSource.id }} · {{ selectedSource.host }}:{{ selectedSource.port }}
-              · 表清单 {{ allTables.length }} 项
+              {{ selectedSource.id }} · {{ selectedSource.type }} · {{ selectedSource.host }}:{{ selectedSource.port }}
+              · 可选 {{ availableTables.length }} / 清单 {{ allTables.length }}
+              <template v-if="registeredCount"> · 已过滤已注册 {{ registeredCount }}</template>
+              <template v-if="registeredLoading"> · 同步中…</template>
             </div>
           </div>
 
@@ -279,11 +379,23 @@ function submit() {
             <div class="form-grid">
               <label class="form-field">
                 <span class="form-label">资产 ID</span>
-                <input v-model="form.id" class="input" style="width: 100%" placeholder="自动生成，可改" />
+                <input
+                  v-model="form.id"
+                  class="input"
+                  style="width: 100%"
+                  placeholder="自动生成，可改"
+                  @input="onIdInput"
+                />
               </label>
               <label class="form-field">
                 <span class="form-label">物理名 / Key</span>
-                <input v-model="form.key" class="input" style="width: 100%" placeholder="如 ods_trade.s_order" />
+                <input
+                  v-model="form.key"
+                  class="input"
+                  style="width: 100%"
+                  placeholder="如 ods_mysql_trade.dev_log"
+                  @input="onKeyInput"
+                />
               </label>
               <label class="form-field">
                 <span class="form-label">中文名</span>
@@ -299,16 +411,29 @@ function submit() {
               </label>
               <label class="form-field">
                 <span class="form-label">技术 Owner</span>
-                <input v-model="form.owner" class="input" style="width: 100%" />
+                <input
+                  v-model="form.owner"
+                  class="input"
+                  style="width: 100%"
+                  placeholder="默认当前用户；可改删/预览的技术负责人"
+                />
               </label>
               <label class="form-field">
                 <span class="form-label">业务 Owner</span>
-                <input v-model="form.bizOwner" class="input" style="width: 100%" placeholder="可选" />
+                <input
+                  v-model="form.bizOwner"
+                  class="input"
+                  style="width: 100%"
+                  placeholder="可选；业务负责人，同样计拥有者"
+                />
               </label>
               <label class="form-field wide">
                 <span class="form-label">描述</span>
                 <textarea v-model="form.desc" class="textarea" rows="2" placeholder="资产用途说明" />
               </label>
+            </div>
+            <div class="form-hint" style="margin-top: 8px">
+              编码规则含数据源段，跨源同表名不会冲突；手动修改 ID / Key 后提交将按你填写的值入库。
             </div>
           </div>
         </div>

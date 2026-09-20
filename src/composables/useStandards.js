@@ -15,6 +15,7 @@ import {
   upsertStdField,
   upsertStdMapping,
   upsertStdNaming,
+  runStdLandingDetect,
 } from '@/api/standard'
 import { parseCodeValues } from '@/data/standards'
 
@@ -175,6 +176,14 @@ export function useStandards() {
     await refreshOverview()
   }
 
+  async function runDetect(ws) {
+    const r = await runStdLandingDetect(ws)
+    const detectPage = await fetchStdDetects({}, { current: 1, size: 500 })
+    detects.value = (detectPage?.records || []).map(normalizeDetect)
+    await refreshOverview()
+    return r
+  }
+
   return {
     fields,
     codes,
@@ -204,6 +213,7 @@ export function useStandards() {
     removeCode,
     removeNaming,
     removeMapping,
+    runDetect,
   }
 }
 

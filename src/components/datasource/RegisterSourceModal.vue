@@ -1,11 +1,13 @@
 <script setup>
 import { computed, reactive, ref, watch } from 'vue'
 import SchemaListField from '@/components/datasource/SchemaListField.vue'
+import DsTypeIcon from '@/components/datasource/DsTypeIcon.vue'
 import { DS_COMMON_FIELDS, dsTypeFields, dsTypeMeta } from '@/data/dsForm'
 import { groupTypesByCategory } from '@/data/datasources'
 import { isInventoryField, tablesToSchema } from '@/utils/schemaList'
 import { useToast } from '@/composables/useToast'
 import { discoverTables, testDatasource } from '@/api/datasource'
+import { useSession } from '@/composables/useSession'
 
 const props = defineProps({
   open: { type: Boolean, default: false },
@@ -14,6 +16,7 @@ const props = defineProps({
 const emit = defineEmits(['close', 'submit'])
 
 const { showToast } = useToast()
+const { user } = useSession()
 const form = reactive({})
 const tested = ref(false)
 const testing = ref(false)
@@ -32,6 +35,7 @@ function blankForm(type = 'MySQL') {
     next[f.n] = f.def ?? ''
   })
   next.type = type
+  next.owner = user.value?.id || ''
   dsTypeFields(type).forEach((f) => {
     next[f.n] = f.def ?? ''
   })
@@ -55,7 +59,7 @@ function flattenSeed(seed) {
     name: seed.name || '',
     type: seed.type || seed.typeCode || 'MySQL',
     purpose: seed.purpose || '数据入湖',
-    owner: seed.owner || '李明',
+    owner: seed.owner || user.value?.id || '',
     desc: seed.desc || '',
     host: seed.host || conn.host || conn.bootstrap || conn.endpoint || '',
     port: String(seed.port ?? conn.port ?? ''),
@@ -212,7 +216,7 @@ function submit() {
     name: form.name.trim(),
     type: form.type,
     purpose: form.purpose,
-    owner: form.owner || '李明',
+    owner: form.owner || user.value?.id || '',
     desc: form.desc || '',
     host: String(host).replace(/^https?:\/\//, '').split('/')[0] || host,
     port: String(port),
@@ -253,11 +257,19 @@ function submit() {
                 <span class="form-label">
                   <span class="req">*</span>{{ typeField.l }}
                 </span>
-                <select v-model="form.type" class="select" style="width: 100%">
-                  <optgroup v-for="g in typeGroups" :key="g.value" :label="g.label">
-                    <option v-for="t in g.types" :key="t.value" :value="t.value">{{ t.value }}</option>
-                  </optgroup>
-                </select>
+                <div class="ds-type-select-row">
+                  <span
+                    class="ds-type-select-icon"
+                    :style="{ background: dsTypeMeta(form.type).bg, color: dsTypeMeta(form.type).color }"
+                  >
+                    <DsTypeIcon :type="form.type" :size="18" />
+                  </span>
+                  <select v-model="form.type" class="select" style="width: 100%; flex: 1">
+                    <optgroup v-for="g in typeGroups" :key="g.value" :label="g.label">
+                      <option v-for="t in g.types" :key="t.value" :value="t.value">{{ t.value }}</option>
+                    </optgroup>
+                  </select>
+                </div>
               </label>
               <label
                 v-for="f in basicFields"
@@ -360,3 +372,21 @@ function submit() {
     </div>
   </Teleport>
 </template>
+
+<style scoped>
+.ds-type-select-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+.ds-type-select-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+</style>

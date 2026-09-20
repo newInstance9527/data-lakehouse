@@ -76,6 +76,10 @@ export function editAsset(payload) {
   })
 }
 
+export function deleteAsset(id) {
+  return http.post(`${CAT}/assets/delete`, { id })
+}
+
 export function refreshAsset(id) {
   return http.post(`${CAT}/assets/refresh`, { id })
 }

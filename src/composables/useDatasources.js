@@ -3,6 +3,7 @@ import {
   addDatasource,
   addTable as apiAddTable,
   batchSyncTables as apiBatchSync,
+  deleteDatasources as apiDeleteDatasources,
   deleteTables as apiDeleteTables,
   editDatasource,
   editTable as apiEditTable,
@@ -14,6 +15,7 @@ import {
   toggleDatasourceStatus,
 } from '@/api/datasource'
 import { tablesToSchema } from '@/utils/schemaList'
+import { dsTypeMeta } from '@/data/dsForm'
 
 const sources = ref([])
 /** ETL 编排可用源（usable_in_dag），与全量 sources 分轨，避免冲掉数据源中心列表 */
@@ -95,6 +97,13 @@ export function useDatasources() {
     return res
   }
 
+  async function removeSource(id) {
+    await apiDeleteDatasources([id])
+    sources.value = sources.value.filter((s) => s.id !== id)
+    dagSources.value = dagSources.value.filter((s) => s.id !== id)
+    return true
+  }
+
   async function ensureTables(id) {
     const s = getSource(id)
     if (!s) return []
@@ -174,6 +183,7 @@ export function useDatasources() {
     upsertSource,
     testSource,
     toggleStatus,
+    removeSource,
     ensureTables,
     setTables,
     syncTables,
@@ -198,6 +208,8 @@ export function isUsableInDag(s) {
 function normalizeSource(row) {
   if (!row) return row
   const conn = row.conn && typeof row.conn === 'object' ? row.conn : {}
+  const typeLabel = row.type || ''
+  const meta = dsTypeMeta(typeLabel)
   return {
     ...row,
     ...Object.fromEntries(
@@ -214,6 +226,8 @@ function normalizeSource(row) {
     port: row.port || conn.port || '',
     database: row.database || conn.database || '',
     user: row.user || conn.user || conn.username || '',
+    bg: row.bg || meta.bg,
+    color: row.color || meta.color,
     tables: Array.isArray(row.tables) ? row.tables.map(normalizeTable) : row.tables,
     conn,
   }

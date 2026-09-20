@@ -289,11 +289,13 @@ function sampleOf(role, en) {
   return map[role] || en
 }
 
-/** 根据资产与数据源类型生成字段列表 */
-export function getAssetFields(asset, sourceType) {
+/** 根据资产与数据源类型取字段列表。默认不编造演示列；ETL 等可传 { synthesize: true }。 */
+export function getAssetFields(asset, sourceType, opts = {}) {
+  const synthesize = opts === true || opts?.synthesize === true
   if (Array.isArray(asset?.fields) && asset.fields.length) {
     return asset.fields.map((f) => normalizeField(f, sourceType))
   }
+  if (!synthesize) return []
   const type = sourceType || asset?.engine || 'MySQL'
   const hint = `${asset?.id || ''} ${asset?.key || ''} ${asset?.name || ''} ${asset?.tableName || ''}`.toLowerCase()
   const templates =

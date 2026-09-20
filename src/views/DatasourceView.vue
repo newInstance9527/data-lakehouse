@@ -5,8 +5,10 @@ import PageHeader from '@/components/common/PageHeader.vue'
 import PageSizeSelect from '@/components/common/PageSizeSelect.vue'
 import SourceDrawer from '@/components/datasource/SourceDrawer.vue'
 import RegisterSourceModal from '@/components/datasource/RegisterSourceModal.vue'
+import DsTypeIcon from '@/components/datasource/DsTypeIcon.vue'
 import { useToast } from '@/composables/useToast'
 import { useDatasources } from '@/composables/useDatasources'
+import { useSession, isNeedOwnerApplyError } from '@/composables/useSession'
 import {
   DS_CAT_LABEL,
   DS_CAT_OPTIONS,
@@ -20,11 +22,14 @@ import {
 import { schemaSummary, tablesToSchema } from '@/utils/schemaList'
 import { pageGuideOf } from '@/data/pageGuides'
 import { fetchDatasourceDetail, fetchDatasourceKpi } from '@/api/datasource'
+import { confirmDelete } from '@/composables/useConfirmDelete'
+import { displayUser } from '@/utils/displayUser'
 
 const dsGuide = pageGuideOf('datasource')
 
 const router = useRouter()
 const { showToast } = useToast()
+const { canEditDatasource, canDeleteDatasource, canManageDatasource, refreshManageGrant } = useSession()
 const {
   sources,
   getSource,
@@ -34,7 +39,33 @@ const {
   toggleStatus: apiToggle,
   batchSync: apiBatchSync,
   ensureTables,
+  removeSource,
 } = useDatasources()
+
+function goApplyManageDs(s) {
+  if (!s) return
+  router.push({
+    path: '/apply',
+    query: {
+      type: 'manage',
+      resourceType: 'datasource',
+      resourceId: s.id,
+      name: s.name || '',
+    },
+  })
+}
+
+function assertEditOrGuide(s, action = '编辑') {
+  if (canEditDatasource(s)) return true
+  showToast(`无${action}权，请申请操作权限`, 'warning')
+  return false
+}
+
+function assertDeleteOrGuide(s) {
+  if (canDeleteDatasource(s)) return true
+  showToast('无删除权，请申请操作权限', 'warning')
+  return false
+}
 
 const filters = reactive({
   kw: '',
@@ -54,6 +85,9 @@ const kpiRemote = ref(null)
 onMounted(async () => {
   try {
     await loadSources()
+    await Promise.all(
+      (sources.value || []).slice(0, 50).map((s) => refreshManageGrant('datasource', s.id, s)),
+    )
     kpiRemote.value = await fetchDatasourceKpi()
   } catch (e) {
     showToast(`加载数据源失败：${e.message || e}`, 'error')
@@ -78,7 +112,7 @@ const list = computed(() => {
     if (filters.status && s.status !== filters.status) return false
     if (filters.cat && dsCategory(s) !== filters.cat) return false
     if (!kw) return true
-    return `${s.id} ${s.name} ${s.type} ${s.host} ${s.owner} ${s.database} ${s.desc || ''}`
+    return `${s.id} ${s.name} ${s.type} ${s.host} ${s.ownerName || ''} ${s.owner} ${s.database} ${s.desc || ''}`
       .toLowerCase()
       .includes(kw)
   })
@@ -210,6 +244,10 @@ function openRegister() {
 async function openEdit(id) {
   const s = getSource(id)
   if (!s) return
+  if (!assertEditOrGuide(s, '编辑')) {
+    goApplyManageDs(s)
+    return
+  }
   try {
     // 拉详情 + 表清单，保证编辑回显连接参数与 schema
     const [detail] = await Promise.all([
@@ -240,6 +278,10 @@ function openTables(id, e) {
 async function toggleStatus(id) {
   const s = getSource(id)
   if (!s) return
+  if (!assertEditOrGuide(s, '启停')) {
+    goApplyManageDs(s)
+    return
+  }
   try {
     const res = await apiToggle(id)
     const next = res?.status || getSource(id)?.status
@@ -248,12 +290,55 @@ async function toggleStatus(id) {
     if (current.value?.id === id) current.value = getSource(id)
     kpiRemote.value = await fetchDatasourceKpi()
   } catch (e) {
-    showToast(`启停失败：${e.message || e}`, 'error')
+    if (isNeedOwnerApplyError(e)) {
+      showToast(e.message || '非拥有者不可启停', 'warning')
+      goApplyManageDs(s)
+    } else {
+      showToast(`启停失败：${e.message || e}`, 'error')
+    }
+  }
+}
+
+async function onDeleteSource(id) {
+  const s = getSource(id)
+  if (!s) return
+  if (!assertDeleteOrGuide(s)) {
+    goApplyManageDs(s)
+    return
+  }
+  const ok = await confirmDelete({
+    title: `删除数据源「${s.name}」`,
+    message: '将删除该数据源登记；关联资产不会级联删除，绑定会标为不可用。',
+    confirmLabel: '确认删除',
+  })
+  if (!ok) return
+  try {
+    await removeSource(id)
+    if (current.value?.id === id) {
+      current.value = null
+      drawerOpen.value = false
+    }
+    showToast(`已删除数据源 ${s.name}`, 'success')
+    kpiRemote.value = await fetchDatasourceKpi().catch(() => kpiRemote.value)
+  } catch (e) {
+    if (isNeedOwnerApplyError(e)) {
+      showToast(e.message || '非拥有者不可删除', 'warning')
+      goApplyManageDs(s)
+    } else {
+      showToast(`删除失败：${e.message || e}`, 'error')
+    }
   }
 }
 
 async function onRegisterSubmit(payload) {
   const existed = !!getSource(payload.id)
+  if (existed) {
+    const s = getSource(payload.id)
+    if (s && !assertEditOrGuide(s, '更新')) {
+      goApplyManageDs(s)
+      return
+    }
+  }
   try {
     const saved = await upsertSource(payload)
     // 新建时前端曾带临时 id，以服务端返回为准
@@ -263,7 +348,12 @@ async function onRegisterSubmit(payload) {
     await loadSources()
     kpiRemote.value = await fetchDatasourceKpi()
   } catch (e) {
-    showToast(`保存失败：${e.message || e}`, 'error')
+    if (isNeedOwnerApplyError(e)) {
+      showToast(e.message || '非拥有者不可保存', 'warning')
+      if (s) goApplyManageDs(s)
+    } else {
+      showToast(`保存失败：${e.message || e}`, 'error')
+    }
   }
 }
 
@@ -278,7 +368,11 @@ async function batchSync() {
     )
     await loadSources()
   } catch (e) {
-    showToast(`批量同步失败：${e.message || e}`, 'error')
+    if (isNeedOwnerApplyError(e)) {
+      showToast(e.message || '无编辑权不可批量同步，请申请操作权限', 'warning')
+    } else {
+      showToast(`批量同步失败：${e.message || e}`, 'error')
+    }
   }
 }
 
@@ -363,9 +457,11 @@ function goPage(p) {
               >
                 <div class="ds-card-bar" :style="{ background: catColors[dsCategory(s)] || '#ccc' }" />
                 <div class="ds-card-head">
-                  <div class="ds-card-icon" :style="{ background: s.bg, color: s.color }">{{ s.icon }}</div>
+                  <div class="ds-card-icon" :style="{ background: s.bg, color: s.color }">
+                    <DsTypeIcon :type="s.type" :type-code="s.typeCode" :size="20" />
+                  </div>
                   <div style="flex: 1; min-width: 0">
-                    <div class="ds-card-name">{{ s.name }}</div>
+                    <div class="ds-card-name" :title="s.name">{{ s.name }}</div>
                     <div class="ds-card-meta">
                       {{ s.id }} · {{ s.ver }}
                       <span class="tag tag-gray">{{ DS_CAT_LABEL[dsCategory(s)] }}</span>
@@ -374,24 +470,49 @@ function goPage(p) {
                   </div>
                   <span class="tag" :class="statusMeta(s.status).tag">{{ statusMeta(s.status).label }}</span>
                 </div>
-                <div class="ds-card-endpoint">{{ endpointOf(s) }}</div>
+                <div class="ds-card-endpoint" :title="endpointOf(s)">{{ endpointOf(s) }}</div>
                 <div class="ds-card-schema">
-                  <button class="btn-link btn-sm ds-schema-link" @click="openTables(s.id, $event)">
+                  <button
+                    class="btn-link btn-sm ds-schema-link"
+                    :title="schemaSummary(s.schema).text"
+                    @click="openTables(s.id, $event)"
+                  >
                     📋 {{ schemaSummary(s.schema).text }}
                   </button>
-                  <span style="margin-left: auto; color: var(--text-3)">👤 {{ s.owner }}</span>
+                  <span style="margin-left: auto; color: var(--text-3)" :title="s.owner">👤 {{ displayUser(s.ownerName, s.owner) }}</span>
                 </div>
                 <div class="ds-card-actions" @click.stop>
                   <button class="btn-link btn-sm" @click="openTables(s.id)">表清单</button>
                   <button class="btn-link btn-sm" @click="test(s.id)">🧪 测试</button>
-                  <button class="btn-link btn-sm" @click="openEdit(s.id)">✎ 编辑</button>
                   <button
+                    v-if="canEditDatasource(s)"
+                    class="btn-link btn-sm"
+                    @click="openEdit(s.id)"
+                  >✎ 编辑</button>
+                  <button
+                    v-else-if="!canDeleteDatasource(s)"
+                    class="btn-link btn-sm"
+                    @click="goApplyManageDs(s)"
+                  >🔐 申请操作权限</button>
+                  <button
+                    v-if="canEditDatasource(s)"
                     class="btn-link btn-sm"
                     :style="{ color: s.status === 'online' ? 'var(--warning)' : 'var(--success)' }"
                     @click="toggleStatus(s.id)"
                   >
                     {{ s.status === 'online' ? '⏸ 停用' : '▶ 启用' }}
                   </button>
+                  <button
+                    v-if="canDeleteDatasource(s)"
+                    class="btn-link btn-sm"
+                    style="color: var(--danger)"
+                    @click="onDeleteSource(s.id)"
+                  >删除</button>
+                  <button
+                    v-else-if="canEditDatasource(s)"
+                    class="btn-link btn-sm"
+                    @click="goApplyManageDs(s)"
+                  >🔐 申请删除权</button>
                 </div>
               </div>
             </div>
@@ -416,7 +537,9 @@ function goPage(p) {
                   <tr v-for="s in pagedList" :key="s.id" style="cursor: pointer" @click="openDetail(s.id)">
                     <td>
                       <span style="display: inline-flex; align-items: center; gap: 5px">
-                        <span class="ds-mini-icon" :style="{ background: s.bg, color: s.color }">{{ s.icon }}</span>
+                        <span class="ds-mini-icon" :style="{ background: s.bg, color: s.color }">
+                          <DsTypeIcon :type="s.type" :type-code="s.typeCode" :size="12" />
+                        </span>
                         {{ s.name }}
                         <span class="tag tag-gray">{{ s.type }}</span>
                       </span>
@@ -424,19 +547,35 @@ function goPage(p) {
                     <td style="font-family: monospace; font-size: 11px; color: var(--text-2)">{{ endpointOf(s) }}</td>
                     <td><span class="tag" :class="statusMeta(s.status).tag">{{ statusMeta(s.status).short }}</span></td>
                     <td>{{ s.lag || '-' }}</td>
-                    <td>{{ s.owner || '-' }}</td>
+                    <td>{{ displayUser(s.ownerName, s.owner) || '-' }}</td>
                     <td style="font-size: 11px; color: var(--text-3)">{{ s.ver }} · {{ s.created }}</td>
                     <td @click.stop style="white-space: nowrap">
                       <button class="btn-link btn-sm" @click="openTables(s.id)">表</button>
                       <button class="btn-link btn-sm" @click="test(s.id)">🧪</button>
-                      <button class="btn-link btn-sm" @click="openEdit(s.id)">✎</button>
                       <button
+                        v-if="canEditDatasource(s)"
+                        class="btn-link btn-sm"
+                        @click="openEdit(s.id)"
+                      >✎</button>
+                      <button
+                        v-else-if="!canDeleteDatasource(s)"
+                        class="btn-link btn-sm"
+                        @click="goApplyManageDs(s)"
+                      >🔐</button>
+                      <button
+                        v-if="canEditDatasource(s)"
                         class="btn-link btn-sm"
                         :style="{ color: s.status === 'online' ? 'var(--warning)' : 'var(--success)' }"
                         @click="toggleStatus(s.id)"
                       >
                         {{ s.status === 'online' ? '⏸' : '▶' }}
                       </button>
+                      <button
+                        v-if="canDeleteDatasource(s)"
+                        class="btn-link btn-sm"
+                        style="color: var(--danger)"
+                        @click="onDeleteSource(s.id)"
+                      >删</button>
                     </td>
                   </tr>
                 </tbody>
@@ -458,7 +597,9 @@ function goPage(p) {
                   :style="{ background: s.bg || '#fff' }"
                   @click="openDetail(s.id)"
                 >
-                  <span>{{ s.icon }}</span>
+                  <span :style="{ color: s.color || 'var(--text-2)', display: 'inline-flex' }">
+                    <DsTypeIcon :type="s.type" :type-code="s.typeCode" :size="14" />
+                  </span>
                   <b>{{ s.name.split('-')[0] }}</b>
                   <span style="color: var(--text-3)">{{ s.type }}</span>
                 </div>
@@ -496,6 +637,8 @@ function goPage(p) {
       @edit="openEdit"
       @open-tables="openTables"
       @tested="onTested"
+      @delete="onDeleteSource"
+      @apply-manage="(id) => goApplyManageDs(getSource(id) || current)"
     />
 
     <RegisterSourceModal

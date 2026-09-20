@@ -5,6 +5,7 @@ import PageHeader from '@/components/common/PageHeader.vue'
 import PageSizeSelect from '@/components/common/PageSizeSelect.vue'
 import RegisterStandardModal from '@/components/standard/RegisterStandardModal.vue'
 import RegisterNamingModal from '@/components/standard/RegisterNamingModal.vue'
+import RegisterMappingModal from '@/components/standard/RegisterMappingModal.vue'
 import { useStandards } from '@/composables/useStandards'
 import { useToast } from '@/composables/useToast'
 import { pageGuideOf } from '@/data/pageGuides'
@@ -25,19 +26,24 @@ const {
   addField,
   addCode,
   addNaming,
+  addMapping,
   removeField,
   removeCode,
   removeNaming,
   removeMapping,
+  runDetect,
 } = useStandards()
 const stdGuide = pageGuideOf('standard')
 
 const tab = ref(String(route.query.tab || 'field'))
 const regOpen = ref(false)
 const namingOpen = ref(false)
+const mappingOpen = ref(false)
 const registering = ref(false)
+const detecting = ref(false)
 const regInitial = ref(null)
 const namingInitial = ref(null)
+const mappingInitial = ref(null)
 
 const fieldKw = ref('')
 const domainFilter = ref('')
@@ -391,6 +397,53 @@ async function onDeleteMapping(row) {
   }
 }
 
+function openMappingRegister() {
+  mappingInitial.value = null
+  mappingOpen.value = true
+  tab.value = 'mapping'
+}
+
+function openEditMapping(row) {
+  mappingInitial.value = { ...row }
+  mappingOpen.value = true
+  tab.value = 'mapping'
+}
+
+function closeMapping() {
+  mappingOpen.value = false
+  mappingInitial.value = null
+}
+
+async function onMappingSubmit(payload) {
+  registering.value = true
+  try {
+    const row = await addMapping(payload)
+    tab.value = 'mapping'
+    showToast(payload.editing ? `已更新映射 ${row.src}` : `已登记映射 ${row.src} → ${row.std}`, 'success')
+    closeMapping()
+  } catch (e) {
+    showToast(`${payload.editing ? '保存' : '登记'}失败：${e.message || e}`, 'error')
+  } finally {
+    registering.value = false
+  }
+}
+
+async function onRunDetect() {
+  detecting.value = true
+  try {
+    const r = await runDetect()
+    tab.value = 'detect'
+    showToast(
+      `落地检测完成 · 写入 ${r?.written ?? 0} 条（ok=${r?.ok ?? 0} warn=${r?.warn ?? 0} fail=${r?.fail ?? 0}）`,
+      'success',
+    )
+  } catch (e) {
+    showToast(`落地检测失败：${e.message || e}`, 'error')
+  } finally {
+    detecting.value = false
+  }
+}
+
 async function reload() {
   try {
     await loadAll()
@@ -411,7 +464,24 @@ async function reload() {
     >
       <button class="btn btn-sm" :disabled="loading" @click="reload">刷新</button>
       <button class="btn btn-sm" :disabled="registering" @click="openRegister">＋ 新建标准</button>
-      <button class="btn btn-sm btn-primary" :disabled="registering" @click="openNamingRegister">
+      <button
+        v-if="tab === 'mapping'"
+        class="btn btn-sm btn-primary"
+        :disabled="registering"
+        @click="openMappingRegister"
+      >＋ 新建映射</button>
+      <button
+        v-else-if="tab === 'detect'"
+        class="btn btn-sm btn-primary"
+        :disabled="detecting"
+        @click="onRunDetect"
+      >{{ detecting ? '检测中…' : '▶ 运行落地检测' }}</button>
+      <button
+        v-else
+        class="btn btn-sm btn-primary"
+        :disabled="registering"
+        @click="openNamingRegister"
+      >
         ＋ 新建规范
       </button>
     </PageHeader>
@@ -607,7 +677,7 @@ async function reload() {
         <!-- 源到标准映射 -->
         <div v-show="tab === 'mapping'">
           <div class="form-hint" style="margin-bottom: 10px">
-            记录源系统字段如何转换到标准字段，供 ETL 清洗与质量规则引用。空库时无数据属正常；可由门户补录或 ETL 回写。
+            记录源系统字段如何转换到标准字段，供 ETL 清洗与质量规则引用。可门户补录或由 ETL 发布回写。
           </div>
           <div class="ds-filters" style="margin-bottom: 10px">
             <input
@@ -622,6 +692,7 @@ async function reload() {
               <option value="warn">⚠ 告警</option>
               <option value="fail">✗ 阻断</option>
             </select>
+            <button class="btn btn-sm btn-primary" :disabled="registering" @click="openMappingRegister">＋ 新建映射</button>
             <span class="tag tag-blue">筛选 {{ filteredMappings.length }} / 共 {{ mappingList.length }}</span>
           </div>
           <div style="overflow: auto">
@@ -639,7 +710,7 @@ async function reload() {
               <tbody>
                 <tr v-if="!pagedMappings.length">
                   <td colspan="6" style="text-align: center; color: var(--text-3); padding: 28px">
-                    {{ mappingList.length ? '无匹配映射' : '暂无映射记录' }}
+                    {{ mappingList.length ? '无匹配映射' : '暂无映射记录，点击「＋ 新建映射」补录' }}
                   </td>
                 </tr>
                 <tr v-for="(m, i) in pagedMappings" :key="(m.id || m.src) + i">
@@ -653,6 +724,7 @@ async function reload() {
                     </span>
                   </td>
                   <td>
+                    <button class="btn btn-sm" :disabled="registering" @click="openEditMapping(m)">编辑</button>
                     <button
                       class="btn btn-sm"
                       :disabled="registering || !m.id"
@@ -686,7 +758,7 @@ async function reload() {
         <!-- 落地检测 -->
         <div v-show="tab === 'detect'">
           <div class="form-hint" style="margin-bottom: 10px">
-            对已落地表字段做标准合规抽检（码值、类型、单位、脱敏等）。结果由检测作业写入，本页只读。
+            对已落地表字段做标准合规抽检（码值、类型、单位、映射健康度）。结果由「运行落地检测」或质量规则运行写入，禁止手填「通过」。
           </div>
           <div class="ds-filters" style="margin-bottom: 10px">
             <input
@@ -701,6 +773,9 @@ async function reload() {
               <option value="warn">⚠ 告警</option>
               <option value="fail">✗ 阻断</option>
             </select>
+            <button class="btn btn-sm btn-primary" :disabled="detecting" @click="onRunDetect">
+              {{ detecting ? '检测中…' : '▶ 运行落地检测' }}
+            </button>
             <span class="tag tag-blue">筛选 {{ filteredDetects.length }} / 共 {{ detectList.length }}</span>
           </div>
           <div style="overflow: auto">
@@ -717,7 +792,7 @@ async function reload() {
               <tbody>
                 <tr v-if="!pagedDetects.length">
                   <td colspan="5" style="text-align: center; color: var(--text-3); padding: 28px">
-                    {{ detectList.length ? '无匹配检测记录' : '暂无检测结果（待质量作业写入）' }}
+                    {{ detectList.length ? '无匹配检测记录' : '暂无检测结果，点击「运行落地检测」或由质量规则写入' }}
                   </td>
                 </tr>
                 <tr v-for="(d, i) in pagedDetects" :key="(d.id || d.table + d.field) + i">
@@ -842,6 +917,13 @@ async function reload() {
       :initial="namingInitial"
       @close="closeNaming"
       @submit="onNamingSubmit"
+    />
+
+    <RegisterMappingModal
+      :open="mappingOpen"
+      :initial="mappingInitial"
+      @close="closeMapping"
+      @submit="onMappingSubmit"
     />
   </div>
 </template>

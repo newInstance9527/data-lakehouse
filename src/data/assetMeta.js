@@ -35,15 +35,36 @@ export function levelClass(level) {
   return ASSET_LEVELS.find((l) => l.value === level)?.class || 'tag-gray'
 }
 
-/** 从表名生成资产 id / 物理名 */
-export function buildAssetIdentity(layer, domain, tableName, database = '') {
+function compactSeg(raw, max = 24) {
+  const s = String(raw || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .replace(/_+/g, '_')
+  if (!s) return ''
+  return s.length > max ? s.slice(0, max).replace(/_+$/g, '') : s
+}
+
+/**
+ * 从表名 + 数据源生成资产 id / 物理名。
+ * 同表名跨数据源时用 dsCode / 源名 / 源 id 段区分，避免资产编码冲突。
+ * 第 4 参兼容旧调用：传 database 字符串，或传 { database, dsCode, dsId, dsName }。
+ */
+export function buildAssetIdentity(layer, domain, tableName, opts = '') {
+  const o = typeof opts === 'string' || opts == null ? { database: opts || '' } : opts
   const raw = String(tableName || '')
     .replace(/^GET\s+|^POST\s+|^PUT\s+/i, '')
     .replace(/[^\w.]+/g, '_')
     .replace(/^_+|_+$/g, '')
   const short = raw.split(/[./]/).pop() || raw || 'table'
-  const id = `${layer}_${short}`.toLowerCase().replace(/_+/g, '_')
-  const db = database ? String(database).replace(/[^\w]/g, '_') : domain
-  const key = `${layer}_${db}.${short}`
-  return { id, key, name: short }
+  const dsSeg =
+    compactSeg(o.dsCode) ||
+    compactSeg(o.dsName) ||
+    compactSeg(o.dsId, 10) ||
+    compactSeg(o.database) ||
+    compactSeg(domain) ||
+    'src'
+  const id = `${layer}_${dsSeg}_${short}`.toLowerCase().replace(/_+/g, '_')
+  const key = `${layer}_${dsSeg}.${short}`
+  return { id, key, name: short, dsSeg }
 }

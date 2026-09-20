@@ -32,7 +32,7 @@ export const DS_COMMON_FIELDS = [
     "n": "owner",
     "l": "负责人",
     "t": "text",
-    "def": "李明"
+    "def": ""
   },
   {
     "n": "desc",
@@ -1190,6 +1190,9 @@ export const DS_TYPE_FIELD_ALIAS = {
   "Kinesis": "Kafka",
   "Pub/Sub": "Kafka",
   "OpenSearch": "Elasticsearch",
+  "S3/MinIO": "S3 / MinIO",
+  "S3": "S3 / MinIO",
+  "MinIO": "S3 / MinIO",
   "GCS": "S3 / MinIO",
   "ADLS": "S3 / MinIO",
   "Google Drive": "FTP/SFTP",
@@ -1211,117 +1214,99 @@ export const DS_TYPE_FIELD_ALIAS = {
   "Sagemaker": "HTTP API"
 }
 
+/** 类型视觉：底色 / 前景色 / 默认端口；图标见 dsTypeIcons + DsTypeIcon */
 export const DS_TYPE_META = {
   "MySQL": {
-    "icon": "🐬",
     "bg": "#e6f7ff",
     "color": "#08979c",
     "port": "3306"
   },
   "PostgreSQL": {
-    "icon": "🐘",
     "bg": "#e6f7ff",
     "color": "#08979c",
     "port": "5432"
   },
   "Oracle": {
-    "icon": "🔶",
     "bg": "#fff2e8",
     "color": "#fa541c",
     "port": "1521"
   },
   "SQL Server": {
-    "icon": "🟦",
     "bg": "#e6f7ff",
     "color": "#096dd9",
     "port": "1433"
   },
   "ClickHouse": {
-    "icon": "⏺️",
     "bg": "#fff2e8",
     "color": "#fa541c",
     "port": "9000"
   },
   "Doris": {
-    "icon": "🟫",
     "bg": "#fff2e8",
     "color": "#fa541c",
     "port": "9030"
   },
   "Hive": {
-    "icon": "🐝",
     "bg": "#f6ffed",
     "color": "#52c41a",
     "port": "10000"
   },
   "Iceberg": {
-    "icon": "🧊",
     "bg": "#e6fffb",
     "color": "#13c2c2",
     "port": "9083"
   },
   "HBase": {
-    "icon": "🟩",
     "bg": "#f6ffed",
     "color": "#389e0d",
     "port": "2181"
   },
   "Kafka": {
-    "icon": "🦄",
     "bg": "#1a1a2e",
     "color": "#61dafb",
     "port": "9092"
   },
   "RabbitMQ": {
-    "icon": "🐰",
     "bg": "#fff7e6",
     "color": "#d48806",
     "port": "5672"
   },
   "Pulsar": {
-    "icon": "💫",
     "bg": "#e6f7ff",
     "color": "#1890ff",
     "port": "6650"
   },
   "MongoDB": {
-    "icon": "🍃",
     "bg": "#f6ffed",
     "color": "#389e0d",
     "port": "27017"
   },
   "Elasticsearch": {
-    "icon": "🔎",
     "bg": "#fff1f0",
     "color": "#f5222d",
     "port": "9200"
   },
   "Redis": {
-    "icon": "🟥",
     "bg": "#fff1f0",
     "color": "#f5222d",
     "port": "6379"
   },
   "HDFS": {
-    "icon": "🗂️",
     "bg": "#fafafa",
     "color": "#595959",
     "port": "8020"
   },
   "S3 / MinIO": {
-    "icon": "🪣",
     "bg": "#e6fffb",
     "color": "#13c2c2",
     "port": "443"
   },
   "FTP/SFTP": {
-    "icon": "📂",
     "bg": "#fafafa",
     "color": "#595959",
     "port": "22"
   },
   "HTTP API": {
-    "icon": "🌐",
     "bg": "#f9f0ff",
     "color": "#722ed1",
     "port": "443"
@@ -1333,6 +1318,15 @@ export function dsTypeFields(type) {
 }
 
 export function dsTypeMeta(type) {
-  const key = DS_TYPE_FIELDS[type] ? type : (DS_TYPE_FIELD_ALIAS[type] || type)
-  return DS_TYPE_META[key] || { icon: '🔌', bg: '#e8f0ff', color: '#1e6fff', port: '' }
+  let key = String(type || '').trim()
+  if (!DS_TYPE_FIELDS[key] && !DS_TYPE_META[key]) {
+    key = DS_TYPE_FIELD_ALIAS[key] || key
+  }
+  // 后端标签偶发无空格：S3/MinIO
+  if (!DS_TYPE_META[key] && !DS_TYPE_FIELDS[key]) {
+    const spaced = key.replace(/\//g, ' / ')
+    if (DS_TYPE_META[spaced] || DS_TYPE_FIELDS[spaced]) key = spaced
+    else if (DS_TYPE_FIELD_ALIAS[spaced]) key = DS_TYPE_FIELD_ALIAS[spaced]
+  }
+  return DS_TYPE_META[key] || { bg: '#e8f0ff', color: '#1e6fff', port: '' }
 }

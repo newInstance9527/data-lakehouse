@@ -10,6 +10,7 @@ import { useToast } from '@/composables/useToast'
 import { useDatasources } from '@/composables/useDatasources'
 import { useAssets } from '@/composables/useAssets'
 import { useDsSchema } from '@/composables/useDsSchema'
+import { useSession, isNeedOwnerApplyError } from '@/composables/useSession'
 import { pageGuideOf } from '@/data/pageGuides'
 import { TASK_STATUS_META } from '@/data/etl'
 import {
@@ -17,13 +18,48 @@ import {
   resolveTargetTableFields,
   resolveUpstreamFields,
 } from '@/utils/etlFields'
+import { useRouter } from 'vue-router'
+import { confirmDelete } from '@/composables/useConfirmDelete'
+import { displayUser } from '@/utils/displayUser'
 
 const { showToast } = useToast()
+const router = useRouter()
 const guide = pageGuideOf('integration')
 const canvasRef = ref(null)
 const { getSource, loadSources } = useDatasources()
 const { findAsset } = useAssets()
 const { ensureSchema, getDsFields, schemaRev } = useDsSchema()
+const { canEditEtl, canDeleteEtl, refreshManageGrant } = useSession()
+
+function toastNeedApply(e) {
+  if (isNeedOwnerApplyError(e)) {
+    showToast(e.message || '非拥有者不可操作，请前往申请中心', 'warning')
+    goApplyManageEtl()
+    return true
+  }
+  return false
+}
+
+function assertEditOrGuide(action = '编辑') {
+  if (canEditCurrent.value) return true
+  showToast(`无${action}权，请申请操作权限`, 'warning')
+  goApplyManageEtl()
+  return false
+}
+
+function goApplyManageEtl() {
+  const t = current.value
+  if (!t) return
+  router.push({
+    path: '/apply',
+    query: {
+      type: 'manage',
+      resourceType: 'etl',
+      resourceId: t.id,
+      name: t.name || t.dagCode || '',
+    },
+  })
+}
 
 const {
   taskList,
@@ -61,7 +97,12 @@ const {
   forceCfgTab,
   setScheduleStatus,
   backfillCurrent,
+  deleteCurrent,
 } = useEtl()
+
+const canEditCurrent = computed(() => canEditEtl(current.value))
+const canDeleteCurrent = computed(() => canDeleteEtl(current.value))
+const needApplyOps = computed(() => !!current.value && !canEditCurrent.value && !canDeleteCurrent.value)
 
 const taskKw = ref('')
 const runsDrawerOpen = ref(false)
@@ -127,11 +168,20 @@ watch(
   { immediate: true },
 )
 
+watch(
+  () => current.value?.id,
+  async (id) => {
+    if (!id) return
+    await refreshManageGrant('etl', id, current.value)
+  },
+  { immediate: true },
+)
+
 const filteredTasks = computed(() => {
   const q = taskKw.value.trim().toLowerCase()
   if (!q) return taskList.value
   return taskList.value.filter((t) =>
-    `${t.name} ${t.desc} ${t.dagCode} ${t.owner} ${t.engine}`.toLowerCase().includes(q),
+    `${t.name} ${t.desc} ${t.dagCode} ${t.ownerName || ''} ${t.owner} ${t.engine}`.toLowerCase().includes(q),
   )
 })
 
@@ -212,6 +262,7 @@ function onAddNode(type) {
     showToast('请先选择或新建任务', 'warning')
     return
   }
+  if (!assertEditOrGuide('编辑图')) return
   const n = addNode(type)
   if (n) showToast(`＋ 已添加「${n.name}」`, 'success')
 }
@@ -221,26 +272,49 @@ function onDropType(type, pos) {
     showToast('请先选择或新建任务', 'warning')
     return
   }
+  if (!assertEditOrGuide('编辑图')) return
   const n = addNode(type, pos)
   if (n) showToast(`＋ 已添加「${n.name}」`, 'success')
 }
 
 function onBeginConnect(id) {
+  if (!assertEditOrGuide('编辑图')) return
   beginConnect(id)
   showToast('连线中：点击目标节点完成', 'info')
 }
 
 function onCompleteConnect(toId) {
+  if (!assertEditOrGuide('编辑图')) {
+    cancelConnect()
+    return
+  }
   const ok = completeConnect(toId)
   showToast(ok ? '✓ 已连线' : '连线失败（可能已存在）', ok ? 'success' : 'warning')
 }
 
+function onMoveNode(id, pos) {
+  if (!assertEditOrGuide('编辑图')) return
+  moveNode(id, pos)
+}
+
+function onUpdateTask(patch) {
+  if (!assertEditOrGuide()) return
+  updateTaskMeta(patch)
+}
+
+function onUpdateNode(id, patch) {
+  if (!assertEditOrGuide()) return
+  patchNode(id, patch)
+}
+
 function onDeleteNode(id) {
+  if (!assertEditOrGuide('编辑图')) return
   removeNode(id)
   showToast('已删除节点', 'success')
 }
 
 function onDeleteEdge(idx) {
+  if (!assertEditOrGuide('编辑图')) return
   removeEdge(idx)
   showToast('已删除连线', 'success')
 }
@@ -258,16 +332,18 @@ async function onValidate() {
 
 async function onSave() {
   if (!current.value) return
+  if (!assertEditOrGuide('保存')) return
   try {
     await saveCurrent()
     showToast(`💾 已保存 ${current.value.name}`, 'success')
   } catch (e) {
-    showToast(e.message || '保存失败', 'error')
+    if (!toastNeedApply(e)) showToast(e.message || '保存失败', 'error')
   }
 }
 
 async function onTrialRun() {
   if (!current.value) return
+  if (!assertEditOrGuide('试跑')) return
   try {
     const row = await trialRun()
     if (row) {
@@ -298,12 +374,13 @@ async function onTrialRun() {
       runsDrawerOpen.value = true
     }
   } catch (e) {
-    showToast(e.message || '试跑失败', 'error')
+    if (!toastNeedApply(e)) showToast(e.message || '试跑失败', 'error')
   }
 }
 
 async function onSetStatus(status) {
   if (!current.value) return
+  if (!assertEditOrGuide('变更状态')) return
   try {
     const r = await setScheduleStatus(status)
     const deg = r?.dsSchedule?.degraded
@@ -319,12 +396,13 @@ async function onSetStatus(status) {
       deg ? 'warning' : 'success',
     )
   } catch (e) {
-    showToast(e.message || '状态变更失败', 'error')
+    if (!toastNeedApply(e)) showToast(e.message || '状态变更失败', 'error')
   }
 }
 
 async function onBackfill({ markKey, markValue } = {}) {
   if (!current.value) return
+  if (!assertEditOrGuide('补数')) return
   try {
     const resp = await backfillCurrent({ markKey, markValue })
     showToast(
@@ -336,7 +414,7 @@ async function onBackfill({ markKey, markValue } = {}) {
     }
     runsDrawerOpen.value = true
   } catch (e) {
-    showToast(e.message || '补数失败', 'error')
+    if (!toastNeedApply(e)) showToast(e.message || '补数失败', 'error')
   }
 }
 
@@ -358,6 +436,7 @@ function onSelectRunNode(nodeId) {
 
 async function onPublish() {
   if (!current.value) return
+  if (!assertEditOrGuide('发布')) return
   try {
     const resp = await publishCurrent()
     const wf = resp?.dsWorkflowCode || current.value.dsWorkflowCode || ''
@@ -373,7 +452,38 @@ async function onPublish() {
       : [wf && `→ ${wf}`, side, se.qualityGateBlocked ? '⚠质量阻断' : ''].filter(Boolean).join(' ')
     showToast(`🚀 已发布 ${current.value.name} ${current.value.ver} ${tip}`.trim(), se.qualityGateBlocked ? 'warning' : 'success')
   } catch (e) {
-    showToast(e.message || '发布失败', 'error')
+    if (!toastNeedApply(e)) showToast(e.message || '发布失败', 'error')
+  }
+}
+
+async function onDeleteTask() {
+  const t = current.value
+  if (!t) return
+  if (!canDeleteCurrent.value) {
+    showToast('无删除权，请申请操作权限', 'warning')
+    goApplyManageEtl()
+    return
+  }
+  const running = (t.logs || []).some((l) => {
+    const s = String(l.status || '').toUpperCase()
+    return s === 'RUNNING' || s === 'SUBMITTED' || s === 'PENDING'
+  })
+  if (running) {
+    showToast('任务运行中，请等待完成后再删除', 'warning')
+    return
+  }
+  const ok = await confirmDelete({
+    title: `删除 ETL 任务「${t.name || t.dagCode}」`,
+    message: '将软删任务与图配置，运行记录保留；运行中任务不可删。',
+    confirmLabel: '确认删除',
+  })
+  if (!ok) return
+  try {
+    const resp = await deleteCurrent()
+    const deg = resp?.dsSchedule?.degraded
+    showToast(deg ? '已删除（DS 下线同步降级）' : '已删除任务', deg ? 'warning' : 'success')
+  } catch (e) {
+    if (!toastNeedApply(e)) showToast(e.message || '删除失败', 'error')
   }
 }
 
@@ -418,10 +528,12 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
     >
       <span v-if="loading || saving" class="etl-busy">{{ saving ? '保存中…' : '加载中…' }}</span>
       <button class="btn btn-sm" :disabled="!current || saving" @click="onValidate">校验</button>
-      <button class="btn btn-sm" :disabled="!current || saving" @click="onSave">保存</button>
-      <button class="btn btn-sm" :disabled="!current || saving" @click="onTrialRun">▶ 试跑</button>
+      <button v-if="canEditCurrent" class="btn btn-sm" :disabled="!current || saving" @click="onSave">保存</button>
+      <button v-if="canEditCurrent" class="btn btn-sm" :disabled="!current || saving" @click="onTrialRun">▶ 试跑</button>
       <button class="btn btn-sm" :disabled="!current" @click="onOpenRuns">执行记录</button>
-      <button class="btn btn-sm" :disabled="!current || saving" @click="onPublish">发布</button>
+      <button v-if="canEditCurrent" class="btn btn-sm" :disabled="!current || saving" @click="onPublish">发布</button>
+      <button v-if="canDeleteCurrent" class="btn btn-sm" :disabled="!current || saving" style="color: var(--danger)" @click="onDeleteTask">删除</button>
+      <button v-if="needApplyOps" class="btn btn-sm" @click="goApplyManageEtl">🔐 申请操作权限</button>
       <button class="btn btn-sm btn-primary" :disabled="saving" @click="onNewTask">＋ 新建任务</button>
     </PageHeader>
 
@@ -491,7 +603,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
           <div class="dag-topbar-info">
             <div class="dag-title">{{ current?.name || '未选择任务' }}</div>
             <div v-if="current" class="dag-meta">
-              {{ current.env }} · {{ current.engine }} · {{ current.owner }} · SLA {{ current.sla }}
+              {{ current.env }} · {{ current.engine }} · {{ displayUser(current.ownerName, current.owner) }} · SLA {{ current.sla }}
             </div>
           </div>
           <div class="dag-topbar-actions">
@@ -502,6 +614,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
             <button class="btn btn-sm" title="复位视图" @click="canvasRef?.resetView()">复位</button>
             <button class="btn btn-sm" title="放大" @click="canvasRef?.zoomBy(0.1)">＋</button>
             <button
+              v-if="canEditCurrent"
               class="btn btn-sm"
               :disabled="!selNodeId"
               @click="selNodeId && onDeleteNode(selNodeId)"
@@ -520,7 +633,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
             @select-node="selectNode"
             @select-edge="selectEdge"
             @clear="clearSelection"
-            @move="moveNode"
+            @move="onMoveNode"
             @drop-type="onDropType"
             @begin-connect="onBeginConnect"
             @complete-connect="onCompleteConnect"
@@ -561,8 +674,10 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
           :source-fields="sourceFields"
           :target-fields="targetFields"
           :force-tab="forceCfgTab"
-          @update-task="updateTaskMeta"
-          @update-node="(id, patch) => patchNode(id, patch)"
+          :can-manage="canEditCurrent"
+          :can-delete="canDeleteCurrent"
+          @update-task="onUpdateTask"
+          @update-node="onUpdateNode"
           @delete-node="onDeleteNode"
           @delete-edge="onDeleteEdge"
           @trial-run="onTrialRun"
@@ -570,6 +685,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
           @open-runs="onOpenRuns"
           @set-status="onSetStatus"
           @backfill="onBackfill"
+          @delete-task="onDeleteTask"
         />
       </aside>
     </div>

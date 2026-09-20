@@ -8,7 +8,11 @@ import { useAssets } from '@/composables/useAssets'
 import { useDatasources } from '@/composables/useDatasources'
 import { useToast } from '@/composables/useToast'
 import { ASSET_DOMAINS, ASSET_LAYERS } from '@/data/assetMeta'
+import DsTypeIcon from '@/components/datasource/DsTypeIcon.vue'
+import { dsTypeMeta } from '@/data/dsForm'
+import { inferDsTypeCode } from '@/data/dsTypeIcons'
 import { pageGuideOf } from '@/data/pageGuides'
+import { bareDisplayUser } from '@/utils/displayUser'
 
 const route = useRoute()
 const router = useRouter()
@@ -151,6 +155,11 @@ function closeDrawer() {
   }
 }
 
+function onAssetDeleted() {
+  current.value = null
+  closeDrawer()
+}
+
 function clearSourceFilter() {
   sourceFilter.value = ''
 }
@@ -177,7 +186,19 @@ async function onRegisterSubmit(payload) {
       engine: payload.engine,
     })
     if (payload.sourceId && row?.id) {
-      updateSource(payload.sourceId, { asset: row.id })
+      const src = sources.value.find((s) => s.id === payload.sourceId)
+      const linked = Array.isArray(src?.linkedAssets) ? [...src.linkedAssets] : []
+      const objectName = payload.tableName || row.tableName || row.objectName || ''
+      if (objectName && !linked.some((a) => String(a.objectName || '') === String(objectName))) {
+        linked.push({
+          assetId: row.id,
+          assetCode: row.key || row.assetCode,
+          name: row.name,
+          objectName,
+          linkRole: 'primary',
+        })
+      }
+      updateSource(payload.sourceId, { asset: row.id, linkedAssets: linked })
     }
     showToast(`已注册资产 ${row.key} · ${payload.sourceName || ''}`, 'success')
     if (payload.sourceName) sourceFilter.value = payload.sourceName
@@ -206,7 +227,7 @@ function exportCsv() {
         a.name,
         a.layer,
         a.domain,
-        a.owner,
+        a.ownerName || a.owner,
         a.sourceName || '',
         a.tableName || '',
         a.omFqn || '',
@@ -226,9 +247,57 @@ function exportCsv() {
 }
 
 function sourceLabel(asset) {
-  if (asset?.sourceSummary) return asset.sourceSummary
   if (asset?.sourceName) return asset.sourceName
+  if (asset?.sourceSummary) return asset.sourceSummary
   return ''
+}
+
+function resolveSource(asset) {
+  if (!asset) return null
+  if (asset.sourceId) {
+    const byId = sources.value.find((s) => s.id === asset.sourceId)
+    if (byId) return byId
+  }
+  const name = asset.sourceName || ''
+  if (name) {
+    return sources.value.find((s) => s.name === name || s.id === name) || null
+  }
+  return null
+}
+
+/** 与数据源管理卡片一致的类型视觉（bg / color / label；图标由 DsTypeIcon 按类型解析） */
+function sourceTypeVisual(asset) {
+  const src = resolveSource(asset)
+  const label = src?.type || asset?.sourceType || ''
+  const meta = dsTypeMeta(label)
+  const typeCode = src?.typeCode || asset?.sourceTypeCode || inferDsTypeCode(label)
+  return {
+    bg: src?.bg || meta.bg || '#e8f0ff',
+    color: src?.color || meta.color || '#1e6fff',
+    label,
+    typeCode,
+  }
+}
+
+function sourceTypeLabel(asset) {
+  return sourceTypeVisual(asset).label || ''
+}
+
+/** 左下角认责：技术 Owner；业务 Owner 仅在不同时追加 */
+function ownerLine(asset) {
+  const tech = bareDisplayUser(asset?.ownerName || asset?.techOwnerName, asset?.owner || asset?.techOwner)
+  const biz = bareDisplayUser(asset?.bizOwnerName, asset?.bizOwner)
+  if (tech && biz && tech !== biz) return `${tech} · ${biz}`
+  return tech || biz || '—'
+}
+
+function ownerTitle(asset) {
+  const tech = bareDisplayUser(asset?.ownerName || asset?.techOwnerName, asset?.owner || asset?.techOwner)
+  const biz = bareDisplayUser(asset?.bizOwnerName, asset?.bizOwner)
+  if (tech && biz && tech !== biz) return `技术 ${tech} · 业务 ${biz}`
+  if (tech) return `Owner ${tech}`
+  if (biz) return `业务 Owner ${biz}`
+  return '未指定 Owner'
 }
 
 function onAssetUpdated(row) {
@@ -259,7 +328,7 @@ function onAssetUpdated(row) {
           <select v-model="sourceFilter" class="select" style="width: 100%; margin-bottom: 8px; font-size: 12px">
             <option value="">全部数据源</option>
             <option v-for="s in sourceOptions" :key="s.id" :value="s.name">
-              {{ s.name }}
+              {{ s.type ? `${s.type} · ${s.name}` : s.name }}
             </option>
           </select>
           <button
@@ -305,7 +374,7 @@ function onAssetUpdated(row) {
           <select v-model="sourceFilter" class="select input-sm" style="max-width: 200px">
             <option value="">全部数据源</option>
             <option v-for="s in sourceOptions" :key="'tb-' + s.id" :value="s.name">
-              {{ s.name }}
+              {{ s.type ? `${s.type} · ${s.name}` : s.name }}
             </option>
           </select>
           <div style="margin-left: auto; font-size: 12px; color: var(--text-3)">
@@ -342,16 +411,26 @@ function onAssetUpdated(row) {
             @keydown.enter="openAsset(a.id)"
           >
             <div class="asset-header">
-              <div class="asset-name">
-                <span class="asset-layer" :class="`layer-${a.layer}`">{{ a.layerLabel }}</span>
-                {{ a.key }}
+              <div class="asset-ds-badge" :style="{ background: sourceTypeVisual(a).bg, color: sourceTypeVisual(a).color }" :title="sourceTypeLabel(a) || '数据源类型'">
+                <DsTypeIcon :type="sourceTypeVisual(a).label" :type-code="sourceTypeVisual(a).typeCode" :size="20" />
               </div>
-              <div class="quality-score" :class="a.qualityClass">{{ a.quality }}</div>
+              <div class="asset-header-main">
+                <div class="asset-name">
+                  <span class="asset-layer" :class="`layer-${a.layer}`">{{ a.layerLabel }}</span>
+                  <span class="asset-name-text" :title="a.key">{{ a.key }}</span>
+                </div>
+                <div class="asset-origin">
+                  <span v-if="sourceLabel(a)" class="asset-source-name" :title="sourceLabel(a)">
+                    {{ sourceLabel(a) }}
+                  </span>
+                  <span v-if="a.tableName || a.objectName" class="asset-object-name" :title="a.tableName || a.objectName">
+                    {{ a.tableName || a.objectName }}
+                  </span>
+                  <span v-if="!sourceLabel(a)" class="asset-source-name muted">未关联数据源</span>
+                </div>
+              </div>
             </div>
             <div class="asset-desc">{{ a.desc || a.cnName || '—' }}</div>
-            <div v-if="sourceLabel(a)" class="asset-source">
-              🔌 {{ sourceLabel(a) }}
-            </div>
             <div class="asset-tags">
               <span class="tag" :class="a.levelClass">{{ a.level }}</span>
               <span v-if="a.isGold" class="tag tag-green">⭐ 黄金</span>
@@ -365,14 +444,19 @@ function onAssetUpdated(row) {
               >{{ t[0] }}</span>
             </div>
             <div class="asset-footer">
-              <div class="asset-owner">
+              <div class="asset-owner" :title="ownerTitle(a)">
                 <span class="owner-avatar">{{ a.ownerAvatar }}</span>
-                {{ a.owner || '—' }} · {{ (a.bizOwner || '').split('(')[0] || '—' }}
+                <span>{{ ownerLine(a) }}</span>
               </div>
-              <div class="asset-metrics">
-                <span class="m">📄 {{ a.cols }}列</span>
-                <span class="m">📈 {{ a.metrics?.read7d }}</span>
+              <div
+                v-if="sourceTypeLabel(a)"
+                class="asset-type-label"
+                :style="{ background: sourceTypeVisual(a).bg, color: sourceTypeVisual(a).color }"
+                :title="sourceTypeLabel(a)"
+              >
+                {{ sourceTypeLabel(a) }}
               </div>
+              <div v-else class="asset-type-label muted">—</div>
             </div>
           </div>
         </div>
@@ -384,6 +468,7 @@ function onAssetUpdated(row) {
       :asset="current"
       @close="closeDrawer"
       @updated="onAssetUpdated"
+      @deleted="onAssetDeleted"
     />
     <RegisterAssetModal
       :open="regOpen"

@@ -42,7 +42,8 @@ export const APPLY_KPIS = [
 
 export const APPLY_TABS = [
   { id: 'all', label: '📋 全部' },
-  { id: 'perm', label: '🔐 权限申请' },
+  { id: 'perm', label: '🔐 数据权限' },
+  { id: 'ops', label: '🛡 操作权限' },
   { id: 'table', label: '📚 表申请' },
   { id: 'export', label: '📤 出湖申请' },
   { id: 'publish', label: '🚀 发布审批' },
@@ -52,6 +53,7 @@ export const APPLY_TABS = [
 
 export const APPLY_TYPE_OPTIONS = [
   { value: 'perm', label: '🔐 数据权限申请' },
+  { value: 'manage', label: '🛡 操作权限申请' },
   { value: 'table', label: '📚 表申请' },
   { value: 'export', label: '📤 出湖申请' },
   { value: 'publish', label: '🚀 发布审批' },
@@ -60,6 +62,18 @@ export const APPLY_TYPE_OPTIONS = [
 ]
 
 export const APPLY_EXPIRE_OPTIONS = ['14天', '30天', '90天', '长期']
+
+/** 操作权限 privilege（与 sec_auth_grant / resource_manage 对齐） */
+export const APPLY_OPS_PRIVILEGES = [
+  { value: 'EDIT', label: '编辑', tip: '改配置/启停/元数据写/发布等，不含删除' },
+  { value: 'DELETE', label: '删除', tip: '仅删除资源' },
+  { value: 'MANAGE', label: '改删全权', tip: '等同 EDIT + DELETE' },
+]
+
+export function opsPrivilegeLabel(priv) {
+  const up = String(priv || 'MANAGE').toUpperCase()
+  return APPLY_OPS_PRIVILEGES.find((m) => m.value === up)?.label || up
+}
 
 /** 数据权限申请 */
 export const APPLY_PERM_MODES = [
@@ -88,16 +102,19 @@ export const APPLY_PUBLISH_ENVS = [
 ]
 
 export function buildApplyAssetOptions(assets = []) {
-  return assets.map((a) => ({
-    value: a.key,
-    label: `${a.key} · ${a.name}`,
-    sub: `${a.layerLabel || a.layer} · ${a.level || '内部'} · Owner ${a.owner || '—'}`,
-    name: a.name,
-    level: a.level || '内部',
-    owner: a.owner,
-    domain: a.domainLabel || a.domain,
-    layer: a.layerLabel || a.layer,
-  }))
+  return assets.map((a) => {
+    const ownerLabel = a.ownerName || a.techOwnerName || a.owner || '—'
+    return {
+      value: a.key,
+      label: `${a.key} · ${a.name}`,
+      sub: `${a.layerLabel || a.layer} · ${a.level || '内部'} · Owner ${ownerLabel}`,
+      name: a.name,
+      level: a.level || '内部',
+      owner: ownerLabel,
+      domain: a.domainLabel || a.domain,
+      layer: a.layerLabel || a.layer,
+    }
+  })
 }
 
 export function buildApplyReleaseOptions(history = []) {

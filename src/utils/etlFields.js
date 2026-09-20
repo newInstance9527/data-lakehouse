@@ -12,13 +12,14 @@ function toOption(f) {
   }
 }
 
-/** 按表名生成演示字段列表 */
-export function fieldsForTableName(tableName, sourceType = 'MySQL') {
+/** 按表名取字段：优先空（等 schema）；仅显式 synthesize 才用演示模板 */
+export function fieldsForTableName(tableName, sourceType = 'MySQL', { synthesize = false } = {}) {
   if (!tableName) return []
   const hint = String(tableName)
   return getAssetFields(
     { id: hint, key: hint, name: hint.split('.').pop(), tableName: hint },
     sourceType,
+    { synthesize },
   ).map(toOption)
 }
 

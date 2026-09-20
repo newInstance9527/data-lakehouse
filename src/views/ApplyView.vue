@@ -14,6 +14,7 @@ import {
   APPLY_METRIC_KINDS,
   APPLY_METRIC_SCOPES,
   APPLY_METRIC_TYPES,
+  APPLY_OPS_PRIVILEGES,
   APPLY_PERM_LEVELS,
   APPLY_PERM_MODES,
   APPLY_PUBLISH_ENVS,
@@ -31,11 +32,14 @@ import {
   tableKindLabel,
 } from '@/data/apply'
 import { createApplyTicket, approveTicket as apiApproveTicket, rejectTicket as apiRejectTicket } from '@/api/apply'
+import { fetchDatasourcePage } from '@/api/datasource'
+import { fetchEtlDags } from '@/api/etl'
 import { useApplyBoard, pushExportApply, approveExportOnBoard, hydrateApplyBoardFromServer } from '@/composables/useApplyBoard'
 import { EXPORT_TABLE_OPTIONS } from '@/data/createForms'
 import { ASSET_DATA } from '@/data/assets'
 import { METRIC_CATALOG } from '@/data/metrics'
 import { PUBLISH_HISTORY } from '@/data/publish'
+import { OPS_RESOURCE_ENABLED, opsResourceLabel } from '@/data/opsResourceTypes'
 
 const route = useRoute()
 const router = useRouter()
@@ -45,6 +49,7 @@ const { pending, mine } = useApplyBoard()
 
 onMounted(() => {
   hydrateApplyBoardFromServer()
+  loadOpsResourceOptions()
 })
 
 const TYPE_LABEL = Object.fromEntries(APPLY_TYPE_OPTIONS.map((o) => [o.value, o.label]))
@@ -86,6 +91,10 @@ function emptyForm() {
     rollbackPlan: '',
     exportTable: EXPORT_OPTIONS[0]?.value || '',
     exportTarget: 'BI 报表',
+    resourceType: 'asset',
+    resourceId: '',
+    resourceName: '',
+    opsPrivilege: 'MANAGE',
   }
 }
 
@@ -96,6 +105,68 @@ const tokenModal = ref(null)
 const detailOpen = ref(false)
 const detail = ref(null)
 const tokenVisible = ref(false)
+const opsDsOptions = ref([])
+const opsEtlOptions = ref([])
+
+async function loadOpsResourceOptions() {
+  try {
+    const page = await fetchDatasourcePage({}, { current: 1, size: 200 })
+    opsDsOptions.value = (page?.records || []).map((s) => {
+      const ownerLabel = s.ownerName || s.owner || '—'
+      return {
+        value: s.id,
+        label: s.name || s.dsCode || s.id,
+        name: s.name || s.dsCode || s.id,
+        sub: `${s.type || ''} · ${ownerLabel}`,
+        type: s.type,
+        owner: ownerLabel,
+      }
+    })
+  } catch {
+    opsDsOptions.value = []
+  }
+  try {
+    const page = await fetchEtlDags({}, { current: 1, size: 200 })
+    opsEtlOptions.value = (page?.records || []).map((d) => {
+      const ownerLabel = d.ownerName || d.owner || '—'
+      return {
+        value: d.id,
+        label: d.name || d.dagCode || d.id,
+        name: d.name || d.dagCode || d.id,
+        sub: `${d.dagCode || ''} · ${ownerLabel}`,
+        dagCode: d.dagCode,
+        owner: ownerLabel,
+      }
+    })
+  } catch {
+    opsEtlOptions.value = []
+  }
+}
+
+function onOpsResourceTypeChange() {
+  form.value.resourceId = ''
+  form.value.resourceName = ''
+}
+
+function onOpsAssetPicked(id) {
+  form.value.resourceId = id || ''
+  form.value.asset = id || ''
+  const opt = permAssetOptions.value.find((o) => o.value === id)
+  form.value.resourceName = opt?.label || opt?.name || ''
+  form.value.assetName = form.value.resourceName
+}
+
+function onOpsDsPicked(id) {
+  form.value.resourceId = id || ''
+  const opt = opsDsOptions.value.find((o) => o.value === id)
+  form.value.resourceName = opt?.label || opt?.name || ''
+}
+
+function onOpsEtlPicked(id) {
+  form.value.resourceId = id || ''
+  const opt = opsEtlOptions.value.find((o) => o.value === id)
+  form.value.resourceName = opt?.label || opt?.name || ''
+}
 
 const selectedMetric = computed(() => METRIC_OPTIONS.find((o) => o.value === form.value.metricId) || null)
 const selectedAsset = computed(() => ASSET_OPTIONS.find((o) => o.value === form.value.asset) || null)
@@ -166,6 +237,48 @@ watch(
           (typeof route.query.target === 'string' && route.query.target) || emptyForm().exportTarget,
         purpose: typeof route.query.purpose === 'string' ? route.query.purpose : '',
       }
+    } else if (t === 'manage') {
+      activeTab.value = 'ops'
+      creating.value = true
+      const resourceType =
+        (typeof route.query.resourceType === 'string' && route.query.resourceType) || 'asset'
+      const resourceId =
+        (typeof route.query.resourceId === 'string' && route.query.resourceId) ||
+        (typeof route.query.assetId === 'string' && route.query.assetId) ||
+        ''
+      const assetId =
+        (typeof route.query.assetId === 'string' && route.query.assetId) ||
+        (resourceType === 'asset' ? resourceId : '') ||
+        ''
+      const assetCode = typeof route.query.assetCode === 'string' ? route.query.assetCode : ''
+      const assetName = typeof route.query.name === 'string' ? route.query.name : ''
+      const privRaw =
+        typeof route.query.privilege === 'string' ? route.query.privilege.toUpperCase() : 'MANAGE'
+      const opsPrivilege = APPLY_OPS_PRIVILEGES.some((p) => p.value === privRaw) ? privRaw : 'MANAGE'
+      const matched = assetId && ASSET_OPTIONS.some((o) => o.value === assetId)
+      form.value = {
+        ...emptyForm(),
+        type: 'manage',
+        resourceType,
+        resourceId,
+        resourceName: assetName,
+        opsPrivilege,
+        asset: matched
+          ? assetId
+          : assetId
+            ? assetId
+            : emptyForm().asset,
+        assetCode,
+        assetName,
+        purpose: assetName
+          ? `申请操作权限 · ${assetName}${assetCode ? `（${assetCode}）` : ''}`
+          : resourceType === 'datasource'
+            ? '申请数据源操作权限（改删/启停）'
+            : resourceType === 'etl'
+              ? '申请 ETL 任务操作权限（编辑/删除/发布）'
+              : '申请资产操作权限（编辑/元数据写/删除）',
+        expire: '30天',
+      }
     } else if (t === 'perm' || t === 'table' || t === 'publish') {
       activeTab.value = t
       creating.value = true
@@ -212,6 +325,21 @@ watch(
     if (form.value.type === 'perm' && selectedAsset.value) {
       form.value.permLevel = selectedAsset.value.level || form.value.permLevel
     }
+    if (form.value.type === 'manage' && form.value.resourceType === 'asset') {
+      form.value.resourceId = form.value.asset || ''
+      const opt = permAssetOptions.value.find((o) => o.value === form.value.asset)
+      if (opt) {
+        form.value.resourceName = opt.label || opt.name || ''
+        form.value.assetName = form.value.resourceName
+      }
+    }
+  },
+)
+
+watch(
+  () => form.value.type,
+  (t) => {
+    if (t === 'manage') activeTab.value = 'ops'
   },
 )
 
@@ -255,6 +383,7 @@ function purposePlaceholder() {
     return '看板 / 即席 / API 引用场景与下游产物'
   }
   if (form.value.type === 'perm') return '业务背景、访问场景、是否含敏感字段'
+  if (form.value.type === 'manage') return '申请操作权限事由：为何需改删该资源、使用期限'
   if (form.value.type === 'table') return '对账 / 分析 / 登记原因与下游消费方'
   if (form.value.type === 'export') return '出湖业务用途、下游系统、是否含 PII / 脱敏要求'
   if (form.value.type === 'publish') return '变更说明、影响范围、验证结果'
@@ -297,6 +426,12 @@ async function submitApply() {
     }
     if (form.value.permMode === 'plain' && form.value.expire === '长期') {
       showToast('敏感列明文不可选长期，请缩短时效', 'warning')
+      return
+    }
+  } else if (form.value.type === 'manage') {
+    const rid = form.value.resourceId || (form.value.resourceType === 'asset' ? form.value.asset : '')
+    if (!rid) {
+      showToast('请指定资源 ID（可从资产目录/数据源/ETL 入口带入）', 'warning')
       return
     }
   } else if (form.value.type === 'table') {
@@ -378,6 +513,43 @@ async function submitApply() {
     })
   } else if (form.value.type === 'metric') {
     submitMetricApply(id, now, purpose)
+  } else if (form.value.type === 'manage') {
+    try {
+      const resourceType = form.value.resourceType || 'asset'
+      const resourceId =
+        form.value.resourceId ||
+        (resourceType === 'asset' ? form.value.asset : '') ||
+        ''
+      if (!resourceId) {
+        showToast('请选择要申请操作权限的资源', 'warning')
+        return
+      }
+      const nameHint =
+        form.value.resourceName ||
+        form.value.assetName ||
+        form.value.name ||
+        `${opsResourceLabel(resourceType)}:${resourceId}`
+      const privilege = String(form.value.opsPrivilege || 'MANAGE').toUpperCase()
+      const server = await createApplyTicket({
+        ticketType: 'resource_manage',
+        title: `操作权限 · ${nameHint}`,
+        reason: purpose,
+        assetId: resourceType === 'asset' ? resourceId : form.value.asset || null,
+        resourceType,
+        resourceId,
+        privilege,
+        expireLabel: form.value.expire,
+      })
+      showToast(
+        `✅ 操作权限申请已提交 ${server?.ticketNo || server?.id || ''}，审批通过后写入 ${privilege} 授权`,
+        'success',
+        { duration: 8000 },
+      )
+      await hydrateApplyBoardFromServer().catch(() => {})
+    } catch (e) {
+      showToast(e?.message || '操作权限申请提交失败', 'danger')
+      return
+    }
   } else if (form.value.type === 'perm') {
     try {
       const server = await createApplyTicket({
@@ -743,14 +915,58 @@ async function approveTicket(id) {
   if (idx < 0) return
   const ticket = pending.value[idx]
 
-  if (ticket.type === 'perm' && (ticket.fromServer || ticket.serverId)) {
+  // perm / ops 均须打后端；此前仅 perm 调 API，ops 本地撕卡后 hydrate 又回待审批
+  if ((ticket.type === 'perm' || ticket.type === 'ops') && (ticket.fromServer || ticket.serverId)) {
     try {
       await apiApproveTicket(ticket.serverId || ticket.id)
-      showToast(`✅ 已通过 ${id} · 已写 sec_auth_grant（可投影则 soft-fail Grav ACL）`, 'success')
+      const ok = await hydrateApplyBoardFromServer().catch(() => false)
+      if (ok) {
+        showToast(`✅ 已通过 ${ticket.ticketNo || id} · 已写 sec_auth_grant（门户生效）`, 'success')
+        return
+      }
     } catch (e) {
       showToast(e?.message || '审批接口失败', 'danger')
       return
     }
+  }
+
+  if (ticket.type === 'ops') {
+    pending.value.splice(idx, 1)
+    const now = new Date().toLocaleString('zh-CN', {
+      hour12: false,
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).replace(/\//g, '-')
+    const privilege = String(ticket.privilege || 'MANAGE').toUpperCase()
+    const typeTag =
+      ticket.resourceType === 'datasource'
+        ? '数据源'
+        : ticket.resourceType === 'etl'
+          ? 'ETL'
+          : ticket.resourceType === 'asset'
+            ? '资产'
+            : ticket.resourceType || '资源'
+    const approved = {
+      ...ticket,
+      side: 'approved',
+      titleHtml: `<span class="tag tag-green">已通过</span> ${typeTag}操作权 · ${ticket.asset || '—'}`,
+      time: now,
+      desc: `已写入 sec_auth_grant · privilege=${privilege}（门户生效）`,
+      statusTag: `已授 ${privilege}`,
+      statusCls: 'tag-green',
+      timeline: [
+        { label: '✓ 提交', cls: 'done' },
+        { label: '✓ 审批', cls: 'done' },
+        { label: `✓ ${privilege} 生效`, cls: 'done' },
+      ],
+    }
+    mine.value.unshift(approved)
+    const mineIdx = mine.value.findIndex((m, i) => i > 0 && m.id === ticket.id && m.side === 'pending')
+    if (mineIdx > 0) mine.value.splice(mineIdx, 1)
+    showToast(`✅ 已通过 ${id} · 已写 sec_auth_grant（门户生效）`, 'success')
+    return
   }
 
   if (ticket.type === 'api') {
@@ -902,16 +1118,16 @@ async function approveTicket(id) {
     if (ticket.type === 'perm') {
       const modeLabel = permModeLabel(ticket.permMode)
       title = `${ticket.asset} · ${modeLabel}`
-      desc = `已写入 Gravitino ACL · ${ticket.columns ? `列 ${ticket.columns} · ` : ''}时效 ${ticket.expire || '—'} · ${ticket.purpose || ''}`
+      desc = `已写入 sec_auth_grant（门户生效）· ${ticket.columns ? `列 ${ticket.columns} · ` : ''}时效 ${ticket.expire || '—'} · ${ticket.purpose || ''}`
       timeline = [
         { label: '✓ 提交', cls: 'done' },
         { label: '✓ Owner', cls: 'done' },
         ...(ticket.permMode === 'plain' || ticket.permLevel === '机密'
           ? [{ label: '✓ 安全加签', cls: 'done' }]
           : []),
-        { label: '✓ Gravitino 已授权', cls: 'done' },
+        { label: '✓ sec_auth_grant', cls: 'done' },
       ]
-      toastMsg = `✅ 已通过 ${id} · 权限已写入 Gravitino`
+      toastMsg = `✅ 已通过 ${id} · 已写 sec_auth_grant（门户生效）`
     } else if (ticket.type === 'table') {
       const kind = ticket.tableKind || 'read'
       if (kind === 'register') {
@@ -969,14 +1185,19 @@ async function approveTicket(id) {
   }
 
   pending.value.splice(idx, 1)
-  showToast(`✅ 已通过 ${id} · 将写入 Gravitino 授权`, 'success')
+  showToast(`✅ 已通过 ${id}`, 'success')
 }
 
 async function rejectTicket(id) {
   const ticket = pending.value.find((w) => w.id === id)
-  if (ticket?.type === 'perm' && (ticket.fromServer || ticket.serverId)) {
+  if ((ticket?.type === 'perm' || ticket?.type === 'ops') && (ticket.fromServer || ticket.serverId)) {
     try {
       await apiRejectTicket(ticket.serverId || ticket.id, '驳回')
+      const ok = await hydrateApplyBoardFromServer().catch(() => false)
+      if (ok) {
+        showToast(`❌ 已驳回 ${ticket.ticketNo || id} · 已通知申请人`, 'warning')
+        return
+      }
     } catch (e) {
       showToast(e?.message || '驳回接口失败', 'danger')
       return
@@ -1122,6 +1343,7 @@ function approveBtnLabel(w) {
     return '通过并授权'
   }
   if (w.type === 'perm') return w.permMode === 'plain' || w.permLevel === '机密' ? '通过并加签授权' : '通过并授权'
+  if (w.type === 'ops') return '通过并授权'
   if (w.type === 'table') {
     if (w.tableKind === 'register') return '通过并登记'
     if (w.tableKind === 'alter') return '通过并变更'
@@ -1143,7 +1365,7 @@ function displayToken() {
   <div class="apply-page">
     <PageHeader
       title="申请中心"
-      subtitle="权限 / 表 / 发布 / API / 指标 · 统一工单 · 通过后写 Gravitino 或上线门禁"
+      subtitle="权限 / 表 / 发布 / API / 指标 · 统一工单 · 通过后写门户授权或上线门禁"
       :guide="guide"
     >
       <button type="button" class="btn btn-sm" @click="exportTickets">📤 导出工单</button>
@@ -1265,6 +1487,70 @@ function displayToken() {
               </label>
             </template>
           </template>
+        </template>
+
+        <template v-else-if="form.type === 'manage'">
+          <label>
+            <span>资源模块</span>
+            <select v-model="form.resourceType" class="select" @change="onOpsResourceTypeChange">
+              <option v-for="o in OPS_RESOURCE_ENABLED" :key="o.value" :value="o.value">
+                {{ o.label }}
+              </option>
+            </select>
+          </label>
+          <label v-if="form.resourceType === 'asset'" class="wide">
+            <span>选择资产</span>
+            <SearchSelect
+              v-model="form.asset"
+              :options="permAssetOptions"
+              placeholder="搜索表 / 资产"
+              sub-key="sub"
+              :search-keys="['name', 'level', 'owner', 'domain', 'value']"
+              @update:model-value="onOpsAssetPicked"
+            />
+          </label>
+          <label v-else-if="form.resourceType === 'datasource'" class="wide">
+            <span>选择数据源</span>
+            <SearchSelect
+              v-model="form.resourceId"
+              :options="opsDsOptions"
+              placeholder="搜索数据源"
+              sub-key="sub"
+              :search-keys="['name', 'type', 'owner', 'value']"
+              @update:model-value="onOpsDsPicked"
+            />
+          </label>
+          <label v-else-if="form.resourceType === 'etl'" class="wide">
+            <span>选择 ETL 任务</span>
+            <SearchSelect
+              v-model="form.resourceId"
+              :options="opsEtlOptions"
+              placeholder="搜索 ETL 任务"
+              sub-key="sub"
+              :search-keys="['name', 'dagCode', 'owner', 'value']"
+              @update:model-value="onOpsEtlPicked"
+            />
+          </label>
+          <label class="wide">
+            <span>权限范围</span>
+            <div class="metric-kind-row">
+              <button
+                v-for="k in APPLY_OPS_PRIVILEGES"
+                :key="k.value"
+                type="button"
+                class="metric-kind-btn"
+                :class="{ active: form.opsPrivilege === k.value }"
+                @click="form.opsPrivilege = k.value"
+              >
+                <b>{{ k.label }}</b>
+                <span>{{ k.tip }}</span>
+              </button>
+            </div>
+          </label>
+          <p class="apply-api-hint">
+            审批通过写入对应 privilege（EDIT|DELETE|MANAGE；MANAGE 覆盖改删），即可操作该
+            {{ opsResourceLabel(form.resourceType) }}；与数据预览的「表读权限」相互独立。
+          </p>
         </template>
 
         <template v-else-if="form.type === 'perm'">

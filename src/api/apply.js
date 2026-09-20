@@ -17,7 +17,7 @@ export function pagePendingTickets(params) {
   return http.get(`${BASE}/tickets/pending`, params)
 }
 
-/** 通过申请 → 写 sec_auth_grant + 可选 Grav ACL */
+/** 通过申请 → 写 sec_auth_grant（门户 SoT；不投影 Grav） */
 export function approveTicket(id, remark) {
   return http.post(`${BASE}/tickets/approve`, { id, remark })
 }

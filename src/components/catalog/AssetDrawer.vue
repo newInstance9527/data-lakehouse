@@ -5,23 +5,25 @@ import AppDrawer from '@/components/common/AppDrawer.vue'
 import { createApplyTicket, approveTicket } from '@/api/apply'
 import { useAssets } from '@/composables/useAssets'
 import { useDatasources } from '@/composables/useDatasources'
-import { useSession } from '@/composables/useSession'
+import { useSession, isNeedOwnerApplyError } from '@/composables/useSession'
 import { useToast } from '@/composables/useToast'
+import { confirmDelete } from '@/composables/useConfirmDelete'
 import { APPLY_EXPIRE_OPTIONS } from '@/data/apply'
-import { formatDataType, getAssetFields, yesNo } from '@/utils/fieldSchema'
+import { formatDataType, yesNo } from '@/utils/fieldSchema'
 import { lineagePath, qualityPath } from '@/utils/moduleLinks'
+import { displayUser } from '@/utils/displayUser'
 
 const props = defineProps({
   asset: { type: Object, default: null },
   open: { type: Boolean, default: false },
 })
-const emit = defineEmits(['close', 'updated'])
+const emit = defineEmits(['close', 'updated', 'deleted'])
 
 const router = useRouter()
 const { showToast } = useToast()
 const { sources, getSource } = useDatasources()
-const { loadSchema, loadDetail, refresh, updateMeta, loadPreview } = useAssets()
-const { user, isSuperAdmin, canPreviewAsset, hasTableReadGrant, refreshGrant } = useSession()
+const { loadSchema, loadDetail, refresh, updateMeta, loadPreview, removeAsset } = useAssets()
+const { user, isSuperAdmin, canPreviewAsset, hasTableReadGrant, isAssetOwner, canEditAsset, canDeleteAsset, canManageAsset, refreshGrant, refreshManageGrant } = useSession()
 const tab = ref('schema')
 const schemaLoading = ref(false)
 const schemaHint = ref('')
@@ -102,7 +104,7 @@ watch(
       grantChecking.value = true
       grantFetchedFor = id
       try {
-        await refreshGrant(id)
+        await Promise.all([refreshGrant(id, props.asset), refreshManageGrant(id, props.asset)])
       } finally {
         grantChecking.value = false
       }
@@ -152,9 +154,7 @@ const isNonTableAsset = computed(() => {
 const fields = computed(() => {
   if (localFields.value?.length) return localFields.value
   if (props.asset?.fields?.length) return props.asset.fields
-  // 非表类型：宁可空，也不展示 getAssetFields 编造的订单/用户假列
-  if (isNonTableAsset.value) return []
-  return getAssetFields(props.asset, sourceType.value)
+  return []
 })
 
 const PREVIEW_SOURCE_LABEL = {
@@ -183,6 +183,23 @@ const previewSourceLabel = computed(() => {
 
 const canPreview = computed(() => canPreviewAsset(props.asset))
 const hasRead = computed(() => hasTableReadGrant(props.asset))
+const isOwner = computed(() => isAssetOwner(props.asset))
+const canEdit = computed(() => canEditAsset(props.asset))
+const canDelete = computed(() => canDeleteAsset(props.asset))
+const canManage = computed(() => canManageAsset(props.asset))
+const previewAuthLabel = computed(() => {
+  if (isOwner.value) return '拥有者'
+  if (hasRead.value) return '已授权'
+  return '无查询权限'
+})
+const manageAuthLabel = computed(() => {
+  if (isOwner.value) return '拥有者'
+  if (canEdit.value && canDelete.value) return '已授管理权'
+  if (canEdit.value) return '已授编辑权'
+  if (canDelete.value) return '已授删除权'
+  return '无管理权'
+})
+const needApplyOps = computed(() => !canEdit.value && !canDelete.value)
 
 const useLivePreview = computed(
   () => previewLive.value?.ok === true && Array.isArray(previewLive.value?.columns) && previewLive.value.columns.length > 0,
@@ -247,6 +264,11 @@ const qs = computed(() => {
   const n = Number(q)
   return Number.isNaN(n) ? 0 : n
 })
+const hasQualityScore = computed(() => {
+  const q = props.asset?.quality
+  if (q === '—' || q == null || q === '') return false
+  return !Number.isNaN(Number(q))
+})
 const qsc = computed(() =>
   qs.value >= 95 ? 'var(--success)' : qs.value >= 80 ? 'var(--warning)' : 'var(--danger)',
 )
@@ -299,6 +321,11 @@ async function ensureSchema(id) {
 
 async function doRefresh() {
   if (!props.asset?.id) return
+  if (!canEdit.value) {
+    showToast(`无编辑权不可刷新对齐（${manageAuthLabel.value}），请申请操作权限`, 'warning')
+    goApplyManage()
+    return
+  }
   busy.value = true
   try {
     schemaFetchedFor = null
@@ -310,7 +337,12 @@ async function doRefresh() {
     await ensureSchema(props.asset.id)
     showToast('已刷新对齐', 'success')
   } catch (e) {
-    showToast(`刷新失败：${e.message || e}`, 'error')
+    if (isNeedOwnerApplyError(e)) {
+      showToast(e.message || '无编辑权，请申请操作权限', 'warning')
+      goApplyManage()
+    } else {
+      showToast(`刷新失败：${e.message || e}`, 'error')
+    }
   } finally {
     busy.value = false
   }
@@ -318,6 +350,11 @@ async function doRefresh() {
 
 async function saveOmMeta() {
   if (!props.asset?.id) return
+  if (!canEdit.value) {
+    showToast(`无编辑权不可写元数据（${manageAuthLabel.value}），请申请操作权限`, 'warning')
+    goApplyManage()
+    return
+  }
   if (!canEditOmMeta.value) {
     showToast('请先刷新对齐 OM（无 omFqn）', 'error')
     return
@@ -343,7 +380,12 @@ async function saveOmMeta() {
     const audit = res?.auditEventId ? ` · 审计 ${res.auditEventId}` : ''
     showToast(`OM 元数据已保存${audit}`, 'success')
   } catch (e) {
-    showToast(`保存失败：${e.message || e}`, 'error')
+    if (isNeedOwnerApplyError(e)) {
+      showToast(`保存失败：${e.message || e}`, 'warning')
+      goApplyManage()
+    } else {
+      showToast(`保存失败：${e.message || e}`, 'error')
+    }
   } finally {
     metaSaving.value = false
   }
@@ -351,6 +393,38 @@ async function saveOmMeta() {
 
 function close() {
   emit('close')
+}
+
+async function onDeleteAsset() {
+  const a = props.asset
+  if (!a?.id || busy.value) return
+  if (!canDelete.value) {
+    showToast('无删除权，请申请操作权限', 'warning')
+    goApplyManage()
+    return
+  }
+  const ok = await confirmDelete({
+    title: `删除资产「${a.cnName || a.name || a.key || a.id}」`,
+    message: '将软删门户资产登记与源绑定；不物理删除 OM/底层表数据。',
+    confirmLabel: '确认删除',
+  })
+  if (!ok) return
+  busy.value = true
+  try {
+    await removeAsset(a.id)
+    showToast('已删除资产', 'success')
+    emit('deleted', a.id)
+    close()
+  } catch (e) {
+    if (isNeedOwnerApplyError(e)) {
+      showToast(e?.message || '无删除权，请申请操作权限', 'warning')
+      goApplyManage()
+    } else {
+      showToast(e?.message || '删除失败', 'error')
+    }
+  } finally {
+    busy.value = false
+  }
 }
 
 function go(path) {
@@ -364,7 +438,12 @@ function applyPerm() {
 
 function openApplyModal() {
   if (hasRead.value) {
-    showToast(isSuperAdmin.value ? '超管已具备本表查询权限' : '已具备本表查询权限，无需申请', 'info')
+    const tip = isSuperAdmin.value
+      ? '超管已具备本表查询权限'
+      : isOwner.value
+        ? '您是资产拥有者，可直接预览'
+        : '已具备本表查询权限，无需申请'
+    showToast(tip, 'info')
     return
   }
   applyForm.value = { purpose: '', expire: '30天' }
@@ -420,6 +499,22 @@ function goApplyCenter() {
     path: '/apply',
     query: {
       type: 'perm',
+      assetId: assetId || '',
+      assetCode: props.asset?.assetCode || '',
+      name: props.asset?.name || props.asset?.cnName || '',
+    },
+  })
+}
+
+function goApplyManage() {
+  const assetId = props.asset?.id
+  close()
+  router.push({
+    path: '/apply',
+    query: {
+      type: 'manage',
+      resourceType: 'asset',
+      resourceId: assetId || '',
       assetId: assetId || '',
       assetCode: props.asset?.assetCode || '',
       name: props.asset?.name || props.asset?.cnName || '',
@@ -485,11 +580,26 @@ function fmtCell(v) {
         <div style="display: flex; gap: 8px; align-items: center; flex-shrink: 0">
           <span v-if="isSuperAdmin" class="tag tag-green" style="font-size: 10px">超管</span>
           <span v-else-if="grantChecking" class="tag tag-gray" style="font-size: 10px">鉴权中…</span>
-          <span v-else-if="hasRead" class="tag tag-green" style="font-size: 10px">已授权</span>
-          <button class="btn btn-sm" :disabled="busy" @click="doRefresh">↻ 刷新</button>
+          <span v-else-if="canManage" class="tag tag-green" style="font-size: 10px">{{ manageAuthLabel }}</span>
+          <span v-else-if="hasRead" class="tag tag-green" style="font-size: 10px">已授权读</span>
+          <button
+            v-if="canEdit"
+            class="btn btn-sm"
+            :disabled="busy"
+            title="刷新对齐"
+            @click="doRefresh"
+          >↻ 刷新</button>
           <button class="btn btn-sm" @click="goLineage">🔗 血缘</button>
           <button v-if="canPreview" class="btn btn-sm btn-primary" @click="openPreviewTab">👁 数据预览</button>
-          <button v-else class="btn btn-sm btn-primary" :disabled="grantChecking" @click="applyPerm">🔐 申请权限</button>
+          <button v-else class="btn btn-sm btn-primary" :disabled="grantChecking" @click="applyPerm">🔐 申请查询</button>
+          <button v-if="needApplyOps" class="btn btn-sm" :disabled="grantChecking" @click="goApplyManage">🔐 申请操作权限</button>
+          <button
+            v-if="canDelete"
+            class="btn btn-sm"
+            style="color: var(--danger)"
+            :disabled="busy"
+            @click="onDeleteAsset"
+          >删除</button>
           <button class="btn btn-sm" title="关闭" @click="close">✕</button>
         </div>
       </div>
@@ -560,11 +670,22 @@ function fmtCell(v) {
         <div v-show="tab === 'quality'">
           <div style="display: flex; gap: 18px; align-items: flex-start; flex-wrap: wrap">
             <div
+              v-if="hasQualityScore"
               class="big-score"
               :style="{ background: `conic-gradient(${qsc} 0 ${qs}%, var(--bg-2) ${qs}% 100%)` }"
             >
               <div class="big-score-inner">
-                <div class="big-score-num" :style="{ color: qsc }">{{ asset.quality ?? '—' }}</div>
+                <div class="big-score-num" :style="{ color: qsc }">{{ asset.quality }}</div>
+                <div class="big-score-label">质量分</div>
+              </div>
+            </div>
+            <div
+              v-else
+              class="big-score"
+              style="background: var(--bg-2)"
+            >
+              <div class="big-score-inner">
+                <div class="big-score-num" style="color: var(--text-3); font-size: 18px">暂无</div>
                 <div class="big-score-label">质量分</div>
               </div>
             </div>
@@ -633,14 +754,14 @@ function fmtCell(v) {
           <div class="detail-section-title" style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
             数据预览
             <span v-if="grantChecking" class="tag tag-gray">鉴权中…</span>
-            <span v-else-if="canPreview" class="tag tag-green">{{ isSuperAdmin ? '超管放行' : '已授权' }}</span>
+            <span v-else-if="canPreview" class="tag tag-green">{{ previewAuthLabel }}</span>
             <span v-else class="tag tag-orange">无查询权限</span>
             <span v-if="previewLoading" class="tag tag-gray">加载中…</span>
             <span v-else-if="useLivePreview" class="tag tag-blue">{{ previewSourceLabel || '预览' }}</span>
             <span v-else-if="previewLive && !previewLive.ok" class="tag tag-orange">未查到</span>
           </div>
           <div v-if="!canPreview && !grantChecking && previewLive?.source === 'denied'" style="font-size: 12px; color: var(--text-3); margin: 8px 0">
-            当前账号无本表读权限（看见≠能查）。申请通过后写入 <code>sec_auth_grant</code>，可投影类型 soft-fail 写 Grav ACL。
+            看见≠能查：仅<strong>资产拥有者</strong>（技术/业务 Owner 或登记人）可直接预览；其他人须申请表级读权限，审批写入 <code>sec_auth_grant</code> 后方可预览。
             <div style="margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap">
               <button class="btn btn-sm btn-primary" @click="applyPerm">🔐 申请查询权限</button>
               <button class="btn btn-sm" @click="goApplyCenter">→ 申请中心</button>
@@ -712,7 +833,15 @@ function fmtCell(v) {
               <div class="info-value">
                 <span class="tag" :class="hasRead ? 'tag-green' : 'tag-orange'">
                   {{
-                    isSuperAdmin ? '✓ 超管短路' : hasRead ? '✓ sec_auth_grant' : grantChecking ? '鉴权中…' : '未授权'
+                    isSuperAdmin
+                      ? '✓ 超管短路'
+                      : isOwner
+                        ? '✓ 资产拥有者'
+                        : hasRead
+                          ? '✓ sec_auth_grant'
+                          : grantChecking
+                            ? '鉴权中…'
+                            : '未授权（需申请）'
                   }}
                 </span>
               </div>
@@ -721,7 +850,7 @@ function fmtCell(v) {
               <div class="info-label">数据预览</div>
               <div class="info-value">
                 <span class="tag" :class="canPreview ? 'tag-green' : 'tag-orange'">
-                  {{ canPreview ? '✓ 允许' : '禁止' }}
+                  {{ canPreview ? `✓ 允许（${previewAuthLabel}）` : '禁止 · 请申请' }}
                 </span>
               </div>
             </div>
@@ -748,6 +877,9 @@ function fmtCell(v) {
             <button v-if="!hasRead" class="btn btn-sm btn-primary" :disabled="grantChecking" @click="applyPerm">🔐 申请查询权限</button>
             <button v-else class="btn btn-sm btn-primary" @click="openPreviewTab">👁 查看数据预览</button>
             <button class="btn btn-sm" @click="goApplyCenter">→ 申请中心</button>
+            <div style="font-size: 11px; color: var(--text-3); margin-top: 8px; width: 100%">
+              规则：拥有者可直接预览；其他人申请通过后写入 sec_auth_grant（可投影 Grav ACL soft-fail）。
+            </div>
             <button class="btn btn-sm" @click="go('/security')">→ 安全与权限</button>
             <button class="btn btn-sm" @click="goQuery">→ 即席查询</button>
           </div>
@@ -779,7 +911,7 @@ function fmtCell(v) {
             <div><div class="info-label">引擎</div><div class="info-value">{{ asset.engine || '—' }}</div></div>
             <div><div class="info-label">状态 / 同步</div><div class="info-value">{{ asset.status || '—' }} · {{ asset.lastSyncStatus || '—' }}</div></div>
             <div><div class="info-label">OM FQN</div><div class="info-value" style="font-family: monospace; font-size: 11px">{{ asset.omFqn || '—' }}</div></div>
-            <div><div class="info-label">Owner</div><div class="info-value">{{ asset.owner || '—' }} / {{ asset.bizOwner || '—' }}</div></div>
+            <div><div class="info-label">Owner</div><div class="info-value">{{ displayUser(asset.ownerName || asset.techOwnerName, asset.owner || asset.techOwner) || '—' }} / {{ displayUser(asset.bizOwnerName, asset.bizOwner) || '—' }}</div></div>
             <div>
               <div class="info-label">黄金对账</div>
               <div class="info-value">
@@ -806,7 +938,11 @@ function fmtCell(v) {
             <span v-if="omMeta?.available" class="tag tag-blue">可编辑</span>
             <span v-else class="tag tag-gray">需 omFqn</span>
           </div>
-          <div v-if="!canEditOmMeta" style="font-size: 12px; color: var(--text-3); margin: 8px 0">
+          <div v-if="!canEdit" style="font-size: 12px; color: var(--text-3); margin: 8px 0">
+            仅<strong>资产拥有者</strong>（或已授 EDIT/MANAGE）可写 OM 元数据 / 刷新对齐。
+            <button type="button" class="btn-link" @click="goApplyManage">去申请操作权限</button>
+          </div>
+          <div v-else-if="!canEditOmMeta" style="font-size: 12px; color: var(--text-3); margin: 8px 0">
             资产尚未对齐 OpenMetadata。请先点「刷新」完成门户清单→OM，再编辑描述与标签。
           </div>
           <div v-else class="om-meta-form" style="margin-top: 10px">

@@ -22,6 +22,8 @@ const props = defineProps({
   sourceFields: { type: Array, default: () => [] },
   targetFields: { type: Array, default: () => [] },
   forceTab: { type: String, default: null },
+  canManage: { type: Boolean, default: false },
+  canDelete: { type: Boolean, default: false },
 })
 
 const emit = defineEmits([
@@ -29,6 +31,7 @@ const emit = defineEmits([
   'update-node',
   'delete-node',
   'delete-edge',
+  'delete-task',
   'trial-run',
   'clear-force-tab',
   'open-runs',
@@ -144,6 +147,7 @@ const cronIsCustom = computed(() => {
 })
 
 function patchTask(key, val) {
+  if (!props.canManage) return
   if (key === 'status') {
     emit('set-status', val)
     return
@@ -152,6 +156,7 @@ function patchTask(key, val) {
 }
 
 function submitBackfill() {
+  if (!props.canManage) return
   emit('backfill', {
     markKey: bfMarkKey.value?.trim(),
     markValue: bfMarkValue.value?.trim(),
@@ -159,17 +164,17 @@ function submitBackfill() {
 }
 
 function patchNodeField(key, val) {
-  if (!props.node) return
+  if (!props.canManage || !props.node) return
   emit('update-node', props.node.id, { [key]: val })
 }
 
 function patchConf(key, val) {
-  if (!props.node) return
+  if (!props.canManage || !props.node) return
   emit('update-node', props.node.id, { conf: { [key]: val } })
 }
 
 function patchConfMany(obj) {
-  if (!props.node) return
+  if (!props.canManage || !props.node) return
   emit('update-node', props.node.id, { conf: obj })
 }
 
@@ -203,44 +208,47 @@ function onAutoMap() {
       </div>
 
       <div v-show="tab === 'task'" class="dag-cfg-body">
+        <div v-if="!canManage" class="form-hint" style="margin-bottom: 10px">
+          无编辑权：配置只读。可申请操作权限后改配置 / 补数 / 启停。
+        </div>
         <label class="form-field">
           <span class="form-label">任务名</span>
-          <input class="input" :value="task.name" @input="patchTask('name', $event.target.value)" />
+          <input class="input" :value="task.name" :disabled="!canManage" @input="patchTask('name', $event.target.value)" />
         </label>
         <label class="form-field">
           <span class="form-label">描述</span>
-          <textarea class="textarea" rows="2" :value="task.desc" @input="patchTask('desc', $event.target.value)" />
+          <textarea class="textarea" rows="2" :value="task.desc" :disabled="!canManage" @input="patchTask('desc', $event.target.value)" />
         </label>
         <label class="form-field">
           <span class="form-label">调度 Cron</span>
-          <select class="select" :value="cronIsCustom ? 'custom' : task.cron" @change="onCronPreset($event.target.value)">
+          <select class="select" :value="cronIsCustom ? 'custom' : task.cron" :disabled="!canManage" @change="onCronPreset($event.target.value)">
             <option v-for="c in CRON_PRESETS" :key="c.value" :value="c.value">{{ c.label }}</option>
           </select>
-          <input class="input" style="margin-top: 6px" :value="task.cron" placeholder="0 2 * * *" @input="patchTask('cron', $event.target.value)" />
+          <input class="input" style="margin-top: 6px" :value="task.cron" placeholder="0 2 * * *" :disabled="!canManage" @input="patchTask('cron', $event.target.value)" />
         </label>
         <div class="form-grid-2">
           <label class="form-field">
             <span class="form-label">SLA</span>
-            <select class="select" :value="task.sla" @change="patchTask('sla', $event.target.value)">
+            <select class="select" :value="task.sla" :disabled="!canManage" @change="patchTask('sla', $event.target.value)">
               <option>04:00</option><option>06:00</option><option>06:30</option><option>08:00</option><option>12:00</option>
             </select>
           </label>
           <label class="form-field">
             <span class="form-label">环境</span>
-            <select class="select" :value="task.env" @change="patchTask('env', $event.target.value)">
+            <select class="select" :value="task.env" :disabled="!canManage" @change="patchTask('env', $event.target.value)">
               <option value="dev">dev</option><option value="test">test</option><option value="prod">prod</option>
             </select>
           </label>
           <label class="form-field">
             <span class="form-label">主引擎</span>
-            <select class="select" :value="task.engine" @change="patchTask('engine', $event.target.value)">
+            <select class="select" :value="task.engine" :disabled="!canManage" @change="patchTask('engine', $event.target.value)">
               <option v-for="e in ENGINES" :key="e" :value="e">{{ e }}</option>
             </select>
             <div class="form-hint">任务级默认运行时；仅 SQL 计算等节点可覆盖。</div>
           </label>
           <label class="form-field">
             <span class="form-label">状态</span>
-            <select class="select" :value="task.status" @change="patchTask('status', $event.target.value)">
+            <select class="select" :value="task.status" :disabled="!canManage" @change="patchTask('status', $event.target.value)">
               <option v-for="(m, k) in TASK_STATUS_META" :key="k" :value="k">{{ m.label }}</option>
             </select>
             <div class="form-hint">prod / paused 会同步 DS 流程上线/下线</div>
@@ -248,7 +256,8 @@ function onAutoMap() {
         </div>
         <label class="form-field">
           <span class="form-label">负责人</span>
-          <input class="input" :value="task.owner" @input="patchTask('owner', $event.target.value)" />
+          <input class="input" :value="task.owner" :disabled="!canManage" @input="patchTask('owner', $event.target.value)" />
+          <div v-if="task.ownerName" class="form-hint">{{ task.ownerName }}</div>
         </label>
         <div class="form-hint">节点 {{ task.nodes?.length || 0 }} · 连线 {{ task.edges?.length || 0 }} · 版本 {{ task.ver }}</div>
         <div class="form-hint" style="margin-top: 8px">
@@ -261,58 +270,76 @@ function onAutoMap() {
         </div>
 
         <div class="sec-title" style="margin-top: 14px">补数（水位）</div>
-        <div class="form-grid-2">
-          <label class="form-field">
-            <span class="form-label">mark_key</span>
-            <input v-model="bfMarkKey" class="input" placeholder="dt" />
-          </label>
-          <label class="form-field">
-            <span class="form-label">mark_value</span>
-            <input v-model="bfMarkValue" class="input" placeholder="2026-09-18" />
-          </label>
-        </div>
+        <template v-if="canManage">
+          <div class="form-grid-2">
+            <label class="form-field">
+              <span class="form-label">mark_key</span>
+              <input v-model="bfMarkKey" class="input" placeholder="dt" />
+            </label>
+            <label class="form-field">
+              <span class="form-label">mark_value</span>
+              <input v-model="bfMarkValue" class="input" placeholder="2026-09-18" />
+            </label>
+          </div>
+          <button
+            type="button"
+            class="btn btn-sm btn-primary"
+            style="margin-top: 6px"
+            :disabled="!task || (task.status !== 'prod' && task.status !== 'paused')"
+            @click="submitBackfill"
+          >🔧 发起补数</button>
+          <div class="form-hint">仅 prod/paused 可补；写水位并触发 DS 实例，生成带 run_id 的执行记录</div>
+        </template>
+        <div v-else class="form-hint">无编辑权不可补数</div>
+
+        <div class="sec-title" style="margin-top: 18px">危险操作</div>
         <button
+          v-if="canDelete"
           type="button"
-          class="btn btn-sm btn-primary"
-          style="margin-top: 6px"
-          :disabled="!task || (task.status !== 'prod' && task.status !== 'paused')"
-          @click="submitBackfill"
-        >🔧 发起补数</button>
-        <div class="form-hint">仅 prod/paused 可补；写水位并触发 DS 实例，生成带 run_id 的执行记录</div>
+          class="btn btn-sm"
+          style="color: var(--danger)"
+          :disabled="!task"
+          @click="emit('delete-task')"
+        >删除任务</button>
+        <div v-if="canDelete" class="form-hint">软删任务与图配置；运行中不可删；须输入 delete 确认</div>
+        <div v-else class="form-hint">无删除权不可删除，请申请操作权限</div>
       </div>
 
       <div v-show="tab === 'node'" class="dag-cfg-body">
         <div v-if="!node" class="dag-config-empty">点击画布节点进行配置</div>
         <template v-else>
+          <div v-if="!canManage" class="form-hint" style="margin-bottom: 10px">无编辑权：节点配置只读</div>
           <div class="dag-cfg-node-head">
             <span class="tag" :style="{ borderColor: nodeDef?.color, color: nodeDef?.color }">{{ nodeDef?.label || node.type }}</span>
             <code style="font-size: 11px; color: var(--text-3)">{{ node.id }}</code>
           </div>
           <label class="form-field">
             <span class="form-label">节点名称</span>
-            <input class="input" :value="node.name" @input="patchNodeField('name', $event.target.value)" />
+            <input class="input" :value="node.name" :disabled="!canManage" @input="patchNodeField('name', $event.target.value)" />
           </label>
           <label class="form-field">
             <span class="form-label">节点说明</span>
-            <input class="input" :value="node.meta" @input="patchNodeField('meta', $event.target.value)" placeholder="点击配置" />
+            <input class="input" :value="node.meta" :disabled="!canManage" @input="patchNodeField('meta', $event.target.value)" placeholder="点击配置" />
           </label>
           <label class="form-field">
             <span class="form-label">执行状态</span>
-            <select class="select" :value="node.status || 'pending'" @change="patchNodeField('status', $event.target.value)">
+            <select class="select" :value="node.status || 'pending'" :disabled="!canManage" @change="patchNodeField('status', $event.target.value)">
               <option v-for="(m, k) in NODE_STATUS_META" :key="k" :value="k">{{ m.label }}</option>
             </select>
           </label>
 
-          <NodeConfBody
-            :type="node.type"
-            :conf="conf"
-            :upstream-fields="upstreamFields"
-            @patch="patchConf"
-            @patch-many="patchConfMany"
-          />
+          <div :class="{ 'dag-cfg-readonly': !canManage }">
+            <NodeConfBody
+              :type="node.type"
+              :conf="conf"
+              :upstream-fields="upstreamFields"
+              @patch="patchConf"
+              @patch-many="patchConfMany"
+            />
+          </div>
 
           <div v-if="showFieldMap" class="sec-title" style="margin-top: 14px">字段映射</div>
-          <div v-if="showFieldMap && node.type === 'mapping'" class="form-hint">
+          <div v-if="showFieldMap && canManage && node.type === 'mapping'" class="form-hint">
             目标列来自<strong>数据标准字段</strong>；可先选节点上的 stdRef/码值，再点「带入标准字段」补齐映射行。
             <button
               type="button"
@@ -322,14 +349,14 @@ function onAutoMap() {
               @click="seedMapsFromStd"
             >带入标准字段</button>
           </div>
-          <div v-if="showFieldMap && String(node.type).startsWith('sink_')" class="form-hint">
+          <div v-if="showFieldMap && canManage && String(node.type).startsWith('sink_')" class="form-hint">
             将上游输出写入目标表：请先配置目标表，再做 upstream → 目标列映射。
           </div>
-          <div v-if="showFieldMap && !mapSrcFields.length" class="form-hint" style="color: #d48806">
+          <div v-if="showFieldMap && canManage && !mapSrcFields.length" class="form-hint" style="color: #d48806">
             暂无上游字段：请确认①源节点已选<strong>表</strong>并连线到本节点；②数据源已同步表清单；③保存后重新点开本节点。
           </div>
           <FieldMapEditor
-            v-if="showFieldMap"
+            v-if="showFieldMap && canManage"
             style="margin-top: 8px"
             :model-value="conf.fieldMaps || conf.mapList || []"
             :src-fields="mapSrcFields"
@@ -339,10 +366,19 @@ function onAutoMap() {
             @update:model-value="onFieldMaps"
             @auto-map="onAutoMap"
           />
+          <div v-else-if="showFieldMap" class="form-hint" style="margin-top: 8px">
+            映射行 {{ (conf.fieldMaps || conf.mapList || []).length }}（只读）
+          </div>
 
           <NodeExecLog :task="task" :node="node" />
 
-          <button type="button" class="btn btn-sm" style="margin-top: 12px; color: var(--danger)" @click="emit('delete-node', node.id)">
+          <button
+            v-if="canManage"
+            type="button"
+            class="btn btn-sm"
+            style="margin-top: 12px; color: var(--danger)"
+            @click="emit('delete-node', node.id)"
+          >
             删除节点
           </button>
         </template>
@@ -352,9 +388,16 @@ function onAutoMap() {
         <div v-if="edgeIdx == null" class="dag-config-empty">点击画布连线进行操作</div>
         <template v-else>
           <div class="form-hint">已选连线 #{{ edgeIdx + 1 }}：{{ task.edges[edgeIdx]?.from }} → {{ task.edges[edgeIdx]?.to }}</div>
-          <button type="button" class="btn btn-sm" style="margin-top: 12px; color: var(--danger)" @click="emit('delete-edge', edgeIdx)">
+          <button
+            v-if="canManage"
+            type="button"
+            class="btn btn-sm"
+            style="margin-top: 12px; color: var(--danger)"
+            @click="emit('delete-edge', edgeIdx)"
+          >
             删除连线
           </button>
+          <div v-else class="form-hint" style="margin-top: 12px">无编辑权不可删连线</div>
         </template>
       </div>
 
@@ -401,5 +444,9 @@ function onAutoMap() {
   cursor: pointer;
   padding: 0;
   font-size: inherit;
+}
+.dag-cfg-readonly {
+  pointer-events: none;
+  opacity: 0.72;
 }
 </style>

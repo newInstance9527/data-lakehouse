@@ -119,6 +119,12 @@ function pickCustom() {
   kw.value = ''
 }
 
+function onOptionMouseDown(e) {
+  // 防止外层 <label> 把点击回传到 trigger，导致选完又立刻展开
+  e.preventDefault()
+  e.stopPropagation()
+}
+
 function onSearchKeydown(e) {
   if (e.key === 'Enter' && props.allowCustom && customCandidate.value) {
     e.preventDefault()
@@ -156,7 +162,7 @@ function clear(e) {
       </span>
     </button>
 
-    <div v-if="open" class="search-select-panel">
+    <div v-if="open" class="search-select-panel" @mousedown.stop>
       <input
         v-model="kw"
         class="input search-select-input"
@@ -170,6 +176,7 @@ function clear(e) {
           type="button"
           class="search-select-option"
           :class="{ active: String(opt[valueKey]) === String(modelValue) }"
+          @mousedown="onOptionMouseDown"
           @click="pick(opt)"
         >
           <span class="search-select-opt-main">{{ opt[labelKey] }}</span>
@@ -179,6 +186,7 @@ function clear(e) {
           v-if="customCandidate"
           type="button"
           class="search-select-option search-select-custom"
+          @mousedown="onOptionMouseDown"
           @click="pickCustom"
         >
           <span class="search-select-opt-main">{{ customText }}「{{ customCandidate }}」</span>

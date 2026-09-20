@@ -1,33 +1,40 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
 import { useToast } from '@/composables/useToast'
-import { useDatasources } from '@/composables/useDatasources'
-import { useAssets } from '@/composables/useAssets'
-import { useEtl } from '@/composables/useEtl'
-import { useStandards } from '@/composables/useStandards'
-import { useLineage } from '@/composables/useLineage'
-import {
-  DEMO_METRIC_STATS,
-  DEMO_SERVICE_STATS,
-  OVERVIEW_MODULES,
-  OV_PALETTE as P,
-  OV_PIPELINE,
-  OV_TRENDS,
-} from '@/data/overview'
+import { useOverview } from '@/composables/useOverview'
+import { OVERVIEW_MODULES, OV_PALETTE as P, OV_PIPELINE } from '@/data/overview'
 import { pageGuideOf } from '@/data/pageGuides'
 
 const router = useRouter()
 const { showToast } = useToast()
 const guide = pageGuideOf('overview')
-const range = ref('30d')
 
-const { list: sources } = useDatasources()
-const { list: assets } = useAssets()
-const { taskList } = useEtl()
-const { fieldList, codeList, namingList } = useStandards()
-const { stats: lineageRaw } = useLineage()
+const {
+  loading,
+  loaded,
+  lastError,
+  range,
+  dsStats,
+  assetStats,
+  etlStats,
+  qualityStats,
+  qualityTrend,
+  stdStats,
+  lineageStats,
+  applyStats,
+  availability,
+  refresh: reloadOverview,
+} = useOverview()
+
+onMounted(async () => {
+  try {
+    await reloadOverview()
+  } catch (e) {
+    showToast(`总览加载失败：${e?.message || e}`, 'error')
+  }
+})
 
 function sparkPath(values = [], w = 120, h = 36) {
   if (!values.length) return { line: '', area: '', pts: [] }
@@ -80,106 +87,13 @@ function donutSlices(parts, cx = 54, cy = 54, r = 40) {
   })
 }
 
-const dsStats = computed(() => {
-  const list = sources.value || []
-  const online = list.filter((s) => s.status === 'online').length
-  const warn = list.filter((s) => s.status === 'warn').length
-  const paused = list.filter((s) => s.status === 'paused').length
-  const types = new Set(list.map((s) => s.type)).size
-  return {
-    total: list.length,
-    online,
-    warn,
-    paused,
-    types,
-    healthPct: list.length ? Math.round((online / list.length) * 1000) / 10 : 0,
-  }
-})
-
-const assetStats = computed(() => {
-  const list = assets.value || []
-  const byLayer = {}
-  list.forEach((a) => {
-    const k = a.layerLabel || a.layer || '其他'
-    byLayer[k] = (byLayer[k] || 0) + 1
-  })
-  const gold = list.filter((a) => a.isGold).length
-  const sensitive = list.filter((a) => a.level === '敏感' || a.level === '机密').length
-  return {
-    total: list.length,
-    byLayer,
-    gold,
-    sensitive,
-    domains: new Set(list.map((a) => a.domain)).size,
-  }
-})
-
-const etlStats = computed(() => {
-  const list = taskList.value || []
-  const prod = list.filter((t) => t.status === 'prod').length
-  const draft = list.filter((t) => t.status === 'draft').length
-  const blocked = list.filter((t) => (t.nodes || []).some((n) => n.status === 'blocked')).length
-  const nodes = list.reduce((n, t) => n + (t.nodes?.length || 0), 0)
-  return {
-    total: list.length,
-    prod,
-    draft,
-    blocked,
-    nodes,
-    other: Math.max(0, list.length - prod - draft),
-  }
-})
-
-const stdStats = computed(() => {
-  const fields = fieldList.value || []
-  const codes = codeList.value || []
-  const namings = namingList.value || []
-  const ok = fields.filter((f) => f.status === 'ok').length
-  const warn = fields.filter((f) => f.status === 'warn' || f.status === 'fail').length
-  return {
-    fields: fields.length,
-    codes: codes.length,
-    namings: namings.length,
-    ok,
-    warn,
-    mapped: fields.reduce((n, f) => n + (Number(f.mapped) || 0), 0),
-    okPct: fields.length ? Math.round((ok / fields.length) * 1000) / 10 : 0,
-  }
-})
-
-const svcStats = computed(() => ({ ...DEMO_SERVICE_STATS }))
-const metricStats = computed(() => ({ ...DEMO_METRIC_STATS }))
-
-const lineageStats = computed(() => {
-  const s = lineageRaw.value || {}
-  const tables = Number(s.tables) || 0
-  const tableEdges = Number(s.tableEdges) || 0
-  const fieldEdges = Number(s.fieldEdges) || 0
-  const explicit = Number(s.explicit) || 0
-  const inferred = Number(s.inferred) || 0
-  const tasks = Number(s.tasks) || 0
-  return { tables, tableEdges, fieldEdges, explicit, inferred, tasks }
-})
-
-const qualityStats = computed(() => {
-  const list = assets.value || []
-  if (!list.length) return { avg: 0, high: 0, mid: 0, low: 0, blocked: 0 }
-  const avg = Math.round((list.reduce((s, a) => s + (Number(a.quality) || 0), 0) / list.length) * 10) / 10
-  const high = list.filter((a) => (a.quality || 0) >= 95).length
-  const mid = list.filter((a) => (a.quality || 0) >= 80 && (a.quality || 0) < 95).length
-  const low = list.filter((a) => (a.quality || 0) < 80).length
-  return { avg, high, mid, low, blocked: low }
-})
-
-const trend = computed(() => OV_TRENDS[range.value] || OV_TRENDS['30d'])
-
 const kpiCards = computed(() => {
   const ds = dsStats.value
   const as = assetStats.value
   const etl = etlStats.value
   const q = qualityStats.value
-  const t = trend.value
   const meta = Object.fromEntries(OVERVIEW_MODULES.map((m) => [m.id, m]))
+  const qSpark = qualityTrend.value.values || []
 
   const items = [
     {
@@ -190,7 +104,7 @@ const kpiCards = computed(() => {
       meter: ds.healthPct,
       meterLabel: '健康率',
       tone: ds.warn ? 'warn' : 'ok',
-      spark: t.etlOk.map((v, i) => 40 + (v % 40) + i),
+      spark: [],
     },
     {
       ...meta.assets,
@@ -200,27 +114,27 @@ const kpiCards = computed(() => {
       meter: as.total ? Math.round((as.gold / as.total) * 1000) / 10 : 0,
       meterLabel: '黄金占比',
       tone: 'primary',
-      spark: t.apiCalls.map((v) => v),
+      spark: [],
     },
     {
       ...meta.etl,
       value: String(etl.total),
       unit: '个',
-      sub: `生产 ${etl.prod} · 阻断 ${etl.blocked}`,
+      sub: `生产 ${etl.prod} · 近窗失败 ${etl.runFailed}`,
       meter: etl.total ? Math.round((etl.prod / etl.total) * 1000) / 10 : 0,
       meterLabel: '生产占比',
-      tone: etl.blocked ? 'danger' : 'ok',
-      spark: t.etlOk,
+      tone: etl.runFailed || etl.runBlocked ? 'danger' : 'ok',
+      spark: [],
     },
     {
       ...meta.quality,
       value: String(q.avg),
       unit: '分',
-      sub: `优 ${q.high} · 差 ${q.low}`,
+      sub: `通过率 ${q.passRate}% · 阻断 ${q.blocked}`,
       meter: q.avg,
       meterLabel: '均分',
-      tone: q.low ? 'warn' : 'ok',
-      spark: t.quality,
+      tone: q.blocked || q.low ? 'warn' : 'ok',
+      spark: qSpark,
     },
   ]
 
@@ -228,37 +142,34 @@ const kpiCards = computed(() => {
     const path = sparkPath(k.spark, 140, 32)
     const color =
       k.tone === 'warn' ? P.warning : k.tone === 'danger' ? P.danger : k.tone === 'primary' ? P.primary : P.success
-    return { ...k, color, sparkLine: path.line, sparkArea: path.area }
+    return {
+      ...k,
+      color,
+      sparkLine: path.line,
+      sparkArea: path.area,
+      hasSpark: !!(k.spark && k.spark.length > 1),
+    }
   })
 })
 
 const qualityTrendChart = computed(() => {
-  const t = trend.value
-  const path = sparkPath(t.quality, 320, 120)
-  const max = Math.max(...t.quality)
-  const min = Math.min(...t.quality)
+  const t = qualityTrend.value
+  const vals = t.values || []
+  const path = sparkPath(vals, 320, 120)
+  const labels = t.labels || []
+  const axisLabels =
+    labels.length <= 8
+      ? labels
+      : labels.filter((_, i) => i === 0 || i === labels.length - 1 || i % Math.ceil(labels.length / 6) === 0)
   return {
-    labels: t.labels,
-    values: t.quality,
+    labels: axisLabels,
+    values: vals,
     line: path.line,
     area: path.area,
     pts: path.pts,
-    min,
-    max,
-  }
-})
-
-const apiTrendChart = computed(() => {
-  const t = trend.value
-  const vals = t.apiCalls
-  const max = Math.max(...vals) || 1
-  return {
-    labels: t.labels,
-    bars: vals.map((v, i) => ({
-      label: t.labels[i],
-      value: v,
-      h: Math.round((v / max) * 100),
-    })),
+    min: t.min ?? 0,
+    max: t.max ?? 0,
+    empty: vals.length < 2,
   }
 })
 
@@ -271,17 +182,9 @@ const dsDonut = computed(() => {
   ])
 })
 
-const svcDonut = computed(() => {
-  const s = svcStats.value
-  return donutSlices([
-    { label: '已发布', value: s.published, color: P.primary },
-    { label: '草稿', value: s.draft, color: P.mute },
-    { label: '废弃', value: s.deprecated, color: P.warning },
-  ])
-})
-
 const layerBars = computed(() => {
-  const entries = Object.entries(assetStats.value.byLayer)
+  const entries = Object.entries(assetStats.value.byLayer || {})
+  if (!entries.length) return []
   const max = Math.max(...entries.map(([, v]) => v), 1)
   return entries.map(([label, value], i) => ({
     label,
@@ -293,12 +196,22 @@ const layerBars = computed(() => {
 
 const etlBars = computed(() => {
   const e = etlStats.value
-  const parts = segments([
+  return segments([
     { label: '生产', value: e.prod, color: P.success },
     { label: '草稿', value: e.draft, color: P.mute },
+    { label: '暂停', value: e.paused, color: P.warning },
     { label: '其他', value: e.other, color: P.primary },
-  ])
-  return parts
+  ]).filter((s) => s.value > 0 || e.total === 0)
+})
+
+const etlRunBars = computed(() => {
+  const e = etlStats.value
+  return segments([
+    { label: '成功', value: e.runSuccess, color: P.success },
+    { label: '失败', value: e.runFailed, color: P.danger },
+    { label: '阻断', value: e.runBlocked, color: P.warning },
+    { label: '运行中', value: e.runRunning, color: P.primary },
+  ]).filter((s) => s.value > 0)
 })
 
 const qualityDist = computed(() => {
@@ -320,16 +233,6 @@ const lineageCompare = computed(() => {
   ]
 })
 
-const metricBars = computed(() => {
-  const m = metricStats.value
-  const max = Math.max(m.atomic, m.derived, m.composite, 1)
-  return [
-    { label: '原子', value: m.atomic, pct: Math.round((m.atomic / max) * 100), color: P.primary },
-    { label: '衍生', value: m.derived, pct: Math.round((m.derived / max) * 100), color: P.success },
-    { label: '复合', value: m.composite, pct: Math.round((m.composite / max) * 100), color: P.mute },
-  ]
-})
-
 const stdGauge = computed(() => {
   const pct = stdStats.value.okPct
   const r = 36
@@ -342,16 +245,21 @@ function go(to) {
   if (to) router.push(to)
 }
 
-function refresh() {
-  showToast('✅ 已刷新总览统计', 'success')
+async function refresh() {
+  try {
+    await reloadOverview()
+    showToast('已刷新总览统计', 'success')
+  } catch (e) {
+    showToast(`刷新失败：${e?.message || e}`, 'error')
+  }
 }
 
-const rangeLabel = computed(() => ({
-  '1d': '今日',
-  '7d': '近 7 天',
-  '30d': '近 30 天',
-  q: '本季度',
-}[range.value] || '近 30 天'))
+const rangeLabel = computed(() => {
+  if (range.value === '1d') return '今日'
+  if (range.value === '7d') return '近 7 天'
+  if (range.value === 'q') return '近 30 天（季度暂按月窗）'
+  return '近 30 天'
+})
 </script>
 
 <template>
@@ -362,15 +270,22 @@ const rangeLabel = computed(() => ({
       :guide-title="guide.title"
       :guide="guide"
     >
-      <select v-model="range" class="select">
+      <select v-model="range" class="select" :disabled="loading">
         <option value="1d">今日</option>
         <option value="7d">近7天</option>
         <option value="30d">近30天</option>
         <option value="q">本季度</option>
       </select>
-      <button class="btn btn-sm" type="button" @click="refresh">↻ 刷新</button>
+      <button class="btn btn-sm" type="button" :disabled="loading" @click="refresh">
+        {{ loading ? '…' : '↻' }} 刷新
+      </button>
       <button class="btn btn-sm btn-primary" type="button" @click="go('/catalog')">探索资产</button>
     </PageHeader>
+
+    <p v-if="lastError && loaded" class="ov-banner warn">
+      部分指标加载失败，已展示可用数据。可点刷新重试。
+    </p>
+    <p v-else-if="loading && !loaded" class="ov-banner">正在拉取各模块统计…</p>
 
     <!-- 主链路 -->
     <nav class="ov-pipe" aria-label="数据主链路">
@@ -390,7 +305,7 @@ const rangeLabel = computed(() => ({
       </button>
     </nav>
 
-    <!-- 核心 KPI · 折线微趋势 -->
+    <!-- 核心 KPI -->
     <div class="ov-kpis">
       <button
         v-for="k in kpiCards"
@@ -410,7 +325,13 @@ const rangeLabel = computed(() => ({
             </div>
             <div class="ov-kpi-sub">{{ k.sub }}</div>
           </div>
-          <svg class="ov-spark" viewBox="0 0 140 32" preserveAspectRatio="none" aria-hidden="true">
+          <svg
+            v-if="k.hasSpark"
+            class="ov-spark"
+            viewBox="0 0 140 32"
+            preserveAspectRatio="none"
+            aria-hidden="true"
+          >
             <defs>
               <linearGradient :id="'ovsg-' + k.id" x1="0" y1="0" x2="0" y2="1">
                 <stop offset="0%" :stop-color="k.color" stop-opacity="0.22" />
@@ -434,101 +355,109 @@ const rangeLabel = computed(() => ({
       </button>
     </div>
 
-    <!-- 主图区：质量趋势 + API 柱状 -->
+    <!-- 主图区：质量趋势 + 申请单 -->
     <div class="ov-row ov-row-main">
       <section class="ov-card ov-card-lg">
         <header class="ov-hd">
           <div>
             <h3>质量分趋势</h3>
-            <p>资产均分走势 · {{ rangeLabel }}</p>
+            <p>规则运行均分 · {{ rangeLabel }}</p>
           </div>
           <button type="button" class="ov-link" @click="go('/quality')">详情</button>
         </header>
-        <div class="ov-line-wrap">
-          <svg viewBox="0 0 320 120" class="ov-line" preserveAspectRatio="none">
-            <defs>
-              <linearGradient id="ov-q-area" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stop-color="#1e6fff" stop-opacity="0.18" />
-                <stop offset="100%" stop-color="#1e6fff" stop-opacity="0" />
-              </linearGradient>
-            </defs>
-            <line x1="0" y1="30" x2="320" y2="30" class="ov-grid" />
-            <line x1="0" y1="60" x2="320" y2="60" class="ov-grid" />
-            <line x1="0" y1="90" x2="320" y2="90" class="ov-grid" />
-            <path :d="qualityTrendChart.area" fill="url(#ov-q-area)" />
-            <path
-              :d="qualityTrendChart.line"
-              fill="none"
-              stroke="#1e6fff"
-              stroke-width="2.5"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            />
-            <circle
-              v-for="(pt, i) in qualityTrendChart.pts"
-              :key="i"
-              :cx="pt[0]"
-              :cy="pt[1]"
-              r="3.2"
-              fill="#fff"
-              stroke="#1e6fff"
-              stroke-width="1.5"
-            />
-          </svg>
-          <div class="ov-axis">
-            <span v-for="lb in qualityTrendChart.labels" :key="lb">{{ lb }}</span>
-          </div>
+        <div v-if="qualityTrendChart.empty" class="ov-empty">
+          <span>暂无质量运行趋势</span>
+          <small>有规则运行记录后将按日展示均分</small>
         </div>
-        <div class="ov-foot-stats">
-          <div>
-            <span>当前均分</span>
-            <b>{{ qualityStats.avg }}</b>
+        <template v-else>
+          <div class="ov-line-wrap">
+            <svg viewBox="0 0 320 120" class="ov-line" preserveAspectRatio="none">
+              <defs>
+                <linearGradient id="ov-q-area" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stop-color="#1e6fff" stop-opacity="0.18" />
+                  <stop offset="100%" stop-color="#1e6fff" stop-opacity="0" />
+                </linearGradient>
+              </defs>
+              <line x1="0" y1="30" x2="320" y2="30" class="ov-grid" />
+              <line x1="0" y1="60" x2="320" y2="60" class="ov-grid" />
+              <line x1="0" y1="90" x2="320" y2="90" class="ov-grid" />
+              <path :d="qualityTrendChart.area" fill="url(#ov-q-area)" />
+              <path
+                :d="qualityTrendChart.line"
+                fill="none"
+                stroke="#1e6fff"
+                stroke-width="2.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+              <circle
+                v-for="(pt, i) in qualityTrendChart.pts"
+                :key="i"
+                :cx="pt[0]"
+                :cy="pt[1]"
+                r="3.2"
+                fill="#fff"
+                stroke="#1e6fff"
+                stroke-width="1.5"
+              />
+            </svg>
+            <div class="ov-axis">
+              <span v-for="(lb, i) in qualityTrendChart.labels" :key="i">{{ lb }}</span>
+            </div>
           </div>
-          <div>
-            <span>区间最低</span>
-            <b>{{ qualityTrendChart.min }}</b>
+          <div class="ov-foot-stats">
+            <div>
+              <span>当前均分</span>
+              <b>{{ qualityStats.avg }}</b>
+            </div>
+            <div>
+              <span>区间最低</span>
+              <b>{{ qualityTrendChart.min }}</b>
+            </div>
+            <div>
+              <span>区间最高</span>
+              <b class="ok">{{ qualityTrendChart.max }}</b>
+            </div>
+            <div>
+              <span>门禁阻断</span>
+              <b :class="{ warn: qualityStats.blocked }">{{ qualityStats.blocked }}</b>
+            </div>
           </div>
-          <div>
-            <span>区间最高</span>
-            <b class="ok">{{ qualityTrendChart.max }}</b>
-          </div>
-          <div>
-            <span>门禁风险表</span>
-            <b :class="{ warn: qualityStats.blocked }">{{ qualityStats.blocked }}</b>
-          </div>
-        </div>
+        </template>
       </section>
 
       <section class="ov-card">
         <header class="ov-hd">
           <div>
-            <h3>服务调用量</h3>
-            <p>API 调用 · {{ rangeLabel }}</p>
+            <h3>申请单</h3>
+            <p>权限 / 出湖待办</p>
           </div>
-          <button type="button" class="ov-link" @click="go('/dataservice')">详情</button>
+          <button type="button" class="ov-link" @click="go('/apply')">详情</button>
         </header>
-        <div class="ov-vbars">
-          <div v-for="b in apiTrendChart.bars" :key="b.label" class="ov-vbar">
-            <div class="ov-vbar-col">
-              <div class="ov-vbar-fill" :style="{ height: b.h + '%' }" :title="`${b.value}`" />
-            </div>
-            <span>{{ b.label }}</span>
-          </div>
+        <div class="ov-apply">
+          <button type="button" class="ov-apply-tile" @click="go('/apply')">
+            <span>待审批</span>
+            <b :class="{ warn: applyStats.pending }">{{ applyStats.pending }}</b>
+          </button>
+          <button type="button" class="ov-apply-tile" @click="go('/apply')">
+            <span>我的申请</span>
+            <b>{{ applyStats.mine }}</b>
+          </button>
         </div>
         <div class="ov-foot-stats compact">
           <div>
-            <span>今日调用</span>
-            <b>{{ svcStats.callsToday }}</b>
+            <span>质量规则</span>
+            <b>{{ qualityStats.ruleCount }}</b>
           </div>
           <div>
-            <span>SLA</span>
-            <b class="ok">{{ svcStats.sla }}</b>
+            <span>近窗运行</span>
+            <b>{{ qualityStats.runCount }}</b>
           </div>
         </div>
       </section>
     </div>
 
-    <!-- 分布区：环形 + 横向条 + 柱状 -->
+    <!-- 分布区 -->
     <div class="ov-row ov-row-3">
       <section class="ov-card">
         <header class="ov-hd">
@@ -571,27 +500,32 @@ const rangeLabel = computed(() => ({
           </div>
           <button type="button" class="ov-link" @click="go('/catalog')">详情</button>
         </header>
-        <div class="ov-hbars">
-          <div v-for="b in layerBars" :key="b.label" class="ov-hbar">
-            <div class="ov-hbar-lab">
-              <span>{{ b.label }}</span>
-              <b>{{ b.value }}</b>
-            </div>
-            <div class="ov-hbar-track">
-              <div class="ov-hbar-fill" :style="{ width: b.pct + '%', background: b.color }" />
-            </div>
-          </div>
+        <div v-if="!layerBars.length" class="ov-empty sm">
+          <span>暂无资产</span>
         </div>
-        <div class="ov-foot-stats compact">
-          <div>
-            <span>敏感/机密</span>
-            <b class="warn">{{ assetStats.sensitive }}</b>
+        <template v-else>
+          <div class="ov-hbars">
+            <div v-for="b in layerBars" :key="b.label" class="ov-hbar">
+              <div class="ov-hbar-lab">
+                <span>{{ b.label }}</span>
+                <b>{{ b.value }}</b>
+              </div>
+              <div class="ov-hbar-track">
+                <div class="ov-hbar-fill" :style="{ width: b.pct + '%', background: b.color }" />
+              </div>
+            </div>
           </div>
-          <div>
-            <span>黄金表</span>
-            <b class="ok">{{ assetStats.gold }}</b>
+          <div class="ov-foot-stats compact">
+            <div>
+              <span>敏感/机密</span>
+              <b class="warn">{{ assetStats.sensitive }}</b>
+            </div>
+            <div>
+              <span>黄金表</span>
+              <b class="ok">{{ assetStats.gold }}</b>
+            </div>
           </div>
-        </div>
+        </template>
       </section>
 
       <section class="ov-card">
@@ -602,7 +536,11 @@ const rangeLabel = computed(() => ({
           </div>
           <button type="button" class="ov-link" @click="go('/quality')">详情</button>
         </header>
-        <div class="ov-hist">
+        <div v-if="!qualityStats.hasBucket" class="ov-empty sm">
+          <span>暂无分桶数据</span>
+          <small>资产质量分或黄金榜有数据后展示</small>
+        </div>
+        <div v-else class="ov-hist">
           <div v-for="b in qualityDist" :key="b.label" class="ov-hist-col">
             <div class="ov-hist-val">{{ b.value }}</div>
             <div class="ov-hist-bar-wrap">
@@ -614,13 +552,13 @@ const rangeLabel = computed(() => ({
       </section>
     </div>
 
-    <!-- 下层：ETL 堆叠、血缘对比、标准环、指标条、服务环 -->
+    <!-- 下层：ETL、血缘、标准 -->
     <div class="ov-row ov-row-3">
       <section class="ov-card">
         <header class="ov-hd">
           <div>
             <h3>ETL 任务状态</h3>
-            <p>生产 / 草稿占比</p>
+            <p>生产 / 草稿 / 暂停</p>
           </div>
           <button type="button" class="ov-link" @click="go('/integration')">详情</button>
         </header>
@@ -629,7 +567,7 @@ const rangeLabel = computed(() => ({
             v-for="s in etlBars"
             :key="s.label"
             class="ov-stack-seg"
-            :style="{ width: s.pct + '%', background: s.color }"
+            :style="{ width: Math.max(s.pct, s.value ? 2 : 0) + '%', background: s.color }"
             :title="`${s.label} ${s.value}`"
           />
         </div>
@@ -642,12 +580,14 @@ const rangeLabel = computed(() => ({
         </ul>
         <div class="ov-foot-stats compact">
           <div>
-            <span>含阻断节点</span>
-            <b :class="{ warn: etlStats.blocked }">{{ etlStats.blocked }}</b>
+            <span>近窗运行</span>
+            <b>{{ etlStats.runTotal }}</b>
           </div>
           <div>
-            <span>DAG 节点</span>
-            <b>{{ etlStats.nodes }}</b>
+            <span>失败 / 阻断</span>
+            <b :class="{ warn: etlStats.runFailed || etlStats.runBlocked }">
+              {{ etlStats.runFailed }} / {{ etlStats.runBlocked }}
+            </b>
           </div>
         </div>
       </section>
@@ -660,32 +600,38 @@ const rangeLabel = computed(() => ({
           </div>
           <button type="button" class="ov-link" @click="go('/lineage')">详情</button>
         </header>
-        <div class="ov-compare">
-          <div v-for="b in lineageCompare" :key="b.label" class="ov-compare-row">
-            <span>{{ b.label }}</span>
-            <div class="ov-compare-track">
-              <div class="ov-compare-fill" :style="{ width: b.pct + '%', background: b.color }" />
+        <div v-if="!lineageStats.fieldEdges" class="ov-empty sm">
+          <span>暂无字段血缘</span>
+          <small>同步血缘后展示边统计</small>
+        </div>
+        <template v-else>
+          <div class="ov-compare">
+            <div v-for="b in lineageCompare" :key="b.label" class="ov-compare-row">
+              <span>{{ b.label }}</span>
+              <div class="ov-compare-track">
+                <div class="ov-compare-fill" :style="{ width: b.pct + '%', background: b.color }" />
+              </div>
+              <b>{{ b.value }}</b>
             </div>
-            <b>{{ b.value }}</b>
           </div>
-        </div>
-        <div class="ov-foot-stats compact">
-          <div>
-            <span>参与表</span>
-            <b>{{ lineageStats.tables }}</b>
+          <div class="ov-foot-stats compact">
+            <div>
+              <span>参与表</span>
+              <b>{{ lineageStats.tables }}</b>
+            </div>
+            <div>
+              <span>字段边</span>
+              <b>{{ lineageStats.fieldEdges }}</b>
+            </div>
           </div>
-          <div>
-            <span>字段边</span>
-            <b>{{ lineageStats.fieldEdges }}</b>
-          </div>
-        </div>
+        </template>
       </section>
 
       <section class="ov-card">
         <header class="ov-hd">
           <div>
             <h3>标准合规</h3>
-            <p>字段合规率</p>
+            <p>检测合规率</p>
           </div>
           <button type="button" class="ov-link" @click="go('/standard')">详情</button>
         </header>
@@ -716,68 +662,66 @@ const rangeLabel = computed(() => ({
       </section>
     </div>
 
+    <!-- 有真实数据的补充 + 暂无模块占位 -->
     <div class="ov-row ov-row-2">
       <section class="ov-card">
         <header class="ov-hd">
           <div>
-            <h3>指标构成</h3>
-            <p>原子 / 衍生 / 复合</p>
+            <h3>ETL 近窗运行</h3>
+            <p>最近运行结果分布</p>
           </div>
-          <button type="button" class="ov-link" @click="go('/metrics')">详情</button>
+          <button type="button" class="ov-link" @click="go('/integration')">详情</button>
         </header>
-        <div class="ov-hbars">
-          <div v-for="b in metricBars" :key="b.label" class="ov-hbar">
-            <div class="ov-hbar-lab">
-              <span><i class="ov-dot" :style="{ background: b.color }" />{{ b.label }}</span>
-              <b>{{ b.value }}</b>
-            </div>
-            <div class="ov-hbar-track">
-              <div class="ov-hbar-fill" :style="{ width: b.pct + '%', background: b.color }" />
-            </div>
-          </div>
+        <div v-if="!etlRunBars.length" class="ov-empty sm">
+          <span>暂无运行记录</span>
         </div>
-        <div class="ov-foot-stats compact">
-          <div>
-            <span>已认证</span>
-            <b class="ok">{{ metricStats.certified }}</b>
-          </div>
-          <div>
-            <span>待评审</span>
-            <b class="warn">{{ metricStats.pending }}</b>
-          </div>
-        </div>
-      </section>
-
-      <section class="ov-card">
-        <header class="ov-hd">
-          <div>
-            <h3>API 发布状态</h3>
-            <p>服务生命周期</p>
-          </div>
-          <button type="button" class="ov-link" @click="go('/dataservice')">详情</button>
-        </header>
-        <div class="ov-donut-row">
-          <svg viewBox="0 0 108 108" class="ov-donut" aria-hidden="true">
-            <circle cx="54" cy="54" r="40" fill="none" stroke="#eef2f7" stroke-width="12" />
-            <path
-              v-for="(s, i) in svcDonut"
-              :key="i"
-              :d="s.d"
-              fill="none"
-              :stroke="s.color"
-              stroke-width="12"
+        <template v-else>
+          <div class="ov-stack">
+            <div
+              v-for="s in etlRunBars"
+              :key="s.label"
+              class="ov-stack-seg"
+              :style="{ width: Math.max(s.pct, 2) + '%', background: s.color }"
+              :title="`${s.label} ${s.value}`"
             />
-            <text x="54" y="52" text-anchor="middle" class="ov-donut-num">{{ svcStats.apis }}</text>
-            <text x="54" y="66" text-anchor="middle" class="ov-donut-cap">API</text>
-          </svg>
-          <ul class="ov-legend">
-            <li v-for="s in svcDonut" :key="s.label">
+          </div>
+          <ul class="ov-legend flat">
+            <li v-for="s in etlRunBars" :key="s.label">
               <i :style="{ background: s.color }" />
               <span>{{ s.label }}</span>
               <b>{{ s.value }} · {{ s.pct }}%</b>
             </li>
           </ul>
+        </template>
+      </section>
+
+      <section class="ov-card ov-card-muted">
+        <header class="ov-hd">
+          <div>
+            <h3>数据服务 / 指标</h3>
+            <p>尚未接入治理统计</p>
+          </div>
+        </header>
+        <div class="ov-na-grid">
+          <div class="ov-na">
+            <b>服务调用量</b>
+            <span>暂无</span>
+            <small>数据服务中心仍为前端演示</small>
+          </div>
+          <div class="ov-na">
+            <b>API 发布状态</b>
+            <span>暂无</span>
+            <small>无后端 API 生命周期统计</small>
+          </div>
+          <div class="ov-na">
+            <b>指标构成</b>
+            <span>暂无</span>
+            <small>指标中心仍为本地演示目录</small>
+          </div>
         </div>
+        <p v-if="!availability.metrics" class="ov-na-hint">
+          相关页面可继续浏览演示流程；总览不再展示假数字。
+        </p>
       </section>
     </div>
   </div>
@@ -787,6 +731,110 @@ const rangeLabel = computed(() => ({
 .ov {
   --ov-gap: 14px;
   --ov-r: 10px;
+}
+
+.ov-banner {
+  margin: -4px 0 12px;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--text-2);
+  background: var(--bg-2);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.ov-banner.warn {
+  color: #ad6800;
+  background: #fff7e6;
+  border-color: #ffd591;
+}
+
+.ov-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 140px;
+  color: var(--text-3);
+  font-size: 13px;
+  text-align: center;
+}
+.ov-empty.sm { min-height: 100px; }
+.ov-empty small {
+  font-size: 11px;
+  color: var(--text-4, #94a3b8);
+}
+
+.ov-apply {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+.ov-apply-tile {
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  border-radius: 8px;
+  padding: 16px 12px;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ov-apply-tile:hover { border-color: var(--primary); }
+.ov-apply-tile span {
+  font-size: 11px;
+  color: var(--text-3);
+}
+.ov-apply-tile b {
+  font-size: 28px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.ov-apply-tile b.warn { color: var(--warning); }
+
+.ov-na-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+.ov-na {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-rows: auto auto;
+  gap: 2px 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--bg-2);
+  border: 1px dashed var(--border);
+}
+.ov-na b {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.ov-na > span {
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--text-3);
+  justify-self: end;
+}
+.ov-na small {
+  grid-column: 1 / -1;
+  font-size: 11px;
+  color: var(--text-4, #94a3b8);
+}
+.ov-na-hint {
+  margin: 12px 0 0;
+  font-size: 11px;
+  color: var(--text-3);
+}
+.ov-card-muted {
+  background: linear-gradient(180deg, var(--bg-1) 0%, var(--bg-2) 100%);
 }
 
 /* 主链路 */
@@ -1022,43 +1070,6 @@ const rangeLabel = computed(() => ({
   color: var(--text-3);
 }
 
-/* vertical bars */
-.ov-vbars {
-  display: flex;
-  align-items: flex-end;
-  gap: 8px;
-  height: 140px;
-  padding-top: 8px;
-}
-.ov-vbar {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  height: 100%;
-}
-.ov-vbar-col {
-  flex: 1;
-  width: 100%;
-  display: flex;
-  align-items: flex-end;
-  justify-content: center;
-}
-.ov-vbar-fill {
-  width: 58%;
-  min-height: 4px;
-  border-radius: 4px 4px 0 0;
-  background: var(--primary);
-  opacity: 0.85;
-  transition: height 0.3s ease;
-}
-.ov-vbar span {
-  font-size: 10px;
-  color: var(--text-3);
-}
-
 /* donut */
 .ov-donut-row,
 .ov-gauge-row {
@@ -1136,11 +1147,6 @@ const rangeLabel = computed(() => ({
 .ov-hbar-lab b {
   font-variant-numeric: tabular-nums;
   color: var(--text-1);
-}
-.ov-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
 }
 .ov-hbar-track {
   height: 8px;
