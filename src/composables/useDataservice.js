@@ -25,6 +25,7 @@ import {
   APISIX_ROUTES,
   DS_KPIS,
   SUB_LIST,
+  defaultSqlrestEmbed,
 } from '@/data/dataservice'
 
 const loaded = ref(false)
@@ -37,7 +38,8 @@ const kpis = ref(DS_KPIS.map((k) => ({ ...k })))
 const callRank = ref(API_CALL_RANK.map((r) => ({ ...r })))
 const workbench = ref(null)
 const sqlrestDs = ref([])
-const embed = ref(null)
+/** 默认对齐部署台账；后端 embedUrl / workbench 成功后覆盖 */
+const embed = ref(defaultSqlrestEmbed())
 
 function mapOverview(ov) {
   if (!ov) return DS_KPIS.map((k) => ({ ...k }))
@@ -125,13 +127,16 @@ export function useDataservice() {
       if (wb) {
         workbench.value = wb
         callRank.value = mapTrendToRank(wb)
-        if (wb.embed) embed.value = wb.embed
+        if (wb.embed) embed.value = { ...defaultSqlrestEmbed(), ...wb.embed }
       }
-      if (emb) embed.value = { ...(embed.value || {}), ...emb }
+      if (emb) embed.value = { ...defaultSqlrestEmbed(), ...(embed.value || {}), ...emb }
+      // 后端未返回时仍保留部署台账默认地址，避免「未配置」
+      if (!embed.value?.sqlrest) embed.value = defaultSqlrestEmbed()
       if (Array.isArray(dsList)) sqlrestDs.value = dsList
       loaded.value = true
     } catch {
       degraded.value = true
+      if (!embed.value?.sqlrest) embed.value = defaultSqlrestEmbed()
       loaded.value = true
     } finally {
       loading.value = false
@@ -216,10 +221,10 @@ export function useDataservice() {
   }
 
   function openManager(kind = 'interfaceList') {
-    const e = embed.value || {}
-    const url = e[kind] || e.sqlrest || e.interfaceList
+    const e = { ...defaultSqlrestEmbed(), ...(embed.value || {}) }
+    const url = e[kind] || e.interfaceList || e.sqlrest
     if (url) window.open(url, '_blank', 'noopener')
-    return url
+    return url || null
   }
 
   return {

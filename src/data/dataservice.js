@@ -1,4 +1,25 @@
-/** 数据服务中心 · SQLREST + APISIX */
+/** 数据服务中心 · SQLREST 治理壳
+ * Manager / Gateway 默认地址对齐《部署台账》dev3（后端 /lh/dataapi/embedUrl 可覆盖）
+ */
+
+/** @see lakehouse-design/部署台账.md · SQLREST Manager / Gateway */
+export const SQLREST_MANAGER_URL = 'http://dev3.datagoo.cn:18090'
+export const SQLREST_GATEWAY_URL = 'http://dev3.datagoo.cn:18091'
+
+export function defaultSqlrestEmbed(root = SQLREST_MANAGER_URL, gateway = SQLREST_GATEWAY_URL) {
+  const base = String(root || SQLREST_MANAGER_URL).replace(/\/$/, '')
+  const gw = String(gateway || SQLREST_GATEWAY_URL).replace(/\/$/, '')
+  return {
+    sqlrest: base,
+    interfaceList: `${base}/#/interface/list`,
+    interfaceCreate: `${base}/#/interface/create`,
+    datasource: `${base}/#/datasource`,
+    client: `${base}/#/setting/client`,
+    online: `${base}/#/service/search`,
+    gateway: gw,
+    edgeMode: 'gateway',
+  }
+}
 
 export const DS_KPIS = [
   {
