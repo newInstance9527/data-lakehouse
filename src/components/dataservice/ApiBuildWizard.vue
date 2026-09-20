@@ -3,6 +3,7 @@ import { computed, reactive, ref, watch } from 'vue'
 import SearchSelect from '@/components/common/SearchSelect.vue'
 import SqlEditor from '@/components/etl/SqlEditor.vue'
 import { useToast } from '@/composables/useToast'
+import { useDataservice } from '@/composables/useDataservice'
 import {
   API_BUILD_STEPS,
   API_DATASOURCE_OPTIONS,
@@ -25,10 +26,12 @@ const props = defineProps({
 
 const emit = defineEmits(['close', 'publish'])
 const { showToast } = useToast()
+const { runTrial, runBuildAndPublish } = useDataservice()
 
 const step = ref(0)
 const form = reactive(defaultApiBuildForm())
 const testing = ref(false)
+const publishing = ref(false)
 
 const steps = API_BUILD_STEPS
 const isLast = computed(() => step.value === steps.length - 1)
@@ -191,19 +194,48 @@ async function doTest() {
   testing.value = true
   form.tested = false
   form.testResult = null
-  await new Promise((r) => setTimeout(r, 600))
-  form.testResult = runApiBuildTest(form)
-  form.tested = !!form.testResult.ok
-  testing.value = false
-  showToast(
-    form.tested
-      ? `✅ 试跑通过 · ${form.testResult.latencyMs}ms · ${form.testResult.rowCount} 行`
-      : '试跑失败',
-    form.tested ? 'success' : 'warning',
-  )
+  try {
+    const res = await runTrial(form)
+    if (res?.ok || res?.sample != null || res?.data?.answer != null) {
+      const sample = res.sample ?? res.data?.answer ?? res.data
+      const rows = Array.isArray(sample) ? sample : sample != null ? [sample] : []
+      form.testResult = {
+        ok: true,
+        latencyMs: 0,
+        engine: 'SQLREST',
+        source: apiSourceLabel(form),
+        rowCount: rows.length,
+        format: form.responseFormat || 'wrapped',
+        shape: form.responseShape || 'list',
+        sample: res.sample != null ? { code: 0, message: '操作成功', data: res.sample } : runApiBuildTest(form).sample,
+        logs: res.logs,
+        checkedAt: new Date().toLocaleString('zh-CN', { hour12: false }),
+        degraded: !!res.degraded,
+      }
+      form.tested = true
+      showToast(
+        res.degraded
+          ? `⚠ 试跑降级：${res.message || '后端不可达'}`
+          : `✅ SQLREST 试跑通过 · ${rows.length} 行`,
+        res.degraded ? 'warning' : 'success',
+      )
+    } else {
+      throw new Error(res?.message || '试跑失败')
+    }
+  } catch (e) {
+    form.testResult = runApiBuildTest(form)
+    form.tested = !!form.testResult.ok
+    form.testResult.degraded = true
+    showToast(
+      `本地试跑（后端未通：${e?.message || e}）· ${form.testResult.latencyMs}ms`,
+      'warning',
+    )
+  } finally {
+    testing.value = false
+  }
 }
 
-function publish() {
+async function publish() {
   const err = validateStep(5)
   if (err) {
     showToast(err, 'warning')
@@ -214,12 +246,34 @@ function publish() {
     step.value = 4
     return
   }
-  emit('publish', buildApiFromWizard({
-    ...form,
-    params: form.params.map((p) => ({ ...p })),
-    responses: form.responses.map((r) => ({ ...r })),
-  }))
-  close()
+  publishing.value = true
+  try {
+    const result = await runBuildAndPublish(form)
+    const row =
+      result?.binding ||
+      buildApiFromWizard({
+        ...form,
+        params: form.params.map((p) => ({ ...p })),
+        responses: form.responses.map((r) => ({ ...r })),
+      })
+    const tip = result?.publish?.degraded || result?.build?.degraded
+      ? `⚠ 已保存，部分步骤降级：${result?.publish?.binding?.lastError || result?.build?.sqlrest?.message || ''}`
+      : `🚀 已发布 ${row.method || form.method} ${row.path || form.path}`
+    showToast(tip, result?.publish?.degraded || result?.build?.degraded ? 'warning' : 'success')
+    emit('publish', row)
+    close()
+  } catch (e) {
+    const row = buildApiFromWizard({
+      ...form,
+      params: form.params.map((p) => ({ ...p })),
+      responses: form.responses.map((r) => ({ ...r })),
+    })
+    showToast(`发布失败，已写入本地列表：${e?.message || e}`, 'warning')
+    emit('publish', row)
+    close()
+  } finally {
+    publishing.value = false
+  }
 }
 </script>
 
@@ -603,9 +657,17 @@ function publish() {
         <div class="modal-footer wiz-footer">
           <button type="button" class="btn btn-sm" @click="close">取消</button>
           <div class="wiz-nav">
-            <button type="button" class="btn btn-sm" :disabled="isFirst" @click="prev">上一步</button>
-            <button type="button" class="btn btn-sm btn-primary" @click="next">
-              {{ isLast ? (form.publishEnv === 'prod' ? '提交发布' : '发布到 stg') : '下一步' }}
+            <button type="button" class="btn btn-sm" :disabled="isFirst || publishing" @click="prev">上一步</button>
+            <button type="button" class="btn btn-sm btn-primary" :disabled="publishing || testing" @click="next">
+              {{
+                isLast
+                  ? publishing
+                    ? '发布中…'
+                    : form.publishEnv === 'prod'
+                      ? '提交发布'
+                      : '发布到 stg'
+                  : '下一步'
+              }}
             </button>
           </div>
         </div>

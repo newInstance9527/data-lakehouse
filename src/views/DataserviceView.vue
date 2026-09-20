@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
 import ListPager from '@/components/common/ListPager.vue'
@@ -8,17 +8,9 @@ import SqlEditor from '@/components/etl/SqlEditor.vue'
 import ApiBuildWizard from '@/components/dataservice/ApiBuildWizard.vue'
 import { useToast } from '@/composables/useToast'
 import { usePager } from '@/composables/usePager'
+import { useDataservice } from '@/composables/useDataservice'
 import { pageGuideOf } from '@/data/pageGuides'
-import {
-  API_CALL_RANK,
-  API_LIST,
-  APISIX_ROUTES,
-  DS_KPIS,
-  SUB_LIST,
-  apisixStatusMeta,
-  routeOfApi,
-  subscribersOf,
-} from '@/data/dataservice'
+import { apisixStatusMeta, routeOfApi, subscribersOf } from '@/data/dataservice'
 import {
   FIELD_TRANSFORM_OPTIONS,
   RESPONSE_FORMAT_OPTIONS,
@@ -28,11 +20,22 @@ import {
 const router = useRouter()
 const { showToast } = useToast()
 const guide = pageGuideOf('dataservice')
+const {
+  apis,
+  routes,
+  subs,
+  kpis,
+  callRank,
+  degraded,
+  ensureLoaded,
+  openDetail,
+  runSyncApisix,
+} = useDataservice()
+
+onMounted(() => ensureLoaded())
 
 const apiSearch = ref('')
 const createOpen = ref(false)
-const apis = ref(API_LIST.map((a) => ({ ...a })))
-const routes = ref(APISIX_ROUTES.map((r) => ({ ...r })))
 
 const detailOpen = ref(false)
 const detail = ref(null)
@@ -42,19 +45,29 @@ const filteredApis = computed(() => {
   if (!f) return apis.value
   return apis.value.filter(
     (a) =>
-      a.path.toLowerCase().includes(f) ||
-      a.name.toLowerCase().includes(f) ||
-      a.domain.toLowerCase().includes(f) ||
-      (a.asset !== '-' && a.asset.toLowerCase().includes(f)) ||
-      (a.metric !== '-' && a.metric.toLowerCase().includes(f)),
+      (a.path || '').toLowerCase().includes(f) ||
+      (a.name || '').toLowerCase().includes(f) ||
+      (a.domain || '').toLowerCase().includes(f) ||
+      (a.asset && a.asset !== '-' && a.asset.toLowerCase().includes(f)) ||
+      (a.metric && a.metric !== '-' && a.metric.toLowerCase().includes(f)),
   )
 })
 
 const { page, pageSize, total, totalPages, paged, pageNums, goPage, resetPage } = usePager(filteredApis)
 watch(apiSearch, () => resetPage())
 
-const detailSubs = computed(() => (detail.value ? subscribersOf(detail.value.path) : []))
-const detailRoute = computed(() => (detail.value ? routeOfApi(detail.value.path) : null))
+const detailSubs = computed(() => {
+  if (!detail.value) return []
+  const fromMock = subscribersOf(detail.value.path)
+  if (fromMock.length) return fromMock
+  return (subs.value || []).filter((s) => s.api === detail.value.path)
+})
+const detailRoute = computed(() => {
+  if (!detail.value) return null
+  return (
+    routes.value.find((r) => r.path === detail.value.path) || routeOfApi(detail.value.path)
+  )
+})
 
 const formatLabel = computed(() => {
   const v = detail.value?.responseFormat
@@ -74,20 +87,11 @@ function buildApi() {
 }
 
 function onPublishApi(row) {
-  apis.value.unshift(row)
-  routes.value.unshift({
-    path: row.path,
-    upstream: 'SQLREST Executor → Trino',
-    auth: row.auth || 'Token',
-    rate: `${row.qps}/s`,
-    breaker: '✓',
-    meter: '✓',
-    status: row.publishEnv === 'prod' ? 'ok' : 'warn',
-    note: row.publishEnv === 'prod' ? '新建 · 待 API Owner' : '新建 · stg',
-  })
+  if (!row) return
+  const idx = apis.value.findIndex((a) => a.path === row.path && a.method === row.method)
+  if (idx >= 0) apis.value.splice(idx, 1, { ...apis.value[idx], ...row })
+  else apis.value.unshift(row)
   resetPage()
-  const env = row.publishEnv === 'prod' ? 'prod（待 API Owner 审批）' : 'stg'
-  showToast(`🚀 已发布 ${row.method} ${row.path} → APISIX ${env}`, 'success')
   openApiDetail(row)
 }
 
@@ -95,13 +99,23 @@ function goApply(apiPath) {
   router.push({ path: '/apply', query: { type: 'api', path: apiPath || undefined } })
 }
 
-function syncApisix() {
-  showToast('已触发与 APISIX Admin 同步', 'info')
+async function syncApisix() {
+  try {
+    const r = await runSyncApisix()
+    showToast(
+      r?.ok ? `已同步 ${r.synced || 0} 条路由` : `同步部分失败 · 成功 ${r?.synced || 0} / 失败 ${r?.failed || 0}`,
+      r?.ok ? 'success' : 'warning',
+    )
+  } catch (e) {
+    showToast(`同步失败：${e?.message || e}`, 'warning')
+  }
 }
 
-function openApiDetail(a) {
+async function openApiDetail(a) {
   detail.value = a
   detailOpen.value = true
+  const full = await openDetail(a)
+  if (full) detail.value = full
 }
 
 function closeApiDetail() {
@@ -138,7 +152,7 @@ function goAsset(asset) {
     <ApiBuildWizard :open="createOpen" @close="createOpen = false" @publish="onPublishApi" />
 
     <div class="kpi-grid ds-kpi">
-      <div v-for="(k, i) in DS_KPIS" :key="i" class="kpi-card ds-kpi-card">
+      <div v-for="(k, i) in kpis" :key="i" class="kpi-card ds-kpi-card">
         <div class="kpi-label">{{ k.label }}</div>
         <div class="kpi-value">
           {{ k.value }}<span v-if="k.unit" class="kpi-unit">{{ k.unit }}</span>
@@ -146,6 +160,7 @@ function goAsset(asset) {
         <div class="kpi-delta" :class="k.deltaCls">{{ k.delta }}</div>
       </div>
     </div>
+    <p v-if="degraded" class="tip" style="margin: -8px 0 12px">后端暂不可达，列表为本地演示数据</p>
 
     <div class="card ds-api-card">
       <div class="card-header">
@@ -161,7 +176,7 @@ function goAsset(asset) {
         <div v-if="paged.length" class="ds-api-grid">
           <div
             v-for="a in paged"
-            :key="a.path"
+            :key="a.id || a.path"
             class="api-card"
             role="button"
             tabindex="0"
@@ -218,7 +233,7 @@ function goAsset(asset) {
           <span class="tag tag-green">APISIX 审计</span>
         </div>
         <div class="card-body ds-rank">
-          <div v-for="(r, ri) in API_CALL_RANK" :key="ri" class="call-bar-row">
+          <div v-for="(r, ri) in callRank" :key="ri" class="call-bar-row">
             <div class="cbr-name" :title="r.name">{{ r.name }}</div>
             <div class="cbr-bar">
               <div class="cbr-bar-fill" :style="{ width: `${r.pct}%` }" />
@@ -244,7 +259,7 @@ function goAsset(asset) {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="(s, si) in SUB_LIST" :key="si">
+              <tr v-for="(s, si) in subs" :key="si">
                 <td>{{ s.app }}</td>
                 <td><code>{{ s.api }}</code></td>
                 <td>{{ s.user }}</td>

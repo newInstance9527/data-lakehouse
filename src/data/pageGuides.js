@@ -687,6 +687,7 @@ export const PAGE_GUIDES = {
       type: 'text',
       content: [
         '基于 SQLREST 分步构建查询 API：选指标/表 → 配参（入参 + 出参映射转换：wrapped/origin/nil、list/object/page、列改名与分转元等）→ 鉴权 → 全局限流 → 试跑 → 发布到 APISIX；各应用配额经申请中心签发令牌。',
+        'API 定义 SoT = SQLREST；门户只存绑定与 APISIX 路由投影；查询经 Trino（正式）。',
       ],
     },
     {

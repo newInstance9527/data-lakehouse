@@ -706,7 +706,7 @@ const rangeLabel = computed(() => {
           <div class="ov-na">
             <b>服务调用量</b>
             <span>暂无</span>
-            <small>数据服务中心仍为前端演示</small>
+            <small>数据服务：SQLREST 构建 / APISIX 发布</small>
           </div>
           <div class="ov-na">
             <b>API 发布状态</b>
