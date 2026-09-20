@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 
 const props = defineProps({
   nodes: { type: Array, default: () => [] },
@@ -280,6 +280,17 @@ function fit() {
 function resetPositions() {
   posOverrides.value = {}
 }
+
+/** 节点集合或服务端布局变化时清掉拖动覆盖，避免叠在旧位置 */
+watch(
+  () =>
+    (props.nodes || [])
+      .map((n) => `${n.id}:${n.x}:${n.y}`)
+      .join('|'),
+  () => {
+    posOverrides.value = {}
+  },
+)
 
 onBeforeUnmount(() => {
   panning.value = false

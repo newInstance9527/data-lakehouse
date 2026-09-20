@@ -1,16 +1,26 @@
 <script setup>
 import { useRoute, useRouter } from 'vue-router'
 import { computed } from 'vue'
-import { NAV_GROUPS, CRUMBS } from '@/config/nav'
+import { CRUMBS } from '@/config/nav'
+import { useSession } from '@/composables/useSession'
 import { useToast } from '@/composables/useToast'
 import AppToast from '@/components/common/AppToast.vue'
 
 const route = useRoute()
 const router = useRouter()
 const { showToast } = useToast()
+const { user, filteredNavGroups, logout, isSuperAdmin } = useSession()
 
 const activeId = computed(() => route.meta?.id || 'overview')
 const crumbs = computed(() => CRUMBS[activeId.value] || ['工作台', '总览仪表盘'])
+const avatarText = computed(() => {
+  const n = user.value?.name || user.value?.account || '?'
+  return String(n).slice(0, 2).toUpperCase()
+})
+const userTitle = computed(() => {
+  const roles = user.value?.roles?.join(',') || ''
+  return `${user.value?.name || ''} (${user.value?.account || ''})${roles ? ' · ' + roles : ''}`
+})
 
 function go(path) {
   router.push(path)
@@ -21,6 +31,11 @@ function onSearch(e) {
   if (!v || e.key !== 'Enter') return
   showToast(`🔍 全站搜索「${v}」· 跳转资产目录`, 'success')
   router.push({ path: '/catalog', query: { q: v } })
+}
+
+async function onLogout() {
+  await logout()
+  router.replace('/login')
 }
 </script>
 
@@ -35,7 +50,7 @@ function onSearch(e) {
         </div>
       </div>
       <nav class="side-nav">
-        <div v-for="group in NAV_GROUPS" :key="group.title" class="nav-group">
+        <div v-for="group in filteredNavGroups" :key="group.title" class="nav-group">
           <div class="nav-group-title">{{ group.title }}</div>
           <div
             v-for="item in group.items"
@@ -70,8 +85,10 @@ function onSearch(e) {
         </div>
         <div class="header-right">
           <span class="env-tag">PROD</span>
+          <span v-if="isSuperAdmin" class="env-tag" style="background: var(--primary-light); color: var(--primary)">超管</span>
           <button class="icon-btn" title="通知" @click="showToast('3 条未读告警', 'warning')">🔔</button>
-          <div class="user-avatar" title="当前用户">LM</div>
+          <div class="user-avatar" :title="userTitle">{{ avatarText }}</div>
+          <button class="icon-btn" title="退出登录" @click="onLogout">⎋</button>
         </div>
       </header>
 

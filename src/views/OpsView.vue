@@ -1,6 +1,6 @@
 <script setup>
-import { ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
 import { useToast } from '@/composables/useToast'
 import { pageGuideOf } from '@/data/pageGuides'
@@ -11,15 +11,66 @@ import {
   OPS_RECONCILE,
   opsStatusIconClass,
 } from '@/data/ops'
+import { backfillEtlDag, fetchEtlRunDetail } from '@/api/etl'
 
+const route = useRoute()
 const router = useRouter()
 const { showToast } = useToast()
 const guide = pageGuideOf('ops')
 
 const env = ref('prod')
+const focusRunId = ref('')
+const focusDagId = ref('')
+const focusRun = ref(null)
+const bfMarkKey = ref('dt')
+const bfMarkValue = ref('')
+const bfDagId = ref('')
 
-function startSupplement() {
-  showToast('🔧 发起补数（演示）· 选择分区 / DAG / 下游联动', 'info')
+async function loadFocusRun() {
+  const rid = String(route.query.runId || '')
+  const did = String(route.query.dagId || '')
+  focusRunId.value = rid
+  focusDagId.value = did
+  bfDagId.value = did
+  focusRun.value = null
+  if (!rid) return
+  try {
+    focusRun.value = await fetchEtlRunDetail(rid)
+  } catch (e) {
+    showToast(e.message || '加载 run 失败', 'warning')
+  }
+}
+
+watch(
+  () => [route.query.runId, route.query.dagId],
+  () => {
+    loadFocusRun()
+  },
+)
+
+onMounted(() => {
+  loadFocusRun()
+})
+
+async function startSupplement() {
+  if (bfDagId.value && bfMarkKey.value && bfMarkValue.value) {
+    try {
+      const resp = await backfillEtlDag(bfDagId.value, {
+        markKey: bfMarkKey.value.trim(),
+        markValue: bfMarkValue.value.trim(),
+        env: env.value,
+      })
+      showToast(`🔧 补数已提交 · ${resp?.runId || ''}`, resp?.ds?.degraded ? 'warning' : 'success')
+      if (resp?.runId) {
+        router.replace({ query: { ...route.query, runId: resp.runId, dagId: bfDagId.value } })
+      }
+      return
+    } catch (e) {
+      showToast(e.message || '补数失败', 'error')
+      return
+    }
+  }
+  showToast('🔧 发起补数 · 请填写 DAG id 与 mark_key / mark_value', 'info')
 }
 
 function reimportDiff() {
@@ -32,6 +83,10 @@ function onTaskClick(task) {
 
 function goRootcause() {
   router.push('/rootcause')
+}
+
+function goEtl() {
+  router.push('/integration')
 }
 
 function metaToneStyle(tone) {
@@ -55,6 +110,38 @@ function metaToneStyle(tone) {
       </select>
       <button type="button" class="btn btn-sm btn-primary" @click="startSupplement">🔧 发起补数</button>
     </PageHeader>
+
+    <div v-if="focusRunId" class="ops-focus card">
+      <div class="card-header">
+        <div class="card-title">告警定位 · run_id</div>
+        <button type="button" class="btn btn-sm" @click="goEtl">回 ETL 编排</button>
+      </div>
+      <div class="card-body ops-focus-body">
+        <div><span class="muted">run_id</span> <code>{{ focusRunId }}</code></div>
+        <div v-if="focusDagId"><span class="muted">dag_id</span> <code>{{ focusDagId }}</code></div>
+        <div v-if="focusRun">
+          <span class="muted">状态</span> {{ focusRun.status }} ·
+          <span class="muted">触发</span> {{ focusRun.trigger || focusRun.triggerType }} ·
+          <span class="muted">环境</span> {{ focusRun.env }}
+        </div>
+        <div v-if="focusRun?.message" class="ops-focus-msg">{{ focusRun.message }}</div>
+        <div v-if="focusRun?.alert" class="ops-focus-msg">
+          告警 {{ focusRun.alert.severity }} · {{ focusRun.alert.title }}
+        </div>
+      </div>
+    </div>
+
+    <div class="card ops-backfill">
+      <div class="card-header">
+        <div class="card-title">补数（水位 mark_key / mark_value）</div>
+      </div>
+      <div class="card-body ops-bf-row">
+        <input v-model="bfDagId" class="input input-sm" placeholder="dag id" />
+        <input v-model="bfMarkKey" class="input input-sm" placeholder="mark_key · dt" />
+        <input v-model="bfMarkValue" class="input input-sm" placeholder="mark_value · 2026-09-18" />
+        <button type="button" class="btn btn-sm btn-primary" @click="startSupplement">提交补数</button>
+      </div>
+    </div>
 
     <div class="kpi-grid ops-kpi">
       <div v-for="(k, i) in OPS_KPIS" :key="i" class="kpi-card" :class="k.color">
@@ -205,6 +292,33 @@ function metaToneStyle(tone) {
 </template>
 
 <style scoped>
+.ops-focus {
+  margin-bottom: 12px;
+  border-color: var(--warning);
+}
+.ops-focus-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+.ops-focus-msg {
+  color: var(--text-2);
+  font-size: 12px;
+}
+.ops-backfill {
+  margin-bottom: 12px;
+}
+.ops-bf-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.ops-bf-row .input {
+  min-width: 140px;
+  flex: 1;
+}
 .ops-kpi {
   grid-template-columns: repeat(4, 1fr);
   margin-bottom: 16px;

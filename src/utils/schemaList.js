@@ -121,7 +121,7 @@ export function resolveTables(source) {
   return parseSchemaList(source.schema).map((name) => enrichTableMeta(name, source.type))
 }
 
-/** 静态演示：按类型生成可同步的名称列表（注册弹窗紧凑组件用） */
+/** 静态演示：仅样例页可用；注册弹窗禁止再调用（会生成 {seed}_user 等假表） */
 export function mockSyncItems(type = 'MySQL', fieldName = 'schema', seed = '') {
   return mockSyncTables(type, fieldName, seed).map((t) => t.name)
 }

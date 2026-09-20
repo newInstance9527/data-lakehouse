@@ -1,36 +1,45 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
 import PageSizeSelect from '@/components/common/PageSizeSelect.vue'
 import LineageGraph from '@/components/lineage/LineageGraph.vue'
 import { pageGuideOf } from '@/data/pageGuides'
 import {
-  LINEAGE_NODES,
-  LINEAGE_FOCUS_OPTIONS,
   FIELD_META,
-  FOCUS_TABLE_MAP,
   focusTableMeta,
-  impactForFocus,
-  expandDemoByDepth,
-  findLineageNode,
 } from '@/data/lineage'
 import { useLineage } from '@/composables/useLineage'
 import { useToast } from '@/composables/useToast'
 import { DEFAULT_PAGE_SIZE } from '@/config/pagination'
 import { buildDownstreamPropagations, fieldNodeKey } from '@/utils/etlLineage'
-import { fieldsFromAsset, fieldsForTableName } from '@/utils/etlFields'
+import { fieldsFromAsset } from '@/utils/etlFields'
 import { useAssets } from '@/composables/useAssets'
+import { catalogAsset, resolveLineageFocus, standardMapping } from '@/utils/moduleLinks'
 
 const route = useRoute()
 const router = useRouter()
 const guide = pageGuideOf('lineage')
 const { showToast } = useToast()
-const { fieldEdges, tables, rebuild, lastParsedAt, stats, findTable } = useLineage()
+const {
+  fieldEdges,
+  tables,
+  lastParsedAt,
+  stats,
+  findTable,
+  loadFields,
+  loadGraphImpact,
+  sync,
+  changeEval,
+  blockDdl: apiBlockDdl,
+  graphPayload,
+  impactPayload,
+  syncInfo,
+} = useLineage()
 const { findAsset } = useAssets()
 
-const mode = ref('field') // field | table
-const focusId = ref('dwd_order')
+const mode = ref('field')
+const focusId = ref('')
 const selectedField = ref('')
 const upDepth = ref(5)
 const downDepth = ref(5)
@@ -40,8 +49,32 @@ const edgePage = ref(1)
 const edgePageSize = ref(DEFAULT_PAGE_SIZE)
 const propPage = ref(1)
 const propPageSize = ref(DEFAULT_PAGE_SIZE)
+const graphBusy = ref(false)
+const syncBusy = ref(false)
+const omDegraded = ref(false)
+const graphSource = ref('')
 
-const focusOptions = LINEAGE_FOCUS_OPTIONS
+/** 焦点下拉：门户字段边表优先，辅以图谱节点；无真数据时不回落演示主路径 */
+const focusOptions = computed(() => {
+  const map = new Map()
+  const add = (value, label) => {
+    const v = String(value || '').trim()
+    if (!v || map.has(v)) return
+    map.set(v, { value: v, label: label || v })
+  }
+  ;(fieldEdges.value || []).forEach((e) => {
+    if (e.fromField === '*' && e.toField === '*') {
+      add(e.fromTable, e.fromTable)
+      add(e.toTable, e.toTable)
+      return
+    }
+    add(e.fromTable, e.fromTable)
+    add(e.toTable, e.toTable)
+  })
+  ;(graphPayload.value?.nodes || []).forEach((n) => add(n.id || n.name, n.name || n.id))
+  ;(tables.value || []).forEach((t) => add(t.id || t.key, t.fullName || t.key || t.id))
+  return [...map.values()].sort((a, b) => String(a.label).localeCompare(String(b.label), 'zh'))
+})
 
 function clampDepth(n) {
   const v = Number(n)
@@ -61,6 +94,10 @@ function pickDefaultField(fields) {
   return prefer?.name || fields[0].name
 }
 
+function resolveFocusIdFromTable(tableKey) {
+  return String(tableKey || '').trim()
+}
+
 const focusMeta = computed(() => focusTableMeta(focusId.value))
 
 const focusEtlTable = computed(() => {
@@ -78,7 +115,16 @@ const focusFields = computed(() => {
   if (fromEtl?.length) return fromEtl
   const asset = findAsset(meta.assetId) || findAsset(meta.tableKey)
   if (asset) return fieldsFromAsset(asset)
-  return fieldsForTableName(meta.tableKey)
+  const fromEdges = new Set()
+  ;(fieldEdges.value || []).forEach((e) => {
+    if (e.fromField === '*' || e.toField === '*') return
+    if (e.fromTable === meta.tableKey) fromEdges.add(e.fromField)
+    if (e.toTable === meta.tableKey) fromEdges.add(e.toField)
+  })
+  if (fromEdges.size) {
+    return [...fromEdges].map((name) => ({ name, type: 'STRING' }))
+  }
+  return []
 })
 
 const focusFieldInfo = computed(() => focusFields.value.find((f) => f.name === selectedField.value) || null)
@@ -101,25 +147,27 @@ const downstream = computed(() => {
   return buildDownstreamPropagations(tableKey, selectedField.value, edges, clampDepth(downDepth.value))
 })
 
-const demoExpansion = computed(() =>
-  expandDemoByDepth(focusId.value, clampDepth(upDepth.value), clampDepth(downDepth.value)),
-)
-
 const graphNodes = computed(() => {
-  const keys = demoExpansion.value.keys
-  return LINEAGE_NODES.filter((n) => keys.has(n.id)).map((n) => ({
-    ...n,
-    hop: demoExpansion.value.depth.get(n.id) ?? 0,
-  }))
+  const nodes = graphPayload.value?.nodes
+  if (nodes?.length) return nodes
+  return []
 })
 
-const graphEdges = computed(() => demoExpansion.value.edges)
+const graphEdges = computed(() => graphPayload.value?.edges || [])
 
-const highlightIds = computed(() => [...demoExpansion.value.keys])
+const highlightIds = computed(() => {
+  const ids = new Set(graphNodes.value.map((n) => n.id))
+  const meta = focusMeta.value
+  ;[focusId.value, meta.tableKey, ...(meta.aliases || [])].filter(Boolean).forEach((x) => ids.add(x))
+  return [...ids]
+})
 
-const impact = computed(() =>
-  impactForFocus(focusId.value, clampDepth(upDepth.value), clampDepth(downDepth.value)),
-)
+const graphFocusId = computed(() => focusMeta.value.tableKey || focusId.value)
+
+const impact = computed(() => ({
+  up: impactPayload.value?.up || [],
+  down: impactPayload.value?.down || [],
+}))
 
 const propTotalPages = computed(() => Math.max(1, Math.ceil(downstream.value.items.length / propPageSize.value)))
 const pagedProps = computed(() => {
@@ -139,14 +187,14 @@ const changeWarn = computed(() => {
       title: count ? '⚠ 破坏性变更评估未通过' : 'ℹ 暂无下游字段边',
       body: count
         ? `拟将字段 ${selectedField.value} ${type} → ${toType}，影响 ${count} 个下游字段对象（下游 ${clampDepth(downDepth.value)} 层内）。`
-        : `拟变更 ${selectedField.value}（${type} → ${toType}），当前 ETL 未解析到下游字段边。`,
+        : `拟变更 ${selectedField.value}（${type} → ${toType}），当前门户字段边无下游。`,
     }
   }
   return {
     title: count ? `影响分析 · ${count} 个下游字段` : 'ℹ 暂无下游字段边',
     body: count
       ? `字段 ${selectedField.value}（${type}）在下游 ${clampDepth(downDepth.value)} 层内传播至 ${count} 个对象。`
-      : `字段 ${selectedField.value} 在当前 ETL 解析结果中没有下游映射，可检查任务 fieldMaps 后点「同步 ETL」。`,
+      : `字段 ${selectedField.value} 在门户字段边中没有下游映射，可点「同步」重扫 ETL 后检查。`,
   }
 })
 
@@ -194,12 +242,28 @@ const upPageNums = computed(() => pageNums(upPage.value, upTotalPages.value))
 const downPageNums = computed(() => pageNums(downPage.value, downTotalPages.value))
 const edgePageNums = computed(() => pageNums(edgePage.value, edgeTotalPages.value))
 
+async function refreshGraph() {
+  graphBusy.value = true
+  try {
+    const focus = focusId.value || focusOptions.value[0]?.value || ''
+    if (!focusId.value && focus) focusId.value = focus
+    const { graph } = await loadGraphImpact(focus, clampDepth(upDepth.value), clampDepth(downDepth.value))
+    omDegraded.value = !!graph?.omDegraded
+    graphSource.value = graph?.source || ''
+    if (graph?.focusTable && !focusId.value) focusId.value = graph.focusTable
+  } catch (e) {
+    showToast(`血缘图加载失败：${e.message || e}`, 'error')
+  } finally {
+    graphBusy.value = false
+  }
+}
+
 watch(
-  () => route.query.focus,
-  (v) => {
+  () => [route.query.focus, route.query.node, route.query.omFqn, route.query.q],
+  () => {
+    const v = resolveLineageFocus(route.query)
     if (!v) return
-    const n = findLineageNode(String(v))
-    if (n) focusId.value = n.id
+    focusId.value = String(v)
   },
   { immediate: true },
 )
@@ -228,6 +292,7 @@ watch(focusId, () => {
   router.replace({
     query: { ...route.query, focus: focusId.value, mode: mode.value, field: selectedField.value || undefined },
   })
+  refreshGraph()
 })
 
 watch(focusFields, (fields) => {
@@ -251,6 +316,7 @@ watch([upDepth, downDepth], () => {
   upPage.value = 1
   downPage.value = 1
   propPage.value = 1
+  refreshGraph()
 })
 
 watch([impactPageSize, propPageSize], () => {
@@ -266,21 +332,16 @@ function setMode(m) {
 
 function onSelectNode(n) {
   if (!n?.id) return
-  focusId.value = n.id
+  focusId.value = resolveFocusIdFromTable(n.id)
 }
 
 function onPickPropagation(p) {
-  const hit = Object.entries(FOCUS_TABLE_MAP).find(([, meta]) =>
-    (meta.aliases || []).some(
-      (a) => p.tableKey === a || p.tableKey === meta.tableKey || p.tableKey.endsWith('.' + a.split('.').pop()),
-    ),
-  )
-  if (hit) {
-    focusId.value = hit[0]
-    selectedField.value = p.fieldName
+  if (p?.tableKey) {
+    focusId.value = resolveFocusIdFromTable(p.tableKey)
+    selectedField.value = p.fieldName || selectedField.value
     return
   }
-  showToast(`下游字段 ${p.name}`, 'info')
+  showToast(`下游字段 ${p?.name || ''}`, 'info')
 }
 
 function goCatalog(assetId) {
@@ -288,7 +349,12 @@ function goCatalog(assetId) {
     router.push('/catalog')
     return
   }
-  router.push({ path: '/catalog', query: { id: assetId } })
+  router.push(catalogAsset(assetId))
+}
+
+function goStandardMapping() {
+  const q = selectedField.value || focusMeta.value?.tableKey || focusId.value
+  router.push(standardMapping(q))
 }
 
 function onGraphGo(target) {
@@ -306,32 +372,18 @@ function onGraphGo(target) {
 
 function onImpactClick(item) {
   if (item.nodeId) {
-    focusId.value = item.nodeId
+    focusId.value = resolveFocusIdFromTable(item.nodeId)
+    return
+  }
+  if (item.key) {
+    focusId.value = resolveFocusIdFromTable(item.key)
     return
   }
   if (item.assetId) {
-    const n = LINEAGE_NODES.find((x) => x.assetId === item.assetId || x.id === item.assetId)
-    if (n) {
-      focusId.value = n.id
-      return
-    }
     goCatalog(item.assetId)
     return
   }
-  if (item.mid) {
-    showToast('跳转指标中心…', 'info')
-    router.push('/metrics')
-    return
-  }
-  if (item.rep) {
-    showToast('报表数据源：ads_gmv_board CK/Iceberg 双源，未对账切 Iceberg 降级', 'info')
-    return
-  }
-  if (item.api) {
-    showToast('指标 API：日调用 32,000 次，鉴权经 Gravitino', 'info')
-    return
-  }
-  showToast('打开下游对象详情（示例）', 'info')
+  showToast('打开对象详情', 'info')
 }
 
 function impactTypeClass(type) {
@@ -347,24 +399,73 @@ function exportSvg() {
   showToast('已导出血缘关系图 SVG（演示）', 'success')
 }
 
-function genChangeEval() {
-  showToast(
-    `已生成 ${focusMeta.value.tableKey}.${selectedField.value || '—'} 变更评估单 · 下游 ${downstream.value.impactCount} 项`,
-    'success',
-  )
+async function genChangeEval() {
+  try {
+    const r = await changeEval(
+      focusMeta.value.tableKey,
+      selectedField.value,
+      fieldMetaExtra.value?.suggestToType,
+    )
+    showToast(
+      `变更评估已生成 · 下游 ${r.impactCount ?? downstream.value.impactCount} 项 · ${r.id || ''}`,
+      'success',
+    )
+  } catch (e) {
+    showToast(`评估失败：${e.message || e}`, 'error')
+  }
 }
 
-function blockDdl() {
-  showToast(`已阻断 ${selectedField.value || '字段'} 相关 DDL · 等待评审通过`, 'info')
+async function blockDdl() {
+  try {
+    const r = await apiBlockDdl(focusMeta.value.tableKey, selectedField.value, '变更评估未通过')
+    showToast(`已登记阻断 DDL · ${r.ticketId || selectedField.value || ''}`, 'info')
+  } catch (e) {
+    showToast(`阻断失败：${e.message || e}`, 'error')
+  }
 }
 
-function onRebuild() {
-  rebuild()
-  showToast(`已从 ${stats.value.tasks || 0} 个 ETL 任务同步字段边`, 'success')
+async function onRebuild() {
+  syncBusy.value = true
+  try {
+    const info = await sync()
+    const r = info?.result || {}
+    const mzOk = info?.marquez?.ok === true || r?.marquez?.ok === true
+    const edges = r.edgeCount ?? stats.value.fieldEdges
+    const ok = r.lineageOk ?? 0
+    const topo = r.topologyOk ?? 0
+    const dags = r.dagCount ?? 0
+    showToast(
+      `同步完成 · 扫 ${dags} 个 DAG · 显式边+${ok} / 拓扑+${topo} · 合计 ${edges} · Marquez ${mzOk ? 'UP' : '降级'}`,
+      'success',
+      { duration: 6000 },
+    )
+    if (!focusId.value && focusOptions.value.length) {
+      focusId.value = focusOptions.value[0].value
+    }
+    await refreshGraph()
+  } catch (e) {
+    showToast(`同步失败：${e.message || e}`, 'error')
+  } finally {
+    syncBusy.value = false
+  }
 }
 
-rebuild()
-if (!selectedField.value) selectedField.value = pickDefaultField(focusFields.value)</script>
+onMounted(async () => {
+  const fromRoute = resolveLineageFocus(route.query)
+  try {
+    await loadFields({})
+  } catch (e) {
+    showToast(`字段边加载失败：${e.message || e}`, 'error')
+  }
+  if (fromRoute) {
+    focusId.value = String(fromRoute)
+  } else if (!focusId.value && focusOptions.value.length) {
+    focusId.value = focusOptions.value[0].value
+  }
+  if (!selectedField.value) selectedField.value = pickDefaultField(focusFields.value)
+  await refreshGraph()
+})
+</script>
 
 <template>
   <div class="lineage-page">
@@ -375,6 +476,7 @@ if (!selectedField.value) selectedField.value = pickDefaultField(focusFields.val
       :guide="guide"
     >
       <select v-model="focusId" class="select input-sm" style="min-width: 220px">
+        <option v-if="!focusOptions.length" value="" disabled>暂无表（请发布 ETL 或同步）</option>
         <option v-for="o in focusOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
       </select>
       <label class="depth-ctl">
@@ -416,7 +518,17 @@ if (!selectedField.value) selectedField.value = pickDefaultField(focusFields.val
           <div class="card-header lin-head">
             <div class="card-title">
               🗺️ 全链路血缘视图
-              <span class="tip">（点击节点查看详情）</span>
+              <span class="tip">（ETL 发布写边 · 点击节点查看详情）</span>
+              <span v-if="graphBusy" class="tag tag-gray" style="margin-left: 8px">加载中…</span>
+              <span
+                v-else-if="graphSource"
+                class="tag tag-blue"
+                style="margin-left: 8px"
+                :title="graphSource"
+              >{{ graphSource.includes('portal') ? '门户边' : graphSource.includes('openmetadata') ? 'OM' : graphSource }}</span>
+              <span v-if="omDegraded" class="tag tag-orange" style="margin-left: 8px" title="OM Lineage soft-fail">
+                OM 降级
+              </span>
             </div>
             <div class="flex align-center gap-8">
               <span class="tag layer-ods" style="border: none">ODS</span>
@@ -430,12 +542,18 @@ if (!selectedField.value) selectedField.value = pickDefaultField(focusFields.val
             <LineageGraph
               :nodes="graphNodes"
               :edges="graphEdges"
-              :focus-id="focusId"
+              :focus-id="graphFocusId"
               :highlight-ids="highlightIds"
               @select="onSelectNode"
               @open-asset="goCatalog"
               @go="onGraphGo"
             />
+            <div
+              v-if="!graphBusy && !graphNodes.length"
+              style="position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--text-3); font-size: 13px; pointer-events: none"
+            >
+              暂无血缘节点：请在 ETL 配置 fieldMaps 并发布，或点「同步」重扫 DAG 写边
+            </div>
           </div>
         </section>
 
@@ -521,8 +639,9 @@ if (!selectedField.value) selectedField.value = pickDefaultField(focusFields.val
             <div class="card-title">字段血缘明细</div>
             <div class="lin-edge-tools">
               <input v-model="edgeKw" class="input input-sm" style="width: 200px" placeholder="筛选表/字段…" />
-              <button class="btn btn-sm" @click="onRebuild">↻ 同步 ETL</button>
+              <button class="btn btn-sm" :disabled="syncBusy" @click="onRebuild">↻ 同步</button>
               <span class="muted" v-if="lastParsedAt">{{ lastParsedAt }}</span>
+              <span class="muted" v-if="syncInfo?.result?.markValue">水位 {{ syncInfo.result.markValue }}</span>
             </div>
           </div>
           <div class="card-body" style="padding: 0; overflow: auto">
@@ -553,7 +672,7 @@ if (!selectedField.value) selectedField.value = pickDefaultField(focusFields.val
                   </td>
                 </tr>
                 <tr v-if="!pagedEdges.length">
-                  <td colspan="7" class="empty">暂无字段边。可在 ETL 配置映射后点「同步 ETL」。</td>
+                  <td colspan="7" class="empty">暂无字段边。请在 ETL 配置 fieldMaps 并发布，或点「同步」重扫 DAG。</td>
                 </tr>
               </tbody>
             </table>
@@ -622,7 +741,13 @@ if (!selectedField.value) selectedField.value = pickDefaultField(focusFields.val
                 </div>
                 <div v-if="fieldMetaExtra?.std" class="lin-def">
                   <span>标准映射</span>
-                  <strong>{{ fieldMetaExtra.std }}</strong>
+                  <button type="button" class="linkish" @click="goStandardMapping">
+                    <strong>{{ fieldMetaExtra.std }}</strong>
+                  </button>
+                </div>
+                <div v-else class="lin-def">
+                  <span>标准映射</span>
+                  <button type="button" class="linkish" @click="goStandardMapping">打开映射检索 →</button>
                 </div>
                 <div v-if="fieldMetaExtra?.desc || focusFieldInfo?.cn" class="lin-def full">
                   <span>口径说明</span>

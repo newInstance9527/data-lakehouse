@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import DagPalette from '@/components/etl/DagPalette.vue'
 import DagCanvas from '@/components/etl/DagCanvas.vue'
@@ -9,6 +9,7 @@ import { useEtl } from '@/composables/useEtl'
 import { useToast } from '@/composables/useToast'
 import { useDatasources } from '@/composables/useDatasources'
 import { useAssets } from '@/composables/useAssets'
+import { useDsSchema } from '@/composables/useDsSchema'
 import { pageGuideOf } from '@/data/pageGuides'
 import { TASK_STATUS_META } from '@/data/etl'
 import {
@@ -20,8 +21,9 @@ import {
 const { showToast } = useToast()
 const guide = pageGuideOf('integration')
 const canvasRef = ref(null)
-const { getSource } = useDatasources()
+const { getSource, loadSources } = useDatasources()
 const { findAsset } = useAssets()
+const { ensureSchema, getDsFields, schemaRev } = useDsSchema()
 
 const {
   taskList,
@@ -47,9 +49,18 @@ const {
   removeEdge,
   validateCurrent,
   trialRun,
+  publishCurrent,
+  saveCurrent,
+  refreshRuns,
+  ensureLoaded,
+  loading,
+  saving,
+  lastError,
   openRunsTab,
   clearForceCfgTab,
   forceCfgTab,
+  setScheduleStatus,
+  backfillCurrent,
 } = useEtl()
 
 const taskKw = ref('')
@@ -61,7 +72,13 @@ const leftCollapsed = ref(loadBool('etl-left-c', false))
 const rightCollapsed = ref(loadBool('etl-right-c', false))
 const paletteCollapsed = ref(loadBool('etl-palette-c', false))
 
-const fieldCtx = computed(() => ({ getSource, findAsset }))
+const fieldCtx = computed(() => ({
+  getSource,
+  findAsset,
+  getDsFields,
+  // schemaRev 变化时强制重算上游字段
+  _schemaRev: schemaRev.value,
+}))
 
 const upstreamFields = computed(() => {
   if (!current.value || !selectedNode.value) return []
@@ -78,11 +95,43 @@ const targetFields = computed(() => {
   return resolveTargetTableFields(selectedNode.value, fieldCtx.value)
 })
 
+/** 收集当前任务中源节点 / 选中节点相关的 dsId，预拉表字段 */
+function collectDsIdsForFields() {
+  const t = current.value
+  if (!t?.nodes?.length) return []
+  const ids = new Set()
+  const sel = selectedNode.value
+  if (sel?.conf?.dsId) ids.add(sel.conf.dsId)
+  // 选中节点的直接上游源
+  if (sel) {
+    ;(t.edges || [])
+      .filter((e) => String(e.to) === String(sel.id))
+      .forEach((e) => {
+        const p = t.nodes.find((n) => String(n.id) === String(e.from))
+        if (p?.conf?.dsId) ids.add(p.conf.dsId)
+      })
+  }
+  // 全部 source 节点（保证下游字段可推导）
+  t.nodes.forEach((n) => {
+    if (String(n.type || '').startsWith('source') && n.conf?.dsId) ids.add(n.conf.dsId)
+  })
+  return [...ids]
+}
+
+watch(
+  () => [currentId.value, selNodeId.value, current.value?.edges?.length, current.value?.nodes?.map((n) => n.conf?.dsId).join(',')],
+  async () => {
+    const ids = collectDsIdsForFields()
+    await Promise.all(ids.map((id) => ensureSchema(id)))
+  },
+  { immediate: true },
+)
+
 const filteredTasks = computed(() => {
   const q = taskKw.value.trim().toLowerCase()
   if (!q) return taskList.value
   return taskList.value.filter((t) =>
-    `${t.name} ${t.desc} ${t.owner} ${t.engine}`.toLowerCase().includes(q),
+    `${t.name} ${t.desc} ${t.dagCode} ${t.owner} ${t.engine}`.toLowerCase().includes(q),
   )
 })
 
@@ -149,9 +198,13 @@ function startResize(side, e) {
   window.addEventListener('mouseup', onUp)
 }
 
-function onNewTask() {
-  const t = createTask()
-  showToast(`✅ 已创建任务 ${t.name}`, 'success')
+async function onNewTask() {
+  try {
+    const t = await createTask()
+    showToast(`✅ 已创建任务 ${t.name}`, 'success')
+  } catch (e) {
+    showToast(e.message || '创建失败', 'error')
+  }
 }
 
 function onAddNode(type) {
@@ -174,7 +227,7 @@ function onDropType(type, pos) {
 
 function onBeginConnect(id) {
   beginConnect(id)
-  showToast('连线中：点击目标节点输入端口', 'info')
+  showToast('连线中：点击目标节点完成', 'info')
 }
 
 function onCompleteConnect(toId) {
@@ -192,29 +245,110 @@ function onDeleteEdge(idx) {
   showToast('已删除连线', 'success')
 }
 
-function onValidate() {
-  const r = validateCurrent()
-  showToast(r.messages[0], r.ok ? 'success' : 'warning')
-  if (!r.ok && r.messages.length > 1) {
-    r.messages.slice(1).forEach((m) => showToast(m, 'warning'))
+async function onValidate() {
+  const r = await validateCurrent()
+  if (r.ok) {
+    showToast(r.messages[0] || '校验通过', 'success')
+    return
+  }
+  const head = r.summary || '校验未通过'
+  const body = (r.messages || []).slice(0, 12).join('\n')
+  showToast(body ? `${head}\n${body}` : head, 'error', { duration: 10000 })
+}
+
+async function onSave() {
+  if (!current.value) return
+  try {
+    await saveCurrent()
+    showToast(`💾 已保存 ${current.value.name}`, 'success')
+  } catch (e) {
+    showToast(e.message || '保存失败', 'error')
   }
 }
 
-function onSave() {
+async function onTrialRun() {
   if (!current.value) return
-  showToast(`💾 已保存 ${current.value.name}（演示 · 会话内有效）`, 'success')
+  try {
+    const row = await trialRun()
+    if (row) {
+      const failed = row.rawStatus === 'failed'
+      const qBlocked = !!row.quality?.blocked
+      const qOk = row.quality?.qualityRunOk
+      const dsMsg =
+        row.dsStart?.message ||
+        row.ds?.message ||
+        row.message ||
+        row.rawMessage ||
+        ''
+      let tip = ''
+      // DS/引擎错误优先；勿把「已提交但校验误报」盖成质量门禁
+      if (failed && dsMsg) tip = String(dsMsg).slice(0, 160)
+      else if (qBlocked) tip = '质量门禁已阻断'
+      else if (failed) tip = '试跑失败'
+      else if (qOk != null) tip = `质量 runs ${qOk}`
+      const ol = row.openLineage?.olOk != null ? ` · OL ${row.openLineage.olOk}` : ''
+      showToast(
+        `▶ ${failed || qBlocked ? '试跑失败' : '已提交试跑'} ${row.run}${tip ? ' · ' + tip : ''}${ol}`,
+        failed || qBlocked ? 'warning' : 'success',
+        { duration: failed || qBlocked ? 10000 : 4000 },
+      )
+      if ((failed || qBlocked) && row.alert?.opsPath) {
+        showToast(`告警已登记 · 运维入口 ${row.alert.opsPath}`, 'warning')
+      }
+      runsDrawerOpen.value = true
+    }
+  } catch (e) {
+    showToast(e.message || '试跑失败', 'error')
+  }
 }
 
-function onTrialRun() {
+async function onSetStatus(status) {
   if (!current.value) return
-  const row = trialRun()
-  if (row) showToast(`▶ 已提交试跑 ${row.run}`, 'success')
+  try {
+    const r = await setScheduleStatus(status)
+    const deg = r?.dsSchedule?.degraded
+    const label =
+      status === 'paused' ? '已暂停' : status === 'prod' ? '已恢复/上线' : status === 'draft' ? '已标为草稿' : status
+    const synced = status === 'prod' || status === 'paused'
+    showToast(
+      synced
+        ? deg
+          ? `${label}（门户已更新；DS 同步降级）`
+          : `${label} · DS 已同步`
+        : label,
+      deg ? 'warning' : 'success',
+    )
+  } catch (e) {
+    showToast(e.message || '状态变更失败', 'error')
+  }
 }
 
-function onOpenRuns() {
+async function onBackfill({ markKey, markValue } = {}) {
+  if (!current.value) return
+  try {
+    const resp = await backfillCurrent({ markKey, markValue })
+    showToast(
+      `🔧 补数已提交 ${resp?.markKey}=${resp?.markValue} · ${resp?.runId || ''}`,
+      resp?.ds?.degraded ? 'warning' : 'success',
+    )
+    if (resp?.opsPath) {
+      showToast(`运维入口 ${resp.opsPath}`, 'info')
+    }
+    runsDrawerOpen.value = true
+  } catch (e) {
+    showToast(e.message || '补数失败', 'error')
+  }
+}
+
+async function onOpenRuns() {
   if (!current.value) return
   runsDrawerOpen.value = true
   openRunsTab()
+  try {
+    await refreshRuns(current.value.id)
+  } catch {
+    /* ignore */
+  }
 }
 
 function onSelectRunNode(nodeId) {
@@ -222,16 +356,25 @@ function onSelectRunNode(nodeId) {
   selectNode(nodeId)
 }
 
-function onPublish() {
+async function onPublish() {
   if (!current.value) return
-  updateTaskMeta({ status: 'prod', ver: bumpVer(current.value.ver) })
-  showToast(`🚀 已发布 ${current.value.name}`, 'success')
-}
-
-function bumpVer(v) {
-  const m = String(v || 'v0.1').match(/v?(\d+)\.(\d+)/)
-  if (!m) return 'v1.0'
-  return `v${m[1]}.${Number(m[2]) + 1}`
+  try {
+    const resp = await publishCurrent()
+    const wf = resp?.dsWorkflowCode || current.value.dsWorkflowCode || ''
+    const se = resp?.sideEffects || {}
+    const mapN = se.stdMappingOk != null ? `映射${se.stdMappingOk}` : ''
+    const linN = se.lineageOk != null ? `血缘${se.lineageOk}` : ''
+    const dqN = se.qualityRunOk != null ? `质量${se.qualityRunOk}` : ''
+    const vaultN = se.vault?.injected != null ? `Vault${se.vault.injected}` : ''
+    const sinkN = se.sinkTarget?.created != null ? `建表${se.sinkTarget.created}` : ''
+    const side = [mapN, linN, dqN, vaultN, sinkN].filter(Boolean).join('·')
+    const tip = resp?.degraded
+      ? `（DS 降级，已登记 ${wf}）`
+      : [wf && `→ ${wf}`, side, se.qualityGateBlocked ? '⚠质量阻断' : ''].filter(Boolean).join(' ')
+    showToast(`🚀 已发布 ${current.value.name} ${current.value.ver} ${tip}`.trim(), se.qualityGateBlocked ? 'warning' : 'success')
+  } catch (e) {
+    showToast(e.message || '发布失败', 'error')
+  }
 }
 
 function statusMeta(st) {
@@ -251,7 +394,17 @@ function onKey(e) {
   }
 }
 
-onMounted(() => window.addEventListener('keydown', onKey))
+onMounted(async () => {
+  window.addEventListener('keydown', onKey)
+  try {
+    await Promise.all([ensureLoaded(), loadSources().catch(() => {})])
+    if (lastError.value) {
+      showToast(lastError.value.message || 'ETL 列表加载失败', 'warning')
+    }
+  } catch (e) {
+    showToast(e.message || 'ETL 列表加载失败', 'error')
+  }
+})
 onUnmounted(() => window.removeEventListener('keydown', onKey))
 </script>
 
@@ -259,17 +412,31 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   <div class="etl-page">
     <PageHeader
       title="🛠️ ETL 编排"
-      subtitle="Flink / Spark / DataX · DAG 画布 · 入湖清洗出湖"
+      subtitle="Flink / Spark / DataX · 对接门户 /lh/etl"
       :guide-title="guide.title"
       :guide="guide"
     >
-      <button class="btn btn-sm" :disabled="!current" @click="onValidate">校验</button>
-      <button class="btn btn-sm" :disabled="!current" @click="onSave">保存</button>
-      <button class="btn btn-sm" :disabled="!current" @click="onTrialRun">▶ 试跑</button>
+      <span v-if="loading || saving" class="etl-busy">{{ saving ? '保存中…' : '加载中…' }}</span>
+      <button class="btn btn-sm" :disabled="!current || saving" @click="onValidate">校验</button>
+      <button class="btn btn-sm" :disabled="!current || saving" @click="onSave">保存</button>
+      <button class="btn btn-sm" :disabled="!current || saving" @click="onTrialRun">▶ 试跑</button>
       <button class="btn btn-sm" :disabled="!current" @click="onOpenRuns">执行记录</button>
-      <button class="btn btn-sm" :disabled="!current" @click="onPublish">发布</button>
-      <button class="btn btn-sm btn-primary" @click="onNewTask">＋ 新建任务</button>
+      <button class="btn btn-sm" :disabled="!current || saving" @click="onPublish">发布</button>
+      <button class="btn btn-sm btn-primary" :disabled="saving" @click="onNewTask">＋ 新建任务</button>
     </PageHeader>
+
+    <div
+      v-if="current?.lastValidate && current.lastValidate.ok === false"
+      class="etl-validate-banner"
+      role="alert"
+    >
+      <div class="etl-validate-banner__title">
+        {{ current.lastValidate.summary || '校验未通过' }}
+      </div>
+      <ul class="etl-validate-banner__list">
+        <li v-for="(m, i) in (current.lastValidate.messages || []).slice(0, 12)" :key="i">{{ m }}</li>
+      </ul>
+    </div>
 
     <div class="dag-layout">
       <!-- 左：任务列表 -->
@@ -293,14 +460,15 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
             @click="selectTask(t.id)"
           >
             <div class="dti-name">{{ t.name }}</div>
-            <div class="dti-desc">{{ t.desc }}</div>
+            <div class="dti-desc">{{ t.dagCode || t.desc }}</div>
             <div class="dti-meta">
               <span class="tag" :class="statusMeta(t.status).tag" style="font-size: 10px">{{ statusMeta(t.status).label }}</span>
               <span>{{ t.engine }}</span>
               <span>{{ t.cron }}</span>
             </div>
           </button>
-          <div v-if="!filteredTasks.length" class="dag-config-empty">无匹配任务</div>
+          <div v-if="loading && !filteredTasks.length" class="dag-config-empty">加载任务中…</div>
+          <div v-else-if="!filteredTasks.length" class="dag-config-empty">无匹配任务 · 可新建或检查后端 /lh/etl</div>
         </div>
       </aside>
       <button
@@ -394,12 +562,14 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
           :target-fields="targetFields"
           :force-tab="forceCfgTab"
           @update-task="updateTaskMeta"
-          @update-node="patchNode"
+          @update-node="(id, patch) => patchNode(id, patch)"
           @delete-node="onDeleteNode"
           @delete-edge="onDeleteEdge"
           @trial-run="onTrialRun"
           @clear-force-tab="clearForceCfgTab"
           @open-runs="onOpenRuns"
+          @set-status="onSetStatus"
+          @backfill="onBackfill"
         />
       </aside>
     </div>

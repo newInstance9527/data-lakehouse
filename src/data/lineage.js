@@ -152,35 +152,32 @@ export function resolveTableFocusKey(focusId) {
   return byAsset ? byAsset[0] : null
 }
 
-export function focusTableMeta(focusId) {
-  const mapped = resolveTableFocusKey(focusId)
-  if (mapped) {
-    return { ...FOCUS_TABLE_MAP[mapped], graphNodeId: focusId, fieldCapable: true }
-  }
-  const n = findLineageNode(focusId)
-  return {
-    tableKey: n?.name || String(focusId || ''),
-    assetId: n?.assetId || null,
-    aliases: [n?.id, n?.assetId, n?.name].filter(Boolean),
-    graphNodeId: n?.id || focusId,
-    fieldCapable: n?.type === 'table' && !!n?.assetId,
-  }
-}
-
 export function findLineageNode(focusId) {
   const id = String(focusId || '')
-  return (
-    LINEAGE_NODES.find((n) => n.id === id || n.assetId === id) ||
-    LINEAGE_NODES.find((n) => n.focus) ||
-    LINEAGE_NODES[0]
-  )
+  if (!id) return null
+  return LINEAGE_NODES.find((n) => n.id === id || n.assetId === id || n.name === id) || null
+}
+
+/** 焦点元数据：短演示 id 可映射；其余表名原样作为 tableKey */
+export function focusTableMeta(focusId) {
+  const key = String(focusId || '').trim()
+  if (FOCUS_TABLE_MAP[key]) {
+    return { ...FOCUS_TABLE_MAP[key], graphNodeId: focusId, fieldCapable: true }
+  }
+  return {
+    tableKey: key,
+    assetId: null,
+    aliases: key ? [key] : [],
+    graphNodeId: focusId,
+    fieldCapable: true,
+  }
 }
 
 /** 按图边推导上下游（无静态 IMPACT 时） */
 export function impactFromEdges(focusId) {
   const node = findLineageNode(focusId)
-  if (!node) return { up: [], down: [] }
-  const id = node.id
+  const id = node?.id || String(focusId || '')
+  if (!id) return { up: [], down: [] }
   const up = []
   const down = []
   LINEAGE_EDGES.forEach(([s, t]) => {

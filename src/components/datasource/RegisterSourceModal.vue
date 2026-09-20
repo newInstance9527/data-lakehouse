@@ -3,9 +3,9 @@ import { computed, reactive, ref, watch } from 'vue'
 import SchemaListField from '@/components/datasource/SchemaListField.vue'
 import { DS_COMMON_FIELDS, dsTypeFields, dsTypeMeta } from '@/data/dsForm'
 import { groupTypesByCategory } from '@/data/datasources'
-import { isInventoryField } from '@/utils/schemaList'
+import { isInventoryField, tablesToSchema } from '@/utils/schemaList'
 import { useToast } from '@/composables/useToast'
-import { testDatasource } from '@/api/datasource'
+import { discoverTables, testDatasource } from '@/api/datasource'
 
 const props = defineProps({
   open: { type: Boolean, default: false },
@@ -17,12 +17,11 @@ const { showToast } = useToast()
 const form = reactive({})
 const tested = ref(false)
 const testing = ref(false)
+/** 编辑回填期间跳过 type watch，避免清空连接参数 */
+const hydrating = ref(false)
 
 const typeFields = computed(() => dsTypeFields(form.type || 'MySQL'))
 const isEdit = computed(() => !!props.editSource)
-const syncSeed = computed(
-  () => form.database || form.name || form.namespace || form.vhost || form.path || '',
-)
 const typeField = computed(() => DS_COMMON_FIELDS.find((f) => f.n === 'type'))
 const typeGroups = computed(() => groupTypesByCategory(typeField.value?.o || []))
 const basicFields = computed(() => DS_COMMON_FIELDS.filter((f) => f.n !== 'type'))
@@ -39,33 +38,75 @@ function blankForm(type = 'MySQL') {
   return next
 }
 
-function resetForm() {
-  Object.keys(form).forEach((k) => delete form[k])
-  const seed = props.editSource
-  if (seed) {
-    Object.assign(form, blankForm(seed.type || 'MySQL'), {
-      name: seed.name || '',
-      type: seed.type || 'MySQL',
-      purpose: seed.purpose || '数据入湖',
-      owner: seed.owner || '李明',
-      desc: seed.desc || '',
-      host: seed.host || '',
-      port: String(seed.port || ''),
-      database: seed.database || '',
-      user: seed.user || '',
-      password: seed.password || '',
-      extra: seed.extra || '',
-      schema: seed.schema || '',
-    })
-    dsTypeFields(form.type).forEach((f) => {
-      if (seed[f.n] != null && form[f.n] === '') form[f.n] = seed[f.n]
-    })
-    tested.value = true
-  } else {
-    Object.assign(form, blankForm('MySQL'))
-    tested.value = false
+/** 把列表/详情 VO（含 conn）摊平成表单字段 */
+function flattenSeed(seed) {
+  if (!seed) return {}
+  const conn = seed.conn && typeof seed.conn === 'object' ? { ...seed.conn } : {}
+  const schemaText =
+    seed.schema ||
+    tablesToSchema(seed.tables) ||
+    conn.schema ||
+    conn.topics ||
+    conn.queues ||
+    ''
+  const flat = {
+    ...conn,
+    id: seed.id,
+    name: seed.name || '',
+    type: seed.type || seed.typeCode || 'MySQL',
+    purpose: seed.purpose || '数据入湖',
+    owner: seed.owner || '李明',
+    desc: seed.desc || '',
+    host: seed.host || conn.host || conn.bootstrap || conn.endpoint || '',
+    port: String(seed.port ?? conn.port ?? ''),
+    database: seed.database || conn.database || conn.sid || conn.namespace || '',
+    user: seed.user || conn.user || conn.username || '',
+    password: seed.password || '',
+    // extra / access 严格分轨，禁止互相回落
+    extra: seed.extra || conn.extra || '',
+    access: seed.access || conn.access || '',
+    lag: seed.lag || '',
+    asset: seed.asset || '',
+    schema: schemaText,
   }
-  testing.value = false
+  // 历史脏数据：extra 曾被回填成接入方式
+  if (flat.extra && flat.access && flat.extra === flat.access) {
+    flat.extra = ''
+  }
+  if (flat.password === '******' || String(conn.password || '').includes('*')) {
+    flat.password = '******'
+  } else if (!flat.password && (seed.password || conn.password)) {
+    flat.password = '******'
+  }
+  return flat
+}
+
+function resetForm() {
+  hydrating.value = true
+  try {
+    Object.keys(form).forEach((k) => delete form[k])
+    const seed = props.editSource
+    if (seed) {
+      const flat = flattenSeed(seed)
+      const type = flat.type || 'MySQL'
+      Object.assign(form, blankForm(type), flat, { type })
+      dsTypeFields(type).forEach((f) => {
+        const v = flat[f.n] ?? seed[f.n] ?? seed.conn?.[f.n]
+        if (v != null && v !== '') form[f.n] = String(v)
+      })
+      const inv = dsTypeFields(type).find(isInventoryField)
+      if (inv && !form[inv.n]) form[inv.n] = flat.schema || ''
+      tested.value = true
+    } else {
+      Object.assign(form, blankForm('MySQL'))
+      tested.value = false
+    }
+    testing.value = false
+  } finally {
+    queueMicrotask(() => {
+      hydrating.value = false
+    })
+  }
 }
 
 watch(
@@ -78,7 +119,8 @@ watch(
 watch(
   () => form.type,
   (type, prev) => {
-    if (!props.open || type === prev) return
+    // prev 为空 = 回填/初始化赋 type，勿清空连接参数
+    if (!props.open || hydrating.value || type === prev || prev == null || prev === '') return
     const keep = {
       name: form.name,
       purpose: form.purpose,
@@ -134,6 +176,18 @@ async function testConn() {
   }
 }
 
+/** 注册弹窗「同步清单」：拉源端真实表，禁止 mock */
+async function discoverInventory() {
+  const res = await discoverTables({
+    ...form,
+    id: props.editSource?.id,
+  })
+  if (res?.ok === false) {
+    throw new Error(res?.error || '发现表失败')
+  }
+  return res
+}
+
 function submit() {
   if (!validate()) return
   if (!tested.value && !isEdit.value) {
@@ -165,10 +219,10 @@ function submit() {
     database: String(database),
     user: form.user || form.accessKey || '',
     password: form.password || form.secretKey || form.token || '',
-    extra: form.extra || form.feNodes || form.warehouse || '',
+    extra: form.extra || form.feNodes || '',
     schema: form.schema || form.topics || form.queues || '',
-    lag: form.access || form.pollCycle || '待探测',
-    access: form.access || '',
+    lag: form.lag || '',
+    access: form.access || form.pollCycle || '',
     // 类型专属原字段一并带上，后端写入 conn
     ...Object.fromEntries(
       typeFields.value.map((f) => [f.n, form[f.n]]).filter(([, v]) => v != null && v !== ''),
@@ -261,7 +315,7 @@ function submit() {
                   :placeholder="f.ph || '输入名称后添加'"
                   :source-type="form.type"
                   :field-name="f.n"
-                  :seed="syncSeed"
+                  :discover="discoverInventory"
                 />
                 <select
                   v-else-if="f.t === 'select'"

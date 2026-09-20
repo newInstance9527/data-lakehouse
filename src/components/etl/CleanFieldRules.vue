@@ -54,9 +54,9 @@ function addRow(field = '') {
       field,
       ops: ['trim'],
       nullDefault: '',
-      castType: 'STRING',
-      lenMax: 255,
-      maskRule: 'mask_middle',
+      castType: '',
+      lenMax: null,
+      maskRule: '',
       regexPat: '',
       regexRep: '',
     },
@@ -74,11 +74,11 @@ function seedFromFields() {
     .slice(0, 8)
     .map((f) => ({
       field: f.name,
-      ops: f.pk ? ['trim', 'typeCast'] : ['trim'],
+      ops: ['trim'],
       nullDefault: '',
-      castType: f.type || 'STRING',
-      lenMax: 255,
-      maskRule: 'mask_middle',
+      castType: '',
+      lenMax: null,
+      maskRule: '',
       regexPat: '',
       regexRep: '',
     }))
@@ -102,8 +102,9 @@ function seedFromFields() {
         <SearchSelect
           :model-value="row.field"
           :options="fieldSelectOptions(fields)"
+          sub-key="sub"
           allow-custom
-          placeholder="选择字段"
+          placeholder="下拉搜索字段或自定义"
           @update:model-value="patch(i, 'field', $event)"
         />
         <button type="button" class="btn btn-sm" title="删除" @click="removeRow(i)">✕</button>

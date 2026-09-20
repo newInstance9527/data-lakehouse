@@ -1,7 +1,9 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import AppDrawer from '@/components/common/AppDrawer.vue'
 import { NODE_TYPES } from '@/data/etl'
+import { fetchEtlRunDetail } from '@/api/etl'
 import { RUN_STATUS_META, buildRunDetail } from '@/utils/etlRuns'
 import { useToast } from '@/composables/useToast'
 
@@ -11,6 +13,7 @@ const props = defineProps({
 })
 const emit = defineEmits(['close', 'rerun', 'select-node'])
 
+const router = useRouter()
 const { showToast } = useToast()
 const kw = ref('')
 const statusFilter = ref('ALL')
@@ -18,6 +21,7 @@ const triggerFilter = ref('ALL')
 const activeRun = ref('')
 const detailTab = ref('overview') // overview | nodes | logs
 const activeNodeId = ref('')
+const detailCache = ref({})
 
 const logs = computed(() => props.task?.logs || [])
 
@@ -41,8 +45,15 @@ const filtered = computed(() => {
   })
 })
 
+const activeLogRow = computed(() => {
+  const base = logs.value.find((l) => l.run === activeRun.value) || filtered.value[0]
+  if (!base) return null
+  const enriched = detailCache.value[base.run]
+  return enriched ? { ...base, ...enriched, runNodes: enriched.runNodes || base.runNodes } : base
+})
+
 const detail = computed(() => {
-  const row = logs.value.find((l) => l.run === activeRun.value) || filtered.value[0]
+  const row = activeLogRow.value
   if (!row || !props.task) return null
   return buildRunDetail(props.task, row)
 })
@@ -65,6 +76,36 @@ watch(
 watch(detail, (d) => {
   if (d && !d.nodes?.some((n) => n.nodeId === activeNodeId.value)) {
     activeNodeId.value = d.nodes?.[0]?.nodeId || ''
+  }
+})
+
+watch(activeRun, async (runId) => {
+  if (!runId || !props.open) return
+  if (detailCache.value[runId]?.runNodes) return
+  try {
+    const d = await fetchEtlRunDetail(runId)
+    if (!d) return
+    detailCache.value = {
+      ...detailCache.value,
+      [runId]: {
+        note: d.message || '',
+        status:
+          d.status === 'success'
+            ? 'SUCCESS'
+            : d.status === 'failed'
+              ? 'ERROR'
+              : d.status === 'running' || d.status === 'submitted'
+                ? 'RUNNING'
+                : String(d.status || '').toUpperCase(),
+        env: d.env,
+        trigger: d.trigger || d.triggerType,
+        runNodes: d.nodes || [],
+        opsPath: d.opsPath || d.alert?.opsPath,
+        alert: d.alert,
+      },
+    }
+  } catch {
+    /* soft-fail：抽屉仍用列表摘要 */
   }
 })
 
@@ -104,6 +145,14 @@ async function copyRunId() {
   } catch {
     showToast(id, 'info')
   }
+}
+
+function goOps() {
+  const path = detail.value?.opsPath || detail.value?.alert?.opsPath
+  if (!path) return
+  const q = path.includes('?') ? path.slice(path.indexOf('?')) : `?runId=${detail.value?.run || ''}`
+  router.push(`/ops${q}`)
+  emit('close')
 }
 
 function goNodeOnCanvas(nodeId) {
@@ -174,6 +223,7 @@ function goNodeOnCanvas(nodeId) {
               <option value="ALL">全部触发</option>
               <option value="cron">调度</option>
               <option value="manual">手动/试跑</option>
+              <option value="backfill">补数</option>
             </select>
           </div>
 
@@ -225,6 +275,12 @@ function goNodeOnCanvas(nodeId) {
             </div>
             <div class="trd-actions">
               <button type="button" class="btn btn-sm" @click="copyRunId">复制 run_id</button>
+              <button
+                v-if="detail.status === 'ERROR' || detail.opsPath"
+                type="button"
+                class="btn btn-sm btn-primary"
+                @click="goOps"
+              >打开运维</button>
               <button type="button" class="btn btn-sm" @click="emit('rerun')">重跑</button>
             </div>
           </div>

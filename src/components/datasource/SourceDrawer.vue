@@ -1,5 +1,5 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import AppDrawer from '@/components/common/AppDrawer.vue'
 import {
@@ -10,12 +10,13 @@ import {
 } from '@/data/datasources'
 import { schemaSummary } from '@/utils/schemaList'
 import { useToast } from '@/composables/useToast'
+import { testDatasource } from '@/api/datasource'
 
 const props = defineProps({
   source: { type: Object, default: null },
   open: { type: Boolean, default: false },
 })
-const emit = defineEmits(['close', 'toggle-status', 'edit', 'open-tables'])
+const emit = defineEmits(['close', 'toggle-status', 'edit', 'open-tables', 'tested'])
 
 const router = useRouter()
 const { showToast } = useToast()
@@ -23,13 +24,29 @@ const { showToast } = useToast()
 const cat = computed(() => (props.source ? dsCategory(props.source) : ''))
 const st = computed(() => statusMeta(props.source?.status))
 const summary = computed(() => schemaSummary(props.source?.schema, 5))
+const testing = ref(false)
 
 function close() {
   emit('close')
 }
 
-function test() {
-  showToast(`🧪 连通性测试 ${props.source.name} · 成功`, 'success')
+async function test() {
+  if (!props.source?.id || testing.value) return
+  testing.value = true
+  try {
+    const res = await testDatasource({ id: props.source.id, type: props.source.type })
+    if (res?.ok) {
+      showToast(`🧪 连通性测试 ${props.source.name} · 成功（${res.costMs ?? '?'}ms）`, 'success')
+    } else {
+      showToast(`连通失败：${res?.error || '未知错误'}`, 'error')
+    }
+    emit('tested', props.source.id)
+  } catch (e) {
+    showToast(`连通失败：${e.message || e}`, 'error')
+    emit('tested', props.source.id)
+  } finally {
+    testing.value = false
+  }
 }
 
 function edit() {
@@ -45,17 +62,22 @@ function openTables() {
   close()
 }
 
-function goAsset() {
+function goAsset(assetCode) {
   close()
   router.push({
     path: '/catalog',
     query: {
       source: props.source.name,
       sourceId: props.source.id,
-      ...(props.source.asset ? { asset: props.source.asset } : {}),
+      ...(assetCode || props.source.asset ? { asset: assetCode || props.source.asset } : {}),
     },
   })
 }
+
+const linkedAssets = computed(() => {
+  const list = props.source?.linkedAssets
+  return Array.isArray(list) ? list : []
+})
 </script>
 
 <template>
@@ -83,7 +105,9 @@ function goAsset() {
           </div>
         </div>
         <div style="display: flex; gap: 8px; flex-shrink: 0">
-          <button class="btn btn-sm" @click="test">🧪 测试</button>
+          <button class="btn btn-sm" :disabled="testing" @click="test">
+            {{ testing ? '测试中…' : '🧪 测试' }}
+          </button>
           <button class="btn btn-sm btn-primary" @click="edit">✎ 编辑</button>
           <button class="btn btn-sm" @click="close">✕</button>
         </div>
@@ -119,9 +143,28 @@ function goAsset() {
           <div>
             <div class="info-label">关联资产</div>
             <div class="info-value">
-              <button class="btn-link" @click="goAsset">
+              <template v-if="linkedAssets.length">
+                <div
+                  v-for="a in linkedAssets"
+                  :key="a.assetId || a.assetCode"
+                  style="margin-bottom: 4px"
+                >
+                  <button class="btn-link" @click="goAsset(a.assetCode)">
+                    {{ a.assetCode || a.name }}
+                    <span style="color: var(--text-3); font-weight: 400">
+                      · {{ a.objectName || a.name || '' }}
+                      <template v-if="a.linkRole === 'primary'"> · 主</template>
+                      →
+                    </span>
+                  </button>
+                </div>
+                <button class="btn-link" style="margin-top: 2px; color: var(--text-3)" @click="goAsset()">
+                  查看全部（按此源过滤）→
+                </button>
+              </template>
+              <button v-else class="btn-link" @click="goAsset()">
                 <template v-if="source.asset">{{ source.asset }}</template>
-                <template v-else>查看资产目录</template>
+                <template v-else>暂无关联 · 去目录注册</template>
                 <span style="color: var(--text-3)"> · {{ source.name }} →</span>
               </button>
             </div>

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, ref, watch, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
 import AppDrawer from '@/components/common/AppDrawer.vue'
@@ -14,8 +14,6 @@ import {
   APPLY_METRIC_KINDS,
   APPLY_METRIC_SCOPES,
   APPLY_METRIC_TYPES,
-  APPLY_MINE,
-  APPLY_PENDING,
   APPLY_PERM_LEVELS,
   APPLY_PERM_MODES,
   APPLY_PUBLISH_ENVS,
@@ -32,6 +30,9 @@ import {
   permModeLabel,
   tableKindLabel,
 } from '@/data/apply'
+import { createApplyTicket, approveTicket as apiApproveTicket, rejectTicket as apiRejectTicket } from '@/api/apply'
+import { useApplyBoard, pushExportApply, approveExportOnBoard, hydrateApplyBoardFromServer } from '@/composables/useApplyBoard'
+import { EXPORT_TABLE_OPTIONS } from '@/data/createForms'
 import { ASSET_DATA } from '@/data/assets'
 import { METRIC_CATALOG } from '@/data/metrics'
 import { PUBLISH_HISTORY } from '@/data/publish'
@@ -40,12 +41,18 @@ const route = useRoute()
 const router = useRouter()
 const { showToast } = useToast()
 const guide = pageGuideOf('apply')
+const { pending, mine } = useApplyBoard()
+
+onMounted(() => {
+  hydrateApplyBoardFromServer()
+})
 
 const TYPE_LABEL = Object.fromEntries(APPLY_TYPE_OPTIONS.map((o) => [o.value, o.label]))
 const SIDE_LABEL = { pending: '处理中', approved: '已通过', rejected: '已驳回' }
 const METRIC_OPTIONS = buildApplyMetricOptions(METRIC_CATALOG)
 const ASSET_OPTIONS = buildApplyAssetOptions(ASSET_DATA)
 const RELEASE_OPTIONS = buildApplyReleaseOptions(PUBLISH_HISTORY)
+const EXPORT_OPTIONS = EXPORT_TABLE_OPTIONS
 const SCOPE_LABEL = Object.fromEntries(APPLY_METRIC_SCOPES.map((o) => [o.value, o.label]))
 const PERM_LEVEL_CLS = Object.fromEntries(APPLY_PERM_LEVELS.map((o) => [o.value, o.cls]))
 
@@ -53,6 +60,8 @@ function emptyForm() {
   return {
     type: 'perm',
     asset: ASSET_OPTIONS[0]?.value || '',
+    assetCode: '',
+    assetName: '',
     apiPath: APPLY_API_OPTIONS[0]?.value || '/api/gmv/daily',
     app: '',
     qps: 100,
@@ -75,14 +84,13 @@ function emptyForm() {
     releasePkg: RELEASE_OPTIONS[0]?.value || '',
     publishEnv: 'stg',
     rollbackPlan: '',
+    exportTable: EXPORT_OPTIONS[0]?.value || '',
+    exportTarget: 'BI 报表',
   }
 }
 
 const activeTab = ref('all')
 const creating = ref(false)
-const pending = ref(APPLY_PENDING.map((w) => ({ ...w, timeline: w.timeline.map((n) => ({ ...n })) })))
-const mine = ref(APPLY_MINE.map((w) => ({ ...w, timeline: w.timeline?.map((n) => ({ ...n })) || [] })))
-
 const form = ref(emptyForm())
 const tokenModal = ref(null)
 const detailOpen = ref(false)
@@ -92,6 +100,25 @@ const tokenVisible = ref(false)
 const selectedMetric = computed(() => METRIC_OPTIONS.find((o) => o.value === form.value.metricId) || null)
 const selectedAsset = computed(() => ASSET_OPTIONS.find((o) => o.value === form.value.asset) || null)
 const selectedRelease = computed(() => RELEASE_OPTIONS.find((o) => o.value === form.value.releasePkg) || null)
+
+/** 目录深链带来的真实资产 id，并入申请下拉 */
+const permAssetOptions = computed(() => {
+  const id = form.value.asset
+  if (!id) return ASSET_OPTIONS
+  if (ASSET_OPTIONS.some((o) => o.value === id)) return ASSET_OPTIONS
+  return [
+    {
+      value: id,
+      label: form.value.assetName || form.value.assetCode || id,
+      name: form.value.assetName || form.value.assetCode || id,
+      sub: form.value.assetCode || id,
+      level: form.value.permLevel || '内部',
+      owner: '—',
+      domain: '',
+    },
+    ...ASSET_OPTIONS,
+  ]
+})
 
 const showExpireField = computed(() => {
   if (form.value.type === 'publish') return false
@@ -127,16 +154,46 @@ watch(
         metricId: mid && METRIC_OPTIONS.some((o) => o.value === mid) ? mid : emptyForm().metricId,
       }
       syncMetricVersionDefaults()
+    } else if (t === 'export') {
+      activeTab.value = 'export'
+      creating.value = true
+      form.value = {
+        ...emptyForm(),
+        type: 'export',
+        exportTable:
+          (typeof route.query.table === 'string' && route.query.table) || emptyForm().exportTable,
+        exportTarget:
+          (typeof route.query.target === 'string' && route.query.target) || emptyForm().exportTarget,
+        purpose: typeof route.query.purpose === 'string' ? route.query.purpose : '',
+      }
     } else if (t === 'perm' || t === 'table' || t === 'publish') {
       activeTab.value = t
       creating.value = true
-      const asset = typeof route.query.asset === 'string' ? route.query.asset : ''
+      const assetId =
+        (typeof route.query.assetId === 'string' && route.query.assetId) ||
+        (typeof route.query.asset === 'string' && route.query.asset) ||
+        ''
+      const assetCode = typeof route.query.assetCode === 'string' ? route.query.assetCode : ''
+      const assetName = typeof route.query.name === 'string' ? route.query.name : ''
+      const matched = assetId && ASSET_OPTIONS.some((o) => o.value === assetId)
       form.value = {
         ...emptyForm(),
         type: t,
-        asset: asset && ASSET_OPTIONS.some((o) => o.value === asset) ? asset : emptyForm().asset,
+        asset: matched ? assetId : assetId || emptyForm().asset,
+        assetCode,
+        assetName: assetName || (matched ? ASSET_OPTIONS.find((o) => o.value === assetId)?.label : '') || '',
       }
       if (t === 'perm' && selectedAsset.value) form.value.permLevel = selectedAsset.value.level || '内部'
+    }
+  },
+  { immediate: true },
+)
+
+watch(
+  () => route.query.tab,
+  (tab) => {
+    if (typeof tab === 'string' && APPLY_TABS.some((t) => t.id === tab)) {
+      activeTab.value = tab
     }
   },
   { immediate: true },
@@ -183,7 +240,7 @@ function toggleCreate() {
   creating.value = !creating.value
   if (creating.value) {
     form.value = emptyForm()
-    if (['api', 'metric', 'perm', 'table', 'publish'].includes(activeTab.value)) {
+    if (['api', 'metric', 'perm', 'table', 'publish', 'export'].includes(activeTab.value)) {
       form.value.type = activeTab.value
     }
     if (form.value.type === 'metric') syncMetricVersionDefaults()
@@ -199,11 +256,12 @@ function purposePlaceholder() {
   }
   if (form.value.type === 'perm') return '业务背景、访问场景、是否含敏感字段'
   if (form.value.type === 'table') return '对账 / 分析 / 登记原因与下游消费方'
+  if (form.value.type === 'export') return '出湖业务用途、下游系统、是否含 PII / 脱敏要求'
   if (form.value.type === 'publish') return '变更说明、影响范围、验证结果'
   return '业务背景、分析/加工场景、下游产物'
 }
 
-function submitApply() {
+async function submitApply() {
   const purpose = form.value.purpose.trim()
   if (!purpose) {
     showToast('请填写使用用途', 'warning')
@@ -260,6 +318,15 @@ function submitApply() {
       showToast('发布到 prod 须填写回滚预案', 'warning')
       return
     }
+  } else if (form.value.type === 'export') {
+    if (!form.value.exportTable) {
+      showToast('请选择出湖表', 'warning')
+      return
+    }
+    if (!form.value.exportTarget?.trim()) {
+      showToast('请填写目标系统', 'warning')
+      return
+    }
   } else if (!form.value.asset?.trim()) {
     showToast('请填写申请资产', 'warning')
     return
@@ -312,11 +379,45 @@ function submitApply() {
   } else if (form.value.type === 'metric') {
     submitMetricApply(id, now, purpose)
   } else if (form.value.type === 'perm') {
-    submitPermApply(id, now, purpose)
+    try {
+      const server = await createApplyTicket({
+        ticketType: 'table_read',
+        title: `表读权限 · ${form.value.assetName || form.value.assetCode || form.value.asset}`,
+        reason: purpose,
+        assetId: form.value.asset,
+        privilege: form.value.permMode === 'read' ? 'SELECT' : form.value.permMode,
+        expireLabel: form.value.expire,
+        columns: form.value.columns.trim() || null,
+      })
+      const sid = server?.id || server?.ticketNo || id
+      submitPermApply(sid, now, purpose, { fromServer: true, serverId: server?.id })
+    } catch (e) {
+      showToast(e?.message || '后端申请接口暂不可用，已落本地演示单', 'warning')
+      submitPermApply(id, now, purpose)
+    }
   } else if (form.value.type === 'table') {
     submitTableApply(id, now, purpose)
   } else if (form.value.type === 'publish') {
     submitPublishApply(id, now, purpose)
+  } else if (form.value.type === 'export') {
+    try {
+      const r = await pushExportApply({
+        table: form.value.exportTable,
+        purpose,
+        target: form.value.exportTarget.trim(),
+        expire: form.value.expire,
+        applicant: '我',
+      })
+      const tip = r.degraded
+        ? `⚠️ 出湖申请已落本地：${r.ticketNo}（${r.message || '后端暂不可用'}）`
+        : `✅ 出湖申请已提交：${r.ticketNo} · 请在「待我审批」通过后，将单号填回 ETL ticketNo`
+      showToast(tip, r.degraded ? 'warning' : 'success', { duration: 8000 })
+    } catch (e) {
+      showToast(e?.message || '出湖申请提交失败', 'danger')
+    }
+    creating.value = false
+    activeTab.value = 'export'
+    return
   } else {
     mine.value.unshift({
       id,
@@ -445,7 +546,7 @@ function submitMetricApply(id, now, purpose) {
   })
 }
 
-function submitPermApply(id, now, purpose) {
+function submitPermApply(id, now, purpose, meta = {}) {
   const mode = form.value.permMode
   const asset = form.value.asset
   const level = form.value.permLevel
@@ -468,6 +569,8 @@ function submitPermApply(id, now, purpose) {
     purpose,
     applicant: '我',
     assetOwner: selectedAsset.value?.owner || '—',
+    fromServer: Boolean(meta.fromServer),
+    serverId: meta.serverId || (meta.fromServer ? id : null),
   }
   mine.value.unshift({
     ...base,
@@ -635,10 +738,20 @@ function submitPublishApply(id, now, purpose) {
   })
 }
 
-function approveTicket(id) {
+async function approveTicket(id) {
   const idx = pending.value.findIndex((w) => w.id === id)
   if (idx < 0) return
   const ticket = pending.value[idx]
+
+  if (ticket.type === 'perm' && (ticket.fromServer || ticket.serverId)) {
+    try {
+      await apiApproveTicket(ticket.serverId || ticket.id)
+      showToast(`✅ 已通过 ${id} · 已写 sec_auth_grant（可投影则 soft-fail Grav ACL）`, 'success')
+    } catch (e) {
+      showToast(e?.message || '审批接口失败', 'danger')
+      return
+    }
+  }
 
   if (ticket.type === 'api') {
     const issued = issueApiCallToken({
@@ -750,6 +863,28 @@ function approveTicket(id) {
     return
   }
 
+  if (ticket.type === 'export') {
+    pending.value.splice(idx, 1)
+    try {
+      const r = await approveExportOnBoard(ticket)
+      const ticketNo = r?.ticketNo || ticket.ticketNo || ticket.id
+      try {
+        navigator.clipboard?.writeText?.(ticketNo)
+      } catch {
+        /* ignore */
+      }
+      showToast(
+        `✅ 已通过出湖申请 ${ticketNo} · 单号已复制，可填回 ETL sink ticketNo`,
+        'success',
+        { duration: 8000 },
+      )
+    } catch (e) {
+      pending.value.splice(idx, 0, ticket)
+      showToast(e?.message || '出湖审批失败', 'danger')
+    }
+    return
+  }
+
   if (ticket.type === 'perm' || ticket.type === 'table' || ticket.type === 'publish') {
     pending.value.splice(idx, 1)
     const now = new Date().toLocaleString('zh-CN', {
@@ -837,9 +972,43 @@ function approveTicket(id) {
   showToast(`✅ 已通过 ${id} · 将写入 Gravitino 授权`, 'success')
 }
 
-function rejectTicket(id) {
+async function rejectTicket(id) {
+  const ticket = pending.value.find((w) => w.id === id)
+  if (ticket?.type === 'perm' && (ticket.fromServer || ticket.serverId)) {
+    try {
+      await apiRejectTicket(ticket.serverId || ticket.id, '驳回')
+    } catch (e) {
+      showToast(e?.message || '驳回接口失败', 'danger')
+      return
+    }
+  }
   const idx = pending.value.findIndex((w) => w.id === id)
   if (idx >= 0) pending.value.splice(idx, 1)
+  if (ticket) {
+    const mineIdx = mine.value.findIndex((m) => m.id === ticket.id && m.side === 'pending')
+    if (mineIdx >= 0) {
+      const now = new Date()
+        .toLocaleString('zh-CN', {
+          hour12: false,
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+        })
+        .replace(/\//g, '-')
+      mine.value.splice(mineIdx, 1, {
+        ...ticket,
+        side: 'rejected',
+        titleHtml: `<span class="tag tag-red">已驳回</span> ${ticket.asset || ticket.ticketNo || ticket.id}`,
+        time: now,
+        desc: `驳回原因：请补充用途/脱敏说明后重提 · 原单号 ${ticket.ticketNo || ticket.id}`,
+        timeline: [
+          { label: '✓ 提交', cls: 'done' },
+          { label: '✗ 已驳回', cls: 'done' },
+        ],
+      })
+    }
+  }
   showToast(`❌ 已驳回 ${id} · 已通知申请人`, 'warning')
 }
 
@@ -850,6 +1019,15 @@ function copyToken() {
     navigator.clipboard.writeText(t).then(() => showToast('已复制令牌到剪贴板', 'success'))
   } else {
     showToast(t, 'info')
+  }
+}
+
+function copyTicketNo(no) {
+  if (!no) return
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(no).then(() => showToast(`已复制出湖单号 ${no}`, 'success'))
+  } else {
+    showToast(String(no), 'info')
   }
 }
 
@@ -950,6 +1128,7 @@ function approveBtnLabel(w) {
     return '通过并授权'
   }
   if (w.type === 'publish') return `通过并上线 ${w.publishEnv || ''}`.trim()
+  if (w.type === 'export') return '通过并签发出湖单号'
   return '通过'
 }
 
@@ -1109,11 +1288,14 @@ function displayToken() {
             <span>申请资产</span>
             <SearchSelect
               v-model="form.asset"
-              :options="ASSET_OPTIONS"
+              :options="permAssetOptions"
               placeholder="搜索表 / 资产"
               sub-key="sub"
               :search-keys="['name', 'level', 'owner', 'domain', 'value']"
             />
+            <span v-if="form.assetCode || form.assetName" class="muted" style="font-size: 11px; margin-top: 4px">
+              来自资产目录：{{ form.assetName || form.assetCode }}
+            </span>
           </label>
           <label>
             <span>密级</span>
@@ -1195,7 +1377,29 @@ function displayToken() {
           </label>
         </template>
 
-        <label :class="{ wide: ['api', 'metric', 'perm', 'table', 'publish'].includes(form.type) }">
+        <template v-else-if="form.type === 'export'">
+          <label class="wide">
+            <span>出湖表</span>
+            <SearchSelect
+              v-model="form.exportTable"
+              :options="EXPORT_OPTIONS"
+              placeholder="搜索 ADS / DWD / DWS 表"
+              sub-key="sub"
+              :search-keys="['name', 'layer', 'domain', 'value']"
+            />
+          </label>
+          <label class="wide">
+            <span>目标系统</span>
+            <input v-model="form.exportTarget" class="input" placeholder="如 BI 报表 / MySQL marketing_prod / SFTP" />
+          </label>
+          <p class="tip wide" style="margin: 0">
+            审批通过后签发 <b>EXP-xxx</b> 单号，填回 ETL 出湖节点 ticketNo；也可在
+            <button type="button" class="btn-link" @click="router.push('/export')">出湖与回流</button>
+            提交同等申请。
+          </p>
+        </template>
+
+        <label :class="{ wide: ['api', 'metric', 'perm', 'table', 'publish', 'export'].includes(form.type) }">
           <span>使用用途</span>
           <textarea
             v-model="form.purpose"
@@ -1204,7 +1408,7 @@ function displayToken() {
           />
         </label>
         <label v-if="showExpireField">
-          <span>{{ form.type === 'api' ? '令牌时效' : form.type === 'publish' ? '发布窗口' : '权限时效' }}</span>
+          <span>{{ form.type === 'api' ? '令牌时效' : form.type === 'export' ? '出湖时效' : form.type === 'publish' ? '发布窗口' : '权限时效' }}</span>
           <select v-model="form.expire" class="select">
             <option v-for="e in APPLY_EXPIRE_OPTIONS" :key="e" :value="e">{{ e }}</option>
           </select>
@@ -1378,6 +1582,20 @@ function displayToken() {
           <div v-if="detail.app"><span>调用应用</span><div>{{ detail.app }}</div></div>
           <div v-if="detail.apiPath"><span>API</span><div><code>{{ detail.apiPath }}</code></div></div>
           <div v-if="detail.asset"><span>资产 / 表</span><div><code>{{ detail.asset }}</code></div></div>
+          <div v-if="detail.type === 'export' && (detail.ticketNo || detail.id)">
+            <span>出湖单号</span>
+            <div>
+              <code>{{ detail.ticketNo || detail.id }}</code>
+              <button
+                v-if="detail.side === 'approved'"
+                type="button"
+                class="btn btn-sm"
+                style="margin-left: 8px"
+                @click="copyTicketNo(detail.ticketNo || detail.id)"
+              >复制</button>
+            </div>
+          </div>
+          <div v-if="detail.type === 'export' && detail.target"><span>目标系统</span><div>{{ detail.target }}</div></div>
           <div v-if="detail.type === 'perm'"><span>权限模式</span><div>{{ permModeLabel(detail.permMode) }}</div></div>
           <div v-if="detail.permLevel">
             <span>密级</span>
@@ -1516,6 +1734,18 @@ function displayToken() {
 .apply-metric-meta {
   grid-column: 1 / -1;
   margin: -4px 0 0;
+}
+.btn-link {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--primary, #1e6fff);
+  cursor: pointer;
+  font-size: inherit;
+  text-decoration: underline;
+}
+.btn-link:hover {
+  opacity: 0.85;
 }
 .metric-kind-row {
   display: grid;

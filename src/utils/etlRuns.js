@@ -176,64 +176,133 @@ export function seedTaskLogs(task) {
 export function buildRunDetail(task, runRow) {
   if (!task || !runRow) return null
   const status = runRow.status || 'SUCCESS'
+  const apiNodes = Array.isArray(runRow.runNodes) ? runRow.runNodes : null
+
   const nodes = (task.nodes || []).map((n, i) => {
-    const st =
-      status === 'ERROR' && (n.type === 'quality' || n.status === 'blocked')
-        ? 'blocked'
-        : status === 'RUNNING' && i === Math.min(2, (task.nodes || []).length - 1)
-          ? 'running'
-          : status === 'RUNNING' && i > 2
-            ? 'pending'
-            : n.status === 'blocked'
-              ? 'blocked'
-              : status === 'ERROR' && i > (task.nodes || []).findIndex((x) => x.type === 'quality' || x.status === 'blocked')
-                ? 'pending'
-                : 'done'
+    const api = apiNodes?.find((x) => (x.nodeKey || x.nodeId) === n.id)
+    let st
+    if (api?.status) {
+      const s = String(api.status).toLowerCase()
+      if (s === 'blocked' || s === 'failed' || s === 'error') st = 'blocked'
+      else if (s === 'running') st = 'running'
+      else if (s === 'pending' || s === 'submitted') st = 'pending'
+      else if (s === 'warn') st = 'warn'
+      else st = 'done'
+    } else {
+      st =
+        status === 'ERROR' && (n.type === 'quality' || n.status === 'blocked')
+          ? 'blocked'
+          : status === 'RUNNING' && i === Math.min(2, (task.nodes || []).length - 1)
+            ? 'running'
+            : status === 'RUNNING' && i > 2
+              ? 'pending'
+              : n.status === 'blocked'
+                ? 'blocked'
+                : status === 'ERROR' &&
+                    i >
+                      (task.nodes || []).findIndex(
+                        (x) => x.type === 'quality' || x.status === 'blocked',
+                      )
+                  ? 'pending'
+                  : 'done'
+    }
     return {
       nodeId: n.id,
       name: n.name,
       type: n.type,
       status: st,
-      start: offsetTime(runRow.start, i * 45),
-      end: st === 'pending' || st === 'running' ? '—' : offsetTime(runRow.start, i * 45 + 30),
+      engine: api?.engine || n.resolvedEngine,
+      start: api?.startedAt ? String(api.startedAt).replace('T', ' ').slice(0, 19) : offsetTime(runRow.start, i * 45),
+      end:
+        st === 'pending' || st === 'running'
+          ? '—'
+          : api?.finishedAt
+            ? String(api.finishedAt).replace('T', ' ').slice(0, 19)
+            : offsetTime(runRow.start, i * 45 + 30),
       duration: st === 'pending' ? '—' : st === 'running' ? '…' : `${20 + i * 8}s`,
-      lines: buildNodeLogLines(n, st, runRow),
+      lines: buildNodeLogLines(
+        { ...n, resolvedEngine: api?.engine || n.resolvedEngine },
+        st,
+        runRow,
+      ),
     }
   })
+
+  const engineHint = nodes.find((x) => x.engine)?.engine || task.engine || 'flink'
 
   const stdout = [
     `[INFO] ${runRow.start} 启动 DAG ${task.name} · cron=${task.cron || '-'} · env=${runRow.env || task.env}`,
     `[INFO] ${offsetTime(runRow.start, 2)} 校验通过 · 节点 ${task.nodes?.length || 0} · 连线 ${task.edges?.length || 0}`,
-    `[INFO] ${offsetTime(runRow.start, 5)} 申请资源 · engine=${task.engine || 'flink'} · queue=${task.resources?.queue || 'default'}`,
+    `[INFO] ${offsetTime(runRow.start, 5)} 申请资源 · engine=${engineHint} · queue=${task.resources?.queue || 'default'}`,
     ...nodes.map(
       (n) =>
-        `[${n.status === 'blocked' ? 'ERROR' : 'INFO'}] ${n.start} TaskNode[${n.name}] type=${n.type} status=${n.status}${n.status === 'blocked' ? ' · 阻断下游' : ''}`,
+        `[${n.status === 'blocked' ? 'ERROR' : 'INFO'}] ${n.start} TaskNode[${n.name}] type=${n.type}${n.engine ? ` engine=${n.engine}` : ''} status=${n.status}${n.status === 'blocked' ? ' · 阻断下游' : ''}`,
     ),
   ]
   if (status === 'ERROR') {
     stdout.push(`[ERROR] ${runRow.end} 任务失败 · ${runRow.note || '见 stderr'} · 已推送 IM/邮件/工单`)
   } else if (status === 'SUCCESS') {
-    stdout.push(`[INFO] ${runRow.end} 全部节点成功 · 输入 ${runRow.rowsIn || '-'} · 输出 ${runRow.rowsOut || '-'} · SLA ${task.sla || '-'} 达标`)
+    stdout.push(
+      `[INFO] ${runRow.end} 全部节点成功 · 输入 ${runRow.rowsIn || '-'} · 输出 ${runRow.rowsOut || '-'} · SLA ${task.sla || '-'} 达标`,
+    )
   } else {
-    stdout.push(`[INFO] ${formatNow()} 作业运行中 · 已完成 ${nodes.filter((n) => n.status === 'done').length}/${nodes.length} 节点`)
+    stdout.push(
+      `[INFO] ${formatNow()} 作业运行中 · 已完成 ${nodes.filter((n) => n.status === 'done').length}/${nodes.length} 节点`,
+    )
   }
 
   const stderr =
     status === 'ERROR'
-      ? [
-          'org.apache.spark.SparkException: Quality gate blocked: PK_UNIQUE failed',
-          '  at QualityExecutor.scala:382',
-          `  Caused by: ${runRow.note || 'duplicate keys on target table'}`,
-          '  Hint: 检查上游 CDC 回放窗口或开启 quarantine 表',
-        ]
+      ? (() => {
+          const note = String(runRow.note || runRow.message || '').trim()
+          // 真实试跑/DS 错误：直接展示，禁止套演示用的 PK_UNIQUE 壳
+          if (
+            note &&
+            (/DS |Dolphin|试跑|sql-client|Master|Worker|Flink|DataX|vault|租户|workflow|processInstance/i.test(
+              note,
+            ) ||
+              String(runRow.run || '').startsWith('trial-'))
+          ) {
+            return note.split(/\n/).map((l, i) => (i === 0 ? l : `  ${l}`))
+          }
+          if (note && !/duplicate keys|PK_UNIQUE/i.test(note)) {
+            return [note]
+          }
+          return [
+            'org.apache.spark.SparkException: Quality gate blocked: PK_UNIQUE failed',
+            '  at QualityExecutor.scala:382',
+            `  Caused by: ${note || 'duplicate keys on target table'}`,
+            '  Hint: 检查上游 CDC 回放窗口或开启 quarantine 表',
+          ]
+        })()
       : ['-- no errors --']
 
   const app = {
-    applicationId: `application_${String(runRow.run).replace(/\W/g, '').slice(-10)}_${1000 + (nodes.length % 9) * 111}`,
-    engine: task.engine || 'flink',
-    executors: status === 'ERROR' ? '3 failed / 18 total' : status === 'RUNNING' ? '12 running / 18 total' : '21 successful',
-    shuffle: status === 'RUNNING' ? '412 MB read / 1.1 GB write' : '842 MB read / 6.2 GB write',
-    checkpoint: status === 'RUNNING' ? 'last #128 · lag 2.4s' : 'last completed · ok',
+    applicationId:
+      String(runRow.run || '').startsWith('trial-') || /本地 Trino|DS |Dolphin/.test(String(runRow.note || ''))
+        ? '—（门户试跑，非 YARN 应用）'
+        : `application_${String(runRow.run).replace(/\W/g, '').slice(-10)}_${1000 + (nodes.length % 9) * 111}`,
+    engine: engineHint,
+    executors:
+      String(runRow.run || '').startsWith('trial-') || /本地 Trino|DS |Dolphin/.test(String(runRow.note || ''))
+        ? '—'
+        : status === 'ERROR'
+          ? '3 failed / 18 total'
+          : status === 'RUNNING'
+            ? '12 running / 18 total'
+            : '21 successful',
+    shuffle:
+      String(runRow.run || '').startsWith('trial-') || /本地 Trino|DS |Dolphin/.test(String(runRow.note || ''))
+        ? '—'
+        : status === 'RUNNING'
+          ? '412 MB read / 1.1 GB write'
+          : '842 MB read / 6.2 GB write',
+    checkpoint:
+      String(runRow.run || '').startsWith('trial-') || /本地 Trino|DS |Dolphin/.test(String(runRow.note || ''))
+        ? '—'
+        : status === 'RUNNING'
+          ? 'last #128 · lag 2.4s'
+          : 'last completed · ok',
   }
 
   const metrics = {
@@ -263,9 +332,14 @@ export function buildNodeLogLines(node, status, runRow) {
   const name = node?.name || 'node'
   const start = runRow?.start || formatNow()
   const hint = NODE_STATUS_LINE[status] || NODE_STATUS_LINE.pending
+  const eng = node?.resolvedEngine || node?.engine
   const lines = [
     { t: offsetTime(start, 0), level: 'INFO', msg: `[调度] task[${name}] 提交` },
-    { t: offsetTime(start, 4), level: 'INFO', msg: `[引擎] Executor 启动 · 继承任务引擎` },
+    {
+      t: offsetTime(start, 4),
+      level: 'INFO',
+      msg: `[引擎] ${eng ? `${eng} · ` : ''}Executor 启动`,
+    },
     { t: offsetTime(start, 12), level: 'INFO', msg: `[业务] 读取上游 / 配置 conf 就绪` },
   ]
   if (status === 'blocked') {

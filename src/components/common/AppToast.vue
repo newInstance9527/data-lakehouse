@@ -20,7 +20,7 @@ const icon = {
       :class="`toast-${t.type}`"
     >
       <span>{{ icon[t.type] || icon.info }}</span>
-      <span style="flex: 1">{{ t.msg }}</span>
+  <span style="flex: 1; white-space: pre-wrap; word-break: break-word">{{ t.msg }}</span>
     </div>
   </div>
 </template>

@@ -1,0 +1,66 @@
+/**
+ * 数据质量 API（对齐 /lh/quality）
+ */
+import { http } from './http.js'
+
+const Q = '/lh/quality'
+
+export function fetchQualityOverview(params = {}) {
+  return http.get(`${Q}/overview`, { ws: params.ws, range: params.range })
+}
+
+export function fetchQualityTrend(params = {}) {
+  return http.get(`${Q}/trend`, { ws: params.ws, range: params.range })
+}
+
+export function fetchQualityTypeDist(params = {}) {
+  return http.get(`${Q}/type-dist`, { ws: params.ws })
+}
+
+export function fetchQualityGold(params = {}) {
+  return http.get(`${Q}/gold`, { ws: params.ws, limit: params.limit ?? 5 })
+}
+
+export function fetchQualityRules(filters = {}, { current = 1, size = 200 } = {}) {
+  return http.get(`${Q}/rules`, {
+    current,
+    size,
+    q: filters.q ?? filters.keyword,
+    layer: filters.layer,
+    status: filters.status,
+    range: filters.range,
+    ws: filters.ws,
+  })
+}
+
+/** 对齐 GovDqRuleUpsertParam */
+export function upsertQualityRule(payload) {
+  return http.post(`${Q}/rules`, {
+    id: payload.id,
+    ws: payload.ws,
+    ruleCode: payload.ruleCode || payload.name,
+    ruleType: payload.ruleType || payload.rtype || payload.type,
+    ruleLevel: payload.ruleLevel || payload.level,
+    scope: payload.scope || (payload.field ? 'field' : 'table'),
+    tableName: payload.tableName || payload.table,
+    assetId: payload.assetId,
+    fieldName: payload.fieldName ?? payload.field ?? '',
+    layer: payload.layer,
+    exprText: payload.exprText || payload.expr,
+    severity: payload.severity || payload.sev,
+    enabled: payload.enabled,
+    omTestFqn: payload.omTestFqn,
+    remark: payload.remark,
+  })
+}
+
+export function deleteQualityRule(id) {
+  return http.post(`${Q}/rules/delete`, { id })
+}
+
+export function createQualityTicket(payload = {}) {
+  return http.post(`${Q}/tickets`, {
+    ruleId: payload.ruleId,
+    remark: payload.remark,
+  })
+}

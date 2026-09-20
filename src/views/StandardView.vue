@@ -1,5 +1,6 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
 import PageSizeSelect from '@/components/common/PageSizeSelect.vue'
 import RegisterStandardModal from '@/components/standard/RegisterStandardModal.vue'
@@ -7,20 +8,36 @@ import RegisterNamingModal from '@/components/standard/RegisterNamingModal.vue'
 import { useStandards } from '@/composables/useStandards'
 import { useToast } from '@/composables/useToast'
 import { pageGuideOf } from '@/data/pageGuides'
-import {
-  STD_DETECTS,
-  STD_KPIS,
-  STD_MAPPINGS,
-  stdStatusMeta,
-} from '@/data/standards'
+import { STD_KPIS, stdStatusMeta } from '@/data/standards'
 
+const route = useRoute()
 const { showToast } = useToast()
-const { fieldList, codeList, namingList, addField, addCode, addNaming } = useStandards()
+const {
+  fieldList,
+  codeList,
+  namingList,
+  mappingList,
+  detectList,
+  overview,
+  metaOptions,
+  loading,
+  loadAll,
+  addField,
+  addCode,
+  addNaming,
+  removeField,
+  removeCode,
+  removeNaming,
+  removeMapping,
+} = useStandards()
 const stdGuide = pageGuideOf('standard')
 
-const tab = ref('field')
+const tab = ref(String(route.query.tab || 'field'))
 const regOpen = ref(false)
 const namingOpen = ref(false)
+const registering = ref(false)
+const regInitial = ref(null)
+const namingInitial = ref(null)
 
 const fieldKw = ref('')
 const domainFilter = ref('')
@@ -33,7 +50,7 @@ const codeStatus = ref('')
 const codePage = ref(1)
 const codePageSize = ref(10)
 
-const mapKw = ref('')
+const mapKw = ref(String(route.query.q || ''))
 const mapStatus = ref('')
 const mapPage = ref(1)
 const mapPageSize = ref(10)
@@ -49,11 +66,17 @@ const namePage = ref(1)
 const namePageSize = ref(10)
 
 const domains = computed(() => {
+  const fromMeta = metaOptions.value?.domains
+  if (Array.isArray(fromMeta) && fromMeta.length) {
+    return fromMeta.map((d) => (typeof d === 'string' ? d : d.value || d.label)).filter(Boolean)
+  }
   const set = new Set(fieldList.value.map((f) => f.domain).filter(Boolean))
   return [...set]
 })
 
 const nameLayers = computed(() => {
+  const fromMeta = metaOptions.value?.layers
+  if (Array.isArray(fromMeta) && fromMeta.length) return [...fromMeta]
   const set = new Set(namingList.value.map((n) => n.layer).filter(Boolean))
   return [...set]
 })
@@ -97,7 +120,7 @@ const codePageNums = computed(() => pageNumsOf(codePage.value, codeTotalPages.va
 
 const filteredMappings = computed(() => {
   const q = mapKw.value.trim().toLowerCase()
-  return STD_MAPPINGS.filter((m) => {
+  return mappingList.value.filter((m) => {
     if (mapStatus.value && m.status !== mapStatus.value) return false
     if (!q) return true
     return `${m.src} ${m.std} ${m.table} ${m.rule}`.toLowerCase().includes(q)
@@ -115,7 +138,7 @@ const mapPageNums = computed(() => pageNumsOf(mapPage.value, mapTotalPages.value
 
 const filteredDetects = computed(() => {
   const q = detKw.value.trim().toLowerCase()
-  return STD_DETECTS.filter((d) => {
+  return detectList.value.filter((d) => {
     if (detStatus.value && d.status !== detStatus.value) return false
     if (!q) return true
     return `${d.table} ${d.field} ${d.std} ${d.check} ${d.result}`.toLowerCase().includes(q)
@@ -150,12 +173,21 @@ const pagedNaming = computed(() => {
 const namePageNums = computed(() => pageNumsOf(namePage.value, nameTotalPages.value))
 
 const kpis = computed(() => {
+  const ov = overview.value
   const base = STD_KPIS.map((k) => ({ ...k }))
-  base[0].value = String(fieldList.value.length)
-  base[1].value = String(codeList.value.length)
-  base[2].value = String(STD_MAPPINGS.length)
-  const fail = STD_DETECTS.filter((d) => d.status === 'fail' || d.status === 'warn').length
-  base[4].value = String(fail)
+  base[0].value = String(ov?.fieldCount ?? fieldList.value.length)
+  base[0].sub = loading.value ? '加载中…' : '门户登记'
+  base[1].value = String(ov?.codeCount ?? codeList.value.length)
+  base[1].sub = '码值组'
+  base[2].value = String(ov?.mappingCount ?? mappingList.value.length)
+  base[2].sub = '源→标准'
+  base[3].value = String(ov?.complianceRate ?? 100)
+  base[3].sub = detectList.value.length ? '按检测结果' : '暂无检测'
+  base[4].value = String(
+    ov?.pendingFixCount ??
+      detectList.value.filter((d) => d.status === 'fail' || d.status === 'warn').length,
+  )
+  base[4].sub = 'fail/warn'
   return base
 })
 
@@ -180,6 +212,26 @@ watch(tab, (t) => {
   if (t === 'mapping') mapPage.value = 1
   if (t === 'detect') detPage.value = 1
   if (t === 'naming') namePage.value = 1
+})
+
+watch(
+  () => [route.query.tab, route.query.q],
+  ([t, q]) => {
+    if (t) tab.value = String(t)
+    if (q != null) {
+      mapKw.value = String(q)
+      if (!t || t === 'mapping') tab.value = 'mapping'
+    }
+  },
+  { immediate: true },
+)
+
+onMounted(async () => {
+  try {
+    await loadAll()
+  } catch (e) {
+    showToast(`加载数据标准失败：${e.message || e}`, 'error')
+  }
 })
 
 function pageNumsOf(cur, total) {
@@ -219,30 +271,133 @@ function goNamePage(p) {
 }
 
 function openRegister() {
+  regInitial.value = null
   regOpen.value = true
 }
 
 function openNamingRegister() {
+  namingInitial.value = null
   namingOpen.value = true
   tab.value = 'naming'
 }
 
-function onRegisterSubmit(payload) {
-  if (payload.kind === 'field') {
-    addField(payload)
-    tab.value = 'field'
-    showToast(`✅ 已注册标准字段 ${payload.name}`, 'success')
-  } else {
-    addCode(payload)
-    tab.value = 'code'
-    showToast(`✅ 已注册标准码值 ${payload.id}`, 'success')
+function openEditField(row) {
+  regInitial.value = { kind: 'field', ...row }
+  regOpen.value = true
+}
+
+function openEditCode(row) {
+  regInitial.value = { kind: 'code', ...row }
+  regOpen.value = true
+}
+
+function openEditNaming(row) {
+  namingInitial.value = { ...row }
+  namingOpen.value = true
+  tab.value = 'naming'
+}
+
+function closeReg() {
+  regOpen.value = false
+  regInitial.value = null
+}
+
+function closeNaming() {
+  namingOpen.value = false
+  namingInitial.value = null
+}
+
+async function onRegisterSubmit(payload) {
+  registering.value = true
+  try {
+    if (payload.kind === 'field') {
+      const row = await addField(payload)
+      tab.value = 'field'
+      showToast(payload.editing ? `已更新标准字段 ${row.name}` : `已注册标准字段 ${row.name}`, 'success')
+    } else {
+      const row = await addCode(payload)
+      tab.value = 'code'
+      showToast(payload.editing ? `已更新标准码值 ${row.id}` : `已注册标准码值 ${row.id}`, 'success')
+    }
+  } catch (e) {
+    showToast(`${payload.editing ? '保存' : '注册'}失败：${e.message || e}`, 'error')
+  } finally {
+    registering.value = false
   }
 }
 
-function onNamingSubmit(payload) {
-  addNaming(payload)
-  tab.value = 'naming'
-  showToast(`✅ 已注册命名规范 ${payload.pattern}`, 'success')
+async function onNamingSubmit(payload) {
+  registering.value = true
+  try {
+    const row = await addNaming(payload)
+    tab.value = 'naming'
+    showToast(payload.editing ? `已更新命名规范 ${row.pattern}` : `已注册命名规范 ${row.pattern}`, 'success')
+  } catch (e) {
+    showToast(`${payload.editing ? '保存' : '注册'}失败：${e.message || e}`, 'error')
+  } finally {
+    registering.value = false
+  }
+}
+
+async function onDeleteField(row) {
+  if (!confirm(`确认删除标准字段「${row.name}」？`)) return
+  registering.value = true
+  try {
+    await removeField(row)
+    showToast(`已删除 ${row.name}`, 'success')
+  } catch (e) {
+    showToast(`删除失败：${e.message || e}`, 'error')
+  } finally {
+    registering.value = false
+  }
+}
+
+async function onDeleteCode(row) {
+  if (!confirm(`确认删除标准码值「${row.id}」？`)) return
+  registering.value = true
+  try {
+    await removeCode(row)
+    showToast(`已删除 ${row.id}`, 'success')
+  } catch (e) {
+    showToast(`删除失败：${e.message || e}`, 'error')
+  } finally {
+    registering.value = false
+  }
+}
+
+async function onDeleteNaming(row) {
+  if (!confirm(`确认删除命名规范「${row.pattern}」？`)) return
+  registering.value = true
+  try {
+    await removeNaming(row)
+    showToast('已删除命名规范', 'success')
+  } catch (e) {
+    showToast(`删除失败：${e.message || e}`, 'error')
+  } finally {
+    registering.value = false
+  }
+}
+
+async function onDeleteMapping(row) {
+  if (!confirm(`确认删除映射「${row.src} → ${row.std}」？`)) return
+  registering.value = true
+  try {
+    await removeMapping(row)
+    showToast('已删除映射', 'success')
+  } catch (e) {
+    showToast(`删除失败：${e.message || e}`, 'error')
+  } finally {
+    registering.value = false
+  }
+}
+
+async function reload() {
+  try {
+    await loadAll()
+    showToast('已刷新', 'success')
+  } catch (e) {
+    showToast(`刷新失败：${e.message || e}`, 'error')
+  }
 }
 </script>
 
@@ -254,8 +409,11 @@ function onNamingSubmit(payload) {
       :guide-title="stdGuide.title"
       :guide="stdGuide"
     >
-      <button class="btn btn-sm" @click="openRegister">＋ 新建标准</button>
-      <button class="btn btn-sm btn-primary" @click="openNamingRegister">＋ 新建规范</button>
+      <button class="btn btn-sm" :disabled="loading" @click="reload">刷新</button>
+      <button class="btn btn-sm" :disabled="registering" @click="openRegister">＋ 新建标准</button>
+      <button class="btn btn-sm btn-primary" :disabled="registering" @click="openNamingRegister">
+        ＋ 新建规范
+      </button>
     </PageHeader>
 
     <div class="kpi-grid std-kpi-grid">
@@ -282,7 +440,11 @@ function onNamingSubmit(payload) {
         </div>
       </div>
       <div class="card-body">
-        <!-- 标准字段：列表 + 分页 -->
+        <div v-if="loading" style="color: var(--text-3); padding: 12px 0; font-size: 12px">
+          正在加载数据标准…
+        </div>
+
+        <!-- 标准字段 -->
         <div v-show="tab === 'field'">
           <div class="ds-filters" style="margin-bottom: 10px">
             <input
@@ -314,15 +476,18 @@ function onNamingSubmit(payload) {
                   <th style="width: 8%">所属域</th>
                   <th style="width: 8%">映射数</th>
                   <th style="width: 10%">状态</th>
+                  <th style="width: 8%">操作</th>
                 </tr>
               </thead>
               <tbody>
                 <tr v-if="!pagedFields.length">
-                  <td colspan="7" style="text-align: center; color: var(--text-3); padding: 28px">无匹配字段</td>
+                  <td colspan="8" style="text-align: center; color: var(--text-3); padding: 28px">
+                    {{ fieldList.length ? '无匹配字段' : '暂无标准字段，点击「＋ 新建标准」注册' }}
+                  </td>
                 </tr>
                 <tr v-for="f in pagedFields" :key="f.name">
                   <td><code class="sf-name">{{ f.name }}</code></td>
-                  <td class="sf-type">{{ f.type }}</td>
+                  <td class="sf-type">{{ f.type || '—' }}</td>
                   <td class="sf-unit">{{ f.unit }}</td>
                   <td style="color: var(--text-2)">{{ f.desc }}</td>
                   <td><span class="tag tag-blue" style="font-size: 10px">{{ f.domain }}</span></td>
@@ -331,6 +496,10 @@ function onNamingSubmit(payload) {
                     <span class="tag" :class="stdStatusMeta(f.status).tag" style="font-size: 10px">
                       {{ stdStatusMeta(f.status).label }}
                     </span>
+                  </td>
+                  <td>
+                    <button class="btn btn-sm" :disabled="registering" @click="openEditField(f)">编辑</button>
+                    <button class="btn btn-sm" :disabled="registering" @click="onDeleteField(f)">删除</button>
                   </td>
                 </tr>
               </tbody>
@@ -356,7 +525,7 @@ function onNamingSubmit(payload) {
           </div>
         </div>
 
-        <!-- 标准码值：列表 + 分页 -->
+        <!-- 标准码值 -->
         <div v-show="tab === 'code'">
           <div class="ds-filters" style="margin-bottom: 10px">
             <input
@@ -382,13 +551,16 @@ function onNamingSubmit(payload) {
                   <th style="width: 12%">关联字段</th>
                   <th style="width: 8%">枚举数</th>
                   <th>枚举预览</th>
-                  <th style="width: 18%">已映射表</th>
+                  <th style="width: 16%">已映射表</th>
                   <th style="width: 10%">状态</th>
+                  <th style="width: 8%">操作</th>
                 </tr>
               </thead>
               <tbody>
                 <tr v-if="!pagedCodes.length">
-                  <td colspan="7" style="text-align: center; color: var(--text-3); padding: 28px">无匹配码值</td>
+                  <td colspan="8" style="text-align: center; color: var(--text-3); padding: 28px">
+                    {{ codeList.length ? '无匹配码值' : '暂无标准码值，点击「＋ 新建标准」注册' }}
+                  </td>
                 </tr>
                 <tr v-for="c in pagedCodes" :key="c.id">
                   <td><span class="std-code-badge">{{ c.id }}</span></td>
@@ -403,6 +575,10 @@ function onNamingSubmit(payload) {
                     <span class="tag" :class="stdStatusMeta(c.status, 'code').tag" style="font-size: 10px">
                       {{ stdStatusMeta(c.status, 'code').label }}
                     </span>
+                  </td>
+                  <td>
+                    <button class="btn btn-sm" :disabled="registering" @click="openEditCode(c)">编辑</button>
+                    <button class="btn btn-sm" :disabled="registering" @click="onDeleteCode(c)">删除</button>
                   </td>
                 </tr>
               </tbody>
@@ -428,10 +604,10 @@ function onNamingSubmit(payload) {
           </div>
         </div>
 
-        <!-- 源到标准映射：列表 + 分页 -->
+        <!-- 源到标准映射 -->
         <div v-show="tab === 'mapping'">
           <div class="form-hint" style="margin-bottom: 10px">
-            记录源系统字段如何转换到标准字段，供 ETL 清洗与质量规则引用。
+            记录源系统字段如何转换到标准字段，供 ETL 清洗与质量规则引用。空库时无数据属正常；可由门户补录或 ETL 回写。
           </div>
           <div class="ds-filters" style="margin-bottom: 10px">
             <input
@@ -446,24 +622,27 @@ function onNamingSubmit(payload) {
               <option value="warn">⚠ 告警</option>
               <option value="fail">✗ 阻断</option>
             </select>
-            <span class="tag tag-blue">筛选 {{ filteredMappings.length }} / 共 {{ STD_MAPPINGS.length }}</span>
+            <span class="tag tag-blue">筛选 {{ filteredMappings.length }} / 共 {{ mappingList.length }}</span>
           </div>
           <div style="overflow: auto">
             <table class="std-table" style="font-size: 12px">
               <thead>
                 <tr>
                   <th style="width: 18%">源字段</th>
-                  <th style="width: 20%">标准字段</th>
-                  <th style="width: 16%">目标表</th>
+                  <th style="width: 18%">标准字段</th>
+                  <th style="width: 14%">目标表</th>
                   <th>映射规则</th>
                   <th style="width: 10%">状态</th>
+                  <th style="width: 8%">操作</th>
                 </tr>
               </thead>
               <tbody>
                 <tr v-if="!pagedMappings.length">
-                  <td colspan="5" style="text-align: center; color: var(--text-3); padding: 28px">无匹配映射</td>
+                  <td colspan="6" style="text-align: center; color: var(--text-3); padding: 28px">
+                    {{ mappingList.length ? '无匹配映射' : '暂无映射记录' }}
+                  </td>
                 </tr>
-                <tr v-for="(m, i) in pagedMappings" :key="m.src + i">
+                <tr v-for="(m, i) in pagedMappings" :key="(m.id || m.src) + i">
                   <td><code class="mr-src">{{ m.src }}</code></td>
                   <td><code class="mr-std">{{ m.std }}</code></td>
                   <td style="color: var(--text-2)">{{ m.table }}</td>
@@ -472,6 +651,13 @@ function onNamingSubmit(payload) {
                     <span class="tag" :class="stdStatusMeta(m.status, 'mapping').tag" style="font-size: 10px">
                       {{ stdStatusMeta(m.status, 'mapping').label }}
                     </span>
+                  </td>
+                  <td>
+                    <button
+                      class="btn btn-sm"
+                      :disabled="registering || !m.id"
+                      @click="onDeleteMapping(m)"
+                    >删除</button>
                   </td>
                 </tr>
               </tbody>
@@ -497,10 +683,10 @@ function onNamingSubmit(payload) {
           </div>
         </div>
 
-        <!-- 落地检测：列表 + 分页 -->
+        <!-- 落地检测 -->
         <div v-show="tab === 'detect'">
           <div class="form-hint" style="margin-bottom: 10px">
-            对已落地表字段做标准合规抽检（码值、类型、单位、脱敏等），异常可联动质量阻断。
+            对已落地表字段做标准合规抽检（码值、类型、单位、脱敏等）。结果由检测作业写入，本页只读。
           </div>
           <div class="ds-filters" style="margin-bottom: 10px">
             <input
@@ -515,7 +701,7 @@ function onNamingSubmit(payload) {
               <option value="warn">⚠ 告警</option>
               <option value="fail">✗ 阻断</option>
             </select>
-            <span class="tag tag-blue">筛选 {{ filteredDetects.length }} / 共 {{ STD_DETECTS.length }}</span>
+            <span class="tag tag-blue">筛选 {{ filteredDetects.length }} / 共 {{ detectList.length }}</span>
           </div>
           <div style="overflow: auto">
             <table class="std-table" style="font-size: 12px">
@@ -530,9 +716,11 @@ function onNamingSubmit(payload) {
               </thead>
               <tbody>
                 <tr v-if="!pagedDetects.length">
-                  <td colspan="5" style="text-align: center; color: var(--text-3); padding: 28px">无匹配检测记录</td>
+                  <td colspan="5" style="text-align: center; color: var(--text-3); padding: 28px">
+                    {{ detectList.length ? '无匹配检测记录' : '暂无检测结果（待质量作业写入）' }}
+                  </td>
                 </tr>
-                <tr v-for="(d, i) in pagedDetects" :key="d.table + d.field + i">
+                <tr v-for="(d, i) in pagedDetects" :key="(d.id || d.table + d.field) + i">
                   <td><code style="font-size: 11px">{{ d.table }}.{{ d.field }}</code></td>
                   <td><span class="std-code-badge">{{ d.std }}</span></td>
                   <td>{{ d.check }}</td>
@@ -566,7 +754,7 @@ function onNamingSubmit(payload) {
           </div>
         </div>
 
-        <!-- 命名规范：列表 + 分页 -->
+        <!-- 命名规范 -->
         <div v-show="tab === 'naming'">
           <div class="ds-filters" style="margin-bottom: 10px">
             <input
@@ -587,16 +775,19 @@ function onNamingSubmit(payload) {
               <thead>
                 <tr>
                   <th style="width: 32%">命名规则</th>
-                  <th style="width: 32%">示例</th>
+                  <th style="width: 28%">示例</th>
                   <th style="width: 12%">层级</th>
                   <th style="width: 12%">状态</th>
+                  <th style="width: 8%">操作</th>
                 </tr>
               </thead>
               <tbody>
                 <tr v-if="!pagedNaming.length">
-                  <td colspan="4" style="text-align: center; color: var(--text-3); padding: 28px">无匹配规范</td>
+                  <td colspan="5" style="text-align: center; color: var(--text-3); padding: 28px">
+                    {{ namingList.length ? '无匹配规范' : '暂无命名规范，点击「＋ 新建规范」注册' }}
+                  </td>
                 </tr>
-                <tr v-for="(n, i) in pagedNaming" :key="n.pattern + i">
+                <tr v-for="(n, i) in pagedNaming" :key="(n.id || n.pattern) + i">
                   <td><code style="font-size: 12px; font-weight: 600">{{ n.pattern }}</code></td>
                   <td><code style="font-size: 11px; color: var(--text-2)">{{ n.example }}</code></td>
                   <td><span class="tag tag-blue">{{ n.layer }}</span></td>
@@ -604,6 +795,14 @@ function onNamingSubmit(payload) {
                     <span class="tag" :class="stdStatusMeta(n.status, 'naming').tag" style="font-size: 10px">
                       {{ stdStatusMeta(n.status, 'naming').label }}
                     </span>
+                  </td>
+                  <td>
+                    <button class="btn btn-sm" :disabled="registering" @click="openEditNaming(n)">编辑</button>
+                    <button
+                      class="btn btn-sm"
+                      :disabled="registering || !n.id"
+                      @click="onDeleteNaming(n)"
+                    >删除</button>
                   </td>
                 </tr>
               </tbody>
@@ -633,13 +832,15 @@ function onNamingSubmit(payload) {
 
     <RegisterStandardModal
       :open="regOpen"
-      @close="regOpen = false"
+      :initial="regInitial"
+      @close="closeReg"
       @submit="onRegisterSubmit"
     />
 
     <RegisterNamingModal
       :open="namingOpen"
-      @close="namingOpen = false"
+      :initial="namingInitial"
+      @close="closeNaming"
       @submit="onNamingSubmit"
     />
   </div>

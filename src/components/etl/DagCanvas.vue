@@ -93,6 +93,70 @@ function onCanvasClick() {
   emit('clear')
 }
 
+function hasPort(n, port) {
+  return (defOf(n.type).ports || []).includes(port)
+}
+
+function onNodeDown(n, ev) {
+  if (ev.button === 1 || spaceDown.value) {
+    ev.preventDefault()
+    startPan(ev)
+    return
+  }
+  if (ev.button !== 0) return
+  ev.stopPropagation()
+
+  // 连线模式：点击目标节点（含输入口）完成连线，不进入拖拽
+  if (props.connectFrom) {
+    if (props.connectFrom !== n.id && hasPort(n, 'in')) {
+      emit('complete-connect', n.id)
+    } else if (props.connectFrom === n.id) {
+      // 再次点源节点：取消
+      emit('cancel-connect')
+    }
+    return
+  }
+
+  emit('select-node', n.id)
+  const startX = ev.clientX
+  const startY = ev.clientY
+  const ox = n.x
+  const oy = n.y
+  nodeDrag.value = { id: n.id, startX, startY, ox, oy, moved: false }
+
+  const onMove = (e) => {
+    if (!nodeDrag.value) return
+    const dx = (e.clientX - nodeDrag.value.startX) / zoom.value
+    const dy = (e.clientY - nodeDrag.value.startY) / zoom.value
+    if (Math.abs(dx) + Math.abs(dy) > 2) nodeDrag.value.moved = true
+    emit('move', nodeDrag.value.id, Math.round(nodeDrag.value.ox + dx), Math.round(nodeDrag.value.oy + dy))
+  }
+  const onUp = () => {
+    nodeDrag.value = null
+    window.removeEventListener('mousemove', onMove)
+    window.removeEventListener('mouseup', onUp)
+  }
+  window.addEventListener('mousemove', onMove)
+  window.addEventListener('mouseup', onUp)
+}
+
+function onOutPort(n, ev) {
+  ev.stopPropagation()
+  ev.preventDefault()
+  emit('begin-connect', n.id)
+}
+
+function onInPort(n, ev) {
+  ev.stopPropagation()
+  ev.preventDefault()
+  if (props.connectFrom) {
+    if (props.connectFrom !== n.id) emit('complete-connect', n.id)
+    else emit('cancel-connect')
+  } else {
+    emit('select-node', n.id)
+  }
+}
+
 function startPan(ev) {
   panning.value = true
   panDrag.value = {
@@ -134,47 +198,6 @@ function onCanvasDown(ev) {
     ev.preventDefault()
     startPan(ev)
   }
-}
-
-function onNodeDown(n, ev) {
-  if (ev.button === 1 || spaceDown.value) {
-    ev.preventDefault()
-    startPan(ev)
-    return
-  }
-  if (ev.button !== 0) return
-  ev.stopPropagation()
-  emit('select-node', n.id)
-  const startX = ev.clientX
-  const startY = ev.clientY
-  const ox = n.x
-  const oy = n.y
-  nodeDrag.value = { id: n.id, startX, startY, ox, oy }
-
-  const onMove = (e) => {
-    if (!nodeDrag.value) return
-    const dx = (e.clientX - nodeDrag.value.startX) / zoom.value
-    const dy = (e.clientY - nodeDrag.value.startY) / zoom.value
-    emit('move', nodeDrag.value.id, Math.round(nodeDrag.value.ox + dx), Math.round(nodeDrag.value.oy + dy))
-  }
-  const onUp = () => {
-    nodeDrag.value = null
-    window.removeEventListener('mousemove', onMove)
-    window.removeEventListener('mouseup', onUp)
-  }
-  window.addEventListener('mousemove', onMove)
-  window.addEventListener('mouseup', onUp)
-}
-
-function onOutPort(n, ev) {
-  ev.stopPropagation()
-  emit('begin-connect', n.id)
-}
-
-function onInPort(n, ev) {
-  ev.stopPropagation()
-  if (props.connectFrom) emit('complete-connect', n.id)
-  else emit('select-node', n.id)
 }
 
 function onDragOver(e) {
@@ -235,6 +258,10 @@ function onWheel(e) {
 }
 
 function onKeyDown(e) {
+  if (e.key === 'Escape' && props.connectFrom) {
+    emit('cancel-connect')
+    return
+  }
   if (e.code === 'Space' && !(e.target instanceof HTMLInputElement) && !(e.target instanceof HTMLTextAreaElement)) {
     spaceDown.value = true
     e.preventDefault()
@@ -302,7 +329,8 @@ defineExpose({ zoomBy, resetView, resetZoom: resetView, zoom, panX, panY })
             v-if="(defOf(n.type).ports || []).includes('in')"
             class="d-port in"
             title="输入 · 点击完成连线"
-            @mousedown.stop.prevent="onInPort(n, $event)"
+            @mousedown.stop
+            @click.stop.prevent="onInPort(n, $event)"
           />
           <div class="dag-node-body">
             <div class="dn-top">
@@ -316,7 +344,8 @@ defineExpose({ zoomBy, resetView, resetZoom: resetView, zoom, panX, panY })
             v-if="(defOf(n.type).ports || []).includes('out')"
             class="d-port out"
             title="输出 · 点击开始连线"
-            @mousedown.stop.prevent="onOutPort(n, $event)"
+            @mousedown.stop
+            @click.stop.prevent="onOutPort(n, $event)"
           />
         </div>
       </div>
@@ -325,7 +354,7 @@ defineExpose({ zoomBy, resetView, resetZoom: resetView, zoom, panX, panY })
         从左侧拖入或点击算子开始编排
       </div>
       <div v-if="connectFrom" class="dag-connect-hint">
-        连线中：请点击目标节点的输入端口（Esc/空白取消）
+        连线中：点击目标节点或其输入端口完成（Esc / 点空白取消）
       </div>
       <div class="dag-view-hint">
         滚轮缩放 · 拖空白/中键/空格+拖 平移 · {{ Math.round(zoom * 100) }}%

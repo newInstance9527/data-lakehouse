@@ -168,12 +168,13 @@ export function defaultConfFor(type) {
       case 'source':
         return {
           dsId:'', dbType:'MySQL', host:'', port:3306, username:'', password:'',
-          database:'', tables:['schema.table'], pk:'id', slotName:'',
+          database:'', table:'', src:'', tables:[], pk:'id', slotName:'',
           mode:'cdc', cdcEngine:'Flink CDC',
-          startupMode:'latest-offset', // initial(快照+增量) / latest-offset / timestamp
+          startupMode:'latest-offset',
           snapshotPollSize:5000, serverTimeZone:'Asia/Shanghai',
+          watermarkColumn:'', markKey:'',
           includeSchemaChange:false, ddlTolerance:'warn',
-          sharding:false, shardCount:1, ttlEnabled:false, ttlDays:90,
+          sharding:false, shardCount:1,
           fetchSize:1024, connectTimeout:30, retry:3
         };
       // ===== 数据源 2：API 抽取（HTTP/REST） =====
@@ -224,18 +225,21 @@ export function defaultConfFor(type) {
       // ===== 转换 / SQL =====
       case 'transform':
         return {
-          engine:'Spark', sql:'SELECT\n  id,\n  order_id,\n  user_id,\n  amount\nFROM source_table',
-          dialect:'ansi', retry:2, timeout:1800,
+          engine:'spark', sql:'SELECT\n  id,\n  order_id,\n  user_id,\n  amount\nFROM source_table',
+          dialect:'ansi', hint:'', engine_override:'', override_reason:'',
+          retry:2, timeout:1800,
           resources:{queue:'default', driverCores:1, driverMem:'2g', executorNum:4, executorCores:2, executorMem:'4g'},
           udfList:[], tempViews:[],
           partitionBy:'dt', bucketNum:0,
-          cacheLevel:'NONE', // NONE / MEMORY / DISK / MEMORY_AND_DISK
+          cacheLevel:'NONE',
           explain:false, broadcastHint:false
         };
       // ===== 字段映射 =====
       case 'mapping':
         return {
           strategy:'同名映射',
+          stdRef:'', // 标准字段名，如 order_status
+          codeSetId:'', // 标准码值集，如 STD-C0021（码值 CASE 时）
           castStringToVarchar:true,
           autoRename:'none', // none / under2camel / camel2under
           addPrefix:'', addSuffix:'',
@@ -248,27 +252,23 @@ export function defaultConfFor(type) {
       // ===== 质量门禁 =====
       case 'quality':
         return {
-          ruleGroup:'dim_dwd_standard',
-          rules:[
-            {code:'NOT_NULL',    cols:'id',            enabled:true,  level:'error',  min:1.0, max:1.0, desc:'主键非空'},
-            {code:'UNIQUE',      cols:'id',            enabled:true,  level:'error',  min:1.0, max:1.0, desc:'主键唯一'},
-            {code:'RANGE',       cols:'amount',        enabled:true,  level:'warn',   min:0,   max:null, desc:'金额 ≥ 0'},
-            {code:'FORMAT',      cols:'user_phone',    enabled:false, level:'warn',   pattern:'1[3-9]\d{9}', desc:'手机号格式'}
-          ],
+          ruleGroup:'',
+          ruleIds:[],
+          rules:[],
           threshold:0.01, blockOnFail:true,
           sampleRatio:1.0, maxRows:1000000,
-          outputReport:true, reportTable:'dq_reports',
+          outputReport:false, reportTable:'dq_reports',
           alertOwner:true, alertDing:false
         };
       // ===== 并行分支 =====
       case 'parallel':
         return {
           parallelism:3,
-          strategy:'hash', // hash / round_robin / key
+          mode:'dag_fanout', // dag_fanout | row_shard
+          strategy:'hash',
           shardKey:'user_id',
           maxWaitMs:30000, failFast:false,
-          branchLabels:['A区','B区','C区'],
-          cpuPerBranch:2, memPerBranch:'2g'
+          branchLabels:['A','B','C'],
         };
       // ===== 条件分支 =====
       case 'condition':
@@ -304,6 +304,10 @@ export function defaultConfFor(type) {
           pk:'id', mergeOnRead:false,
           formatVersion:2, compression:'zstd',
           fileSizeMb:128,
+          autoCreate:'off', // off / if_not_exists / fail_if_missing
+          schemaFrom:'upstream', // upstream / mapping / explicit
+          registerAfterCreate:true,
+          saRole:'job.trade.dwd_writer',
           icebergProps:{
             'write.distribution-mode':'hash',
             'write.parquet.compression-codec':'zstd',
@@ -321,6 +325,11 @@ export function defaultConfFor(type) {
           orderBy:'(stat_date, region, sku_id)',
           partitionBy:'toYYYYMM(stat_date)',
           primaryKey:'(stat_date, region, sku_id)',
+          autoCreate:'off',
+          schemaFrom:'upstream',
+          registerAfterCreate:true,
+          saRole:'job.trade.ads_ck_writer',
+          ttlDays:180,
           settings:{
             'insert_quorum':'auto',
             'insert_quorum_parallel':'1',
@@ -359,14 +368,17 @@ export function defaultConfFor(type) {
           remoteDir:'/outbox/daily/', fileName:'ads_gmv_${bizdate}.csv',
           encoding:'UTF-8', delimiter:',', headerLine:true,
           encrypt:'PGP', encryptKeyPath:'vault://keys/bank.pgp.pub',
-          engine:'datax', afterPut:'rename .ok', retry:3, timeout:60
+          engine:'datax', afterPut:'rename .ok', retry:3, timeout:60,
+          ticketNo:'', // 出湖申请单号（合规必填）
         };
       // ===== 关系库出湖 =====
       case 'sink_rdb':
         return {
           dsId:'', dbType:'MySQL', table:'bi_db.ads_gmv_board', writeMode:'replace',
           batchSize:1000, preSql:'DELETE FROM ${table} WHERE dt=${bizdate}', postSql:'',
-          columnMap:'*', engine:'datax', saRole:'job.ads_out_writer', truncateBefore:false
+          columnMap:'*', engine:'datax', saRole:'job.ads_out_writer', truncateBefore:false,
+          autoCreate:'off', schemaFrom:'upstream', registerAfterCreate:false, pk:'',
+          ticketNo:'',
         };
       // ===== 搜索引擎出湖 =====
       case 'sink_search':
@@ -379,13 +391,16 @@ export function defaultConfFor(type) {
       case 'sink_bi':
         return {
           targetSystem:'Superset', // Superset / FineBI / Tableau / 飞书多维表格 / MySQL出湖 / API推送
+          target:'', // 兼容旧字段
           workspace:'gmv-board', dataset:'ads_gmv_daily',
           refreshMode:'incremental', // full / incremental / streaming
           refreshCron:'0 */2 * * *',
+          refresh:'',
           authType:'token', endpoint:'https://bi.example.com/api/', token:'',
           mappings:[{src:'stat_date', dst:'统计日期'},{src:'gmv',dst:'GMV'}],
           notifyOwnerOnFinish:true,
-          exportPath:'s3://lake-export/gmv/', exportFormat:'xlsx'
+          exportPath:'s3://lake-export/gmv/', exportFormat:'xlsx',
+          ticketNo:'',
         };
       default: return {};
     }
@@ -406,9 +421,31 @@ export function mergeConfDefaults(type, conf = {}) {
       }
     }
   })
-  // 兼容旧字段
-  if (out.src && !out.tables) out.tables = [out.src]
-  if (typeof out.tables === 'string') out.tables = out.tables.split(/[,，]/).map(s=>s.trim()).filter(Boolean)
+  // 兼容旧字段 + 单表约定：table/src 为准，tables 仅作长度 0/1 兼容镜像
+  if (out.src && !out.table) out.table = out.src
+  if (out.table && !out.src) out.src = out.table
+  if (typeof out.tables === 'string') {
+    out.tables = out.tables.split(/[,，]/).map((s) => s.trim()).filter(Boolean)
+  }
+  if (!out.table && Array.isArray(out.tables) && out.tables.length) {
+    out.table = out.tables[0]
+    out.src = out.tables[0]
+  }
+  // 强制单表：多表历史配置只保留第一张
+  if (out.table || out.src) {
+    const one = out.table || out.src
+    out.table = one
+    out.src = one
+    out.tables = [one]
+  } else {
+    out.tables = []
+  }
+  // sink 自动建表默认值
+  if (['sink_iceberg', 'sink_ck', 'sink_rdb'].includes(type)) {
+    if (!out.autoCreate) out.autoCreate = 'off'
+    if (!out.schemaFrom) out.schemaFrom = 'upstream'
+    if (out.registerAfterCreate == null) out.registerAfterCreate = type !== 'sink_rdb'
+  }
   if (out.fieldMaps && !out.mapList) out.mapList = out.fieldMaps
   if (out.mapList && !out.fieldMaps) out.fieldMaps = out.mapList.map(m => ({ src: m.src, dst: m.dst, transform: m.expr || m.transform || '直接映射' }))
   // 清洗：旧 maskCols / 全局 rules → fieldRules
@@ -462,7 +499,7 @@ export const ETL_TASKS = [
         x: 40,
         y: 80,
         status: 'done',
-        conf: { dsId: 'ds_mysql_trade', src: 's_order', dst: 'ods_trade.s_order', pk: 'order_id', mode: 'cdc', engine: 'flink' },
+        conf: { dsId: 'ds_mysql_trade', table: 's_order', src: 's_order', tables: ['s_order'], dst: 'ods_trade.s_order', pk: 'order_id', mode: 'cdc', engine: 'flink' },
       },
       {
         id: 's2',
@@ -472,7 +509,7 @@ export const ETL_TASKS = [
         x: 40,
         y: 220,
         status: 'done',
-        conf: { dsId: 'ds_mysql_pay', src: 's_pay', dst: 'ods_trade.s_pay', pk: 'pay_id', mode: 'cdc', engine: 'flink' },
+        conf: { dsId: 'ds_mysql_pay', table: 's_pay', src: 's_pay', tables: ['s_pay'], dst: 'ods_trade.s_pay', pk: 'pay_id', mode: 'cdc', engine: 'flink' },
       },
       {
         id: 'o1',
@@ -498,12 +535,13 @@ export const ETL_TASKS = [
         id: 'm1',
         type: 'mapping',
         name: '标准映射',
-        meta: 'order_status → STD-C0021',
+        meta: 'order_status · STD-C0021',
         x: 760,
         y: 140,
         status: 'done',
         conf: {
-          stdRef: 'STD-C0021',
+          stdRef: 'order_status',
+          codeSetId: 'STD-C0021',
           strategy: '码值 CASE',
           engine: 'spark',
           destTable: 'dwd_trade.dwd_order_detail',
@@ -605,7 +643,7 @@ export const ETL_TASKS = [
         x: 60,
         y: 120,
         status: 'done',
-        conf: { dsId: '', src: 's_user', dst: 'ods_user.s_user', pk: 'user_id', mode: 'cdc', engine: 'flink' },
+        conf: { dsId: '', table: 's_user', src: 's_user', tables: ['s_user'], dst: 'ods_user.s_user', pk: 'user_id', mode: 'cdc', engine: 'flink' },
       },
       {
         id: 'u_c1',
@@ -625,7 +663,7 @@ export const ETL_TASKS = [
         x: 580,
         y: 120,
         status: 'done',
-        conf: { stdRef: 'STD-S0001', strategy: '标签字典', engine: 'spark' },
+        conf: { stdRef: 'user_tag', strategy: '标签字典', engine: 'spark' },
       },
       {
         id: 'u_t1',

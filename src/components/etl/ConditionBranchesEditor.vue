@@ -210,8 +210,9 @@ function move(i, dir) {
         <SearchSelect
           :model-value="row.field || ''"
           :options="fieldSelectOptions(fields)"
+          sub-key="sub"
           allow-custom
-          placeholder="字段"
+          placeholder="下拉搜索字段或自定义"
           @update:model-value="patch(i, 'field', $event)"
         />
         <select class="select" :value="row.op || 'custom'" @change="patch(i, 'op', $event.target.value)">

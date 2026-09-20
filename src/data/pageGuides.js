@@ -331,8 +331,9 @@ export const PAGE_GUIDES = {
       heading: '血缘如何产生',
       type: 'list',
       items: [
-        '演示主图：交易域 GMV 线（源 → ODS/DIM → DWD → DWS/ADS → 报表/指标/API）',
-        '字段明细：可由 ETL 编排中的 fieldMaps / 清洗规则 / SQL 解析同步',
+        'ETL 发布 fieldMaps → 显式字段边；无映射时 sink/mapping 写拓扑边亦可构图',
+        '字段明细：点「同步」重扫全部 DAG 写入 gov_lineage_field_edge',
+        '图谱主源为门户字段边；OM 表级图 soft-fail 仅作门户边为空时的回退',
       ],
     },
     {
@@ -758,6 +759,7 @@ export const PAGE_GUIDES = {
       type: 'text',
       content: [
         '将湖内数据同步到对象存储、FTP、关系库、搜索引擎等外部系统（Reverse ETL）。',
+        '出湖须先申请：提交后进入申请中心「出湖申请」审批，通过后签发 EXP-xxx 填回 ETL ticketNo。',
       ],
     },
     {
@@ -768,14 +770,18 @@ export const PAGE_GUIDES = {
     {
       heading: '使用示例',
       type: 'steps',
-      items: ['选择资产与目标类型', '配置路径/表/索引', '调度执行并查看投递结果'],
+      items: [
+        '出湖申请：选表 / 用途 / 目标 / 时效 → 提交',
+        '申请中心审批通过 → 复制 EXP-xxx',
+        'ETL 出湖节点回填 ticketNo → 配置脱敏与调度',
+      ],
     },
     {
       heading: '相关模块',
       type: 'kv',
       items: [
         { label: '上游', value: '资产目录、安全与权限、申请中心' },
-        { label: '下游', value: '任务运维、链路监控' },
+        { label: '下游', value: 'ETL 编排、任务运维、链路监控' },
       ],
     },
   ]),
@@ -785,9 +791,10 @@ export const PAGE_GUIDES = {
       heading: '模块功能',
       type: 'text',
       content: [
-        '权限、表、发布、API、指标申请与审批统一入口。',
+        '权限、表、出湖、发布、API、指标申请与审批统一入口。',
         '权限：表只读 / 列级 / 敏感明文（安全加签）→ Gravitino ACL。',
-        '表：只读 / 登记上架 / 结构变更。发布：选发布包与环境，prod 须回滚预案并过门禁。',
+        '表：只读 / 登记上架 / 结构变更。出湖：签发 EXP-xxx 供 ETL ticketNo。',
+        '发布：选发布包与环境，prod 须回滚预案并过门禁。',
         '指标：查询权限 / 口径变更 / 新建立项。API：签发 Bearer 令牌，详情可点击查看。',
       ],
     },
@@ -797,6 +804,7 @@ export const PAGE_GUIDES = {
       items: [
         '申请表/列权限（含敏感明文）',
         '表登记上架或结构变更',
+        '出湖回流审批（EXP 单号）',
         'stg / prod 发布审批',
         '申请 API 调用凭证',
         '申请指标查询权限 / 口径变更 / 新建立项',
@@ -807,6 +815,7 @@ export const PAGE_GUIDES = {
       type: 'steps',
       items: [
         '权限：选资产与模式 → Owner（及安全）审批 → Gravitino 授权',
+        '出湖：选表与目标 → 安全/域负责人通过 → 复制 EXP-xxx 回填 ETL',
         '表：只读授权 / 登记上架 / 结构变更后元数据生效',
         '发布：选包与环境 → 门禁通过 → 上线；prod 必填回滚预案',
       ],
@@ -815,8 +824,8 @@ export const PAGE_GUIDES = {
       heading: '相关模块',
       type: 'kv',
       items: [
-        { label: '上游', value: '资产目录、安全与权限、环境与发布、指标中心、数据服务' },
-        { label: '下游', value: 'Gravitino 授权、资产目录、APISIX、生产发布' },
+        { label: '上游', value: '资产目录、出湖与回流、安全与权限、环境与发布、指标中心、数据服务' },
+        { label: '下游', value: 'Gravitino 授权、ETL ticketNo、资产目录、APISIX、生产发布' },
       ],
     },
   ]),

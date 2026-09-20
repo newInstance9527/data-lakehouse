@@ -17,9 +17,9 @@ import {
   statusMeta,
   typeCategoryKey,
 } from '@/data/datasources'
-import { schemaSummary } from '@/utils/schemaList'
+import { schemaSummary, tablesToSchema } from '@/utils/schemaList'
 import { pageGuideOf } from '@/data/pageGuides'
-import { fetchDatasourceKpi } from '@/api/datasource'
+import { fetchDatasourceDetail, fetchDatasourceKpi } from '@/api/datasource'
 
 const dsGuide = pageGuideOf('datasource')
 
@@ -33,6 +33,7 @@ const {
   testSource,
   toggleStatus: apiToggle,
   batchSync: apiBatchSync,
+  ensureTables,
 } = useDatasources()
 
 const filters = reactive({
@@ -187,14 +188,18 @@ function closeDrawer() {
 async function test(id) {
   const s = getSource(id)
   try {
-    const res = await testSource({ id })
-    if (res?.ok) showToast(`🧪 连通性测试 ${s?.name || id} · 成功`, 'success')
+    const res = await testSource({ id, type: s?.type })
+    if (res?.ok) showToast(`🧪 连通性测试 ${s?.name || id} · 成功（${res.costMs ?? '?'}ms）`, 'success')
     else showToast(`连通失败：${res?.error || '未知错误'}`, 'error')
-    await loadSources()
-    if (current.value?.id === id) current.value = getSource(id)
+    await onTested(id)
   } catch (e) {
     showToast(`连通失败：${e.message || e}`, 'error')
   }
+}
+
+async function onTested(id) {
+  await loadSources()
+  if (current.value?.id === id) current.value = getSource(id)
 }
 
 function openRegister() {
@@ -202,10 +207,27 @@ function openRegister() {
   regOpen.value = true
 }
 
-function openEdit(id) {
+async function openEdit(id) {
   const s = getSource(id)
   if (!s) return
-  editing.value = { ...s }
+  try {
+    // 拉详情 + 表清单，保证编辑回显连接参数与 schema
+    const [detail] = await Promise.all([
+      fetchDatasourceDetail(id),
+      ensureTables(id).catch(() => []),
+    ])
+    const local = getSource(id)
+    editing.value = {
+      ...(detail || s),
+      ...(local || {}),
+      conn: detail?.conn || local?.conn || s.conn,
+      schema: detail?.schema || local?.schema || tablesToSchema(local?.tables) || s.schema || '',
+      tables: local?.tables || s.tables,
+    }
+  } catch (e) {
+    editing.value = { ...s }
+    showToast(`加载详情失败，使用列表缓存：${e.message || e}`, 'warning')
+  }
   drawerOpen.value = false
   regOpen.value = true
 }
@@ -237,7 +259,8 @@ async function onRegisterSubmit(payload) {
     // 新建时前端曾带临时 id，以服务端返回为准
     if (!existed && saved?.id) page.value = 1
     if (existed) showToast(`✅ 已更新数据源 ${payload.name}`, 'success')
-    else showToast(`✅ 已注册数据源 ${payload.name}`, 'success')
+    else showToast(`✅ 已注册 ${payload.name}（门户已保存；Grav/OM 按类型尽力同步）`, 'success')
+    await loadSources()
     kpiRemote.value = await fetchDatasourceKpi()
   } catch (e) {
     showToast(`保存失败：${e.message || e}`, 'error')
@@ -472,6 +495,7 @@ function goPage(p) {
       @toggle-status="toggleStatus"
       @edit="openEdit"
       @open-tables="openTables"
+      @tested="onTested"
     />
 
     <RegisterSourceModal

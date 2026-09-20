@@ -2,7 +2,6 @@
 import { computed, ref, watch } from 'vue'
 import {
   joinSchemaList,
-  mockSyncItems,
   parseSchemaList,
 } from '@/utils/schemaList'
 import { useToast } from '@/composables/useToast'
@@ -17,6 +16,11 @@ const props = defineProps({
   seed: { type: String, default: '' },
   /** 抽屉场景：已连接，默认可同步 */
   alwaysSyncable: { type: Boolean, default: false },
+  /**
+   * 真实同步：返回名称数组（或 { names/tables/schema }）
+   * 未提供时禁用「同步清单」（避免再生成 mock 假表）
+   */
+  discover: { type: Function, default: null },
 })
 
 const emit = defineEmits(['update:modelValue', 'sync'])
@@ -35,7 +39,9 @@ watch(
   },
 )
 
-const syncEnabled = computed(() => props.alwaysSyncable || props.canSync)
+const syncEnabled = computed(
+  () => !!props.discover && (props.alwaysSyncable || props.canSync),
+)
 
 function commit(next) {
   items.value = next
@@ -69,24 +75,40 @@ function onDraftKey(e) {
   }
 }
 
-function syncList() {
+function normalizeDiscoverResult(res) {
+  if (Array.isArray(res)) {
+    return res.map((x) => (typeof x === 'string' ? x : x?.name)).filter(Boolean)
+  }
+  if (Array.isArray(res?.names)) return res.names.filter(Boolean)
+  if (Array.isArray(res?.tables)) {
+    return res.tables.map((t) => (typeof t === 'string' ? t : t?.name)).filter(Boolean)
+  }
+  if (typeof res?.schema === 'string') return parseSchemaList(res.schema)
+  return []
+}
+
+async function syncList() {
+  if (!props.discover) {
+    showToast('请先测试连通性后再同步真实表清单', 'warning')
+    return
+  }
   if (!syncEnabled.value) {
     showToast('请先测试连通性后再同步', 'warning')
     return
   }
   syncing.value = true
   showToast(`🔄 正在同步${props.label}…`, 'info')
-  setTimeout(() => {
-    const mocked = mockSyncItems(props.sourceType, props.fieldName, props.seed)
-    const merged = [...items.value]
-    mocked.forEach((x) => {
-      if (!merged.includes(x)) merged.push(x)
-    })
-    commit(merged)
+  try {
+    const res = await props.discover()
+    const names = normalizeDiscoverResult(res)
+    commit(names)
+    showToast(`✅ 已同步 ${names.length} 项（源端真实表）`, 'success')
+    emit('sync', joinSchemaList(names))
+  } catch (e) {
+    showToast(`同步失败：${e?.message || e}`, 'error')
+  } finally {
     syncing.value = false
-    showToast(`✅ 已同步 ${mocked.length} 项 · 当前共 ${merged.length} 项`, 'success')
-    emit('sync', joinSchemaList(merged))
-  }, 500)
+  }
 }
 </script>
 
@@ -115,7 +137,7 @@ function syncList() {
     </div>
 
     <div v-if="!items.length" class="schema-list-empty">
-      未同步，可手动添加或{{ alwaysSyncable ? '' : '先测通后' }}点击「同步清单」
+      未同步，可手动添加或{{ alwaysSyncable ? '' : '先测通后' }}点击「同步清单」拉取源端真实表
     </div>
     <ul v-else class="schema-list">
       <li v-for="(item, idx) in items" :key="item + idx" class="schema-list-row">

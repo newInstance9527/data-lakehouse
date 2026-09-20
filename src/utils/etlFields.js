@@ -50,11 +50,27 @@ function mappedOutput(fieldMaps) {
   )
 }
 
+/** 从清洗规则抽出字段名，保证映射节点即使 schema 未齐也能看到列 */
+function fieldsFromCleanRules(conf = {}) {
+  const rules = conf.fieldRules
+  if (!Array.isArray(rules) || !rules.length) return []
+  return uniqFields(
+    rules
+      .filter((r) => r?.field)
+      .map((r) => ({
+        name: String(r.field).trim(),
+        cn: '',
+        type: r.castType || 'STRING',
+        pk: false,
+      })),
+  )
+}
+
 /**
  * 解析某节点的「输出字段」
  * @param {object} node
  * @param {object} task
- * @param {{ getSource, findAsset, cache?: Map }} ctx
+ * @param {{ getSource, findAsset, getDsFields, cache?: Map }} ctx
  */
 export function resolveNodeOutputFields(node, task, ctx = {}) {
   if (!node) return []
@@ -68,28 +84,58 @@ export function resolveNodeOutputFields(node, task, ctx = {}) {
   const mapped = mappedOutput(conf.fieldMaps)
 
   if (node.type === 'source' || node.type === 'source_api' || node.type === 'source_file') {
-    // 源节点只输出抽取字段，不做「源→湖」映射
+    const tables = sourceTablesOf(conf)
     const ds = conf.dsId && ctx.getSource ? ctx.getSource(conf.dsId) : null
-    const table =
-      conf.src ||
-      (Array.isArray(conf.tables) ? conf.tables[0] : '') ||
-      conf.path ||
-      ''
-    out = fieldsForTableName(table, ds?.type || conf.dbType || 'MySQL')
+    if (conf.dsId && typeof ctx.getDsFields === 'function') {
+      const real = ctx.getDsFields(conf.dsId, tables)
+      if (real?.length) {
+        out = real
+      }
+    }
+    if (!out.length) {
+      if (tables.length) {
+        out = uniqFields(
+          tables.flatMap((t) => fieldsForTableName(t, ds?.type || conf.dbType || 'MySQL')),
+        )
+      } else if (conf.path) {
+        out = fieldsForTableName(conf.path, ds?.type || conf.dbType || 'MySQL')
+      } else if (conf.dsId && typeof ctx.getDsFields === 'function') {
+        // 未选表：退回该源已探测到的全部列
+        out = ctx.getDsFields(conf.dsId, []) || []
+      }
+    }
   } else if (String(node.type).startsWith('sink_')) {
-    // Sink 写出后字段以目标表 / 映射结果为准
     if (mapped?.length) {
       out = mapped
     } else {
       const table = conf.table || conf.dst || conf.index || ''
-      const asset = table && ctx.findAsset ? ctx.findAsset(table) : null
-      out = asset ? fieldsFromAsset(asset) : fieldsForTableName(table)
+      if (conf.dsId && table && typeof ctx.getDsFields === 'function') {
+        const real = ctx.getDsFields(conf.dsId, [table])
+        if (real?.length) out = real
+      }
+      if (!out.length) {
+        const asset = table && ctx.findAsset ? ctx.findAsset(table) : null
+        out = asset ? fieldsFromAsset(asset) : fieldsForTableName(table)
+      }
     }
   } else if (node.type === 'mapping') {
     if (mapped?.length) out = mapped
     else out = resolveUpstreamFields(node.id, task, ctx)
+  } else if (node.type === 'clean') {
+    const up = resolveUpstreamFields(node.id, task, ctx)
+    const fromRules = fieldsFromCleanRules(conf)
+    if (!fromRules.length) {
+      out = up
+    } else if (!up.length) {
+      // 上游 schema 尚未加载：暂用规则字段作提示（严格同名，不做大小写转换）
+      out = fromRules
+    } else {
+      // 仅保留与上游真实列严格同名的清洗字段；全错配则回退上游表列，避免幽灵字段
+      const upNames = new Set(up.map((f) => f.name))
+      const kept = fromRules.filter((f) => upNames.has(f.name))
+      out = kept.length ? kept : up
+    }
   } else if (
-    node.type === 'clean' ||
     node.type === 'quality' ||
     node.type === 'parallel' ||
     node.type === 'condition' ||
@@ -105,13 +151,24 @@ export function resolveNodeOutputFields(node, task, ctx = {}) {
   return out
 }
 
+function sourceTablesOf(conf = {}) {
+  const one =
+    conf.table ||
+    conf.src ||
+    (Array.isArray(conf.tables) ? conf.tables.filter(Boolean)[0] : '') ||
+    ''
+  return one ? [one] : []
+}
+
 /** 当前节点所有直接上游的输出字段并集 */
 export function resolveUpstreamFields(nodeId, task, ctx = {}) {
   if (!task?.edges?.length || !task?.nodes?.length) return []
-  const parents = task.edges.filter((e) => e.to === nodeId).map((e) => e.from)
+  const parents = task.edges
+    .filter((e) => String(e.to) === String(nodeId))
+    .map((e) => e.from)
   const list = []
   parents.forEach((pid) => {
-    const n = task.nodes.find((x) => x.id === pid)
+    const n = task.nodes.find((x) => String(x.id) === String(pid))
     if (n) list.push(...resolveNodeOutputFields(n, task, ctx))
   })
   return uniqFields(list)
@@ -121,9 +178,18 @@ export function resolveUpstreamFields(nodeId, task, ctx = {}) {
 export function resolveSourceTableFields(node, ctx = {}) {
   if (!node) return []
   const conf = node.conf || {}
+  const tables = sourceTablesOf(conf)
+  if (conf.dsId && typeof ctx.getDsFields === 'function') {
+    const real = ctx.getDsFields(conf.dsId, tables)
+    if (real?.length) return real
+  }
   const ds = conf.dsId && ctx.getSource ? ctx.getSource(conf.dsId) : null
-  const table = conf.src || (Array.isArray(conf.tables) ? conf.tables[0] : '') || ''
-  return fieldsForTableName(table, ds?.type || conf.dbType || 'MySQL')
+  if (!tables.length) {
+    return conf.dsId && typeof ctx.getDsFields === 'function' ? ctx.getDsFields(conf.dsId, []) : []
+  }
+  return uniqFields(
+    tables.flatMap((t) => fieldsForTableName(t, ds?.type || conf.dbType || 'MySQL')),
+  )
 }
 
 /** 目标表字段（库表节点 dst 或 sink table） */
@@ -132,19 +198,23 @@ export function resolveTargetTableFields(node, ctx = {}) {
   const conf = node.conf || {}
   const table = conf.dst || conf.table || ''
   if (!table) return []
+  if (conf.dsId && typeof ctx.getDsFields === 'function') {
+    const real = ctx.getDsFields(conf.dsId, [table])
+    if (real?.length) return real
+  }
   const asset = ctx.findAsset ? ctx.findAsset(table) : null
   if (asset) return fieldsFromAsset(asset)
   const ds = conf.dsId && ctx.getSource ? ctx.getSource(conf.dsId) : null
   return fieldsForTableName(table, ds?.type || 'MySQL')
 }
 
-/** 同名自动映射 */
+/** 同名自动映射（严格同名，含大小写；不做大小写折叠） */
 export function autoMapFields(srcFields, dstFields) {
-  const dstNames = new Set(dstFields.map((f) => f.name))
+  const dstByName = new Map(dstFields.map((f) => [f.name, f]))
   return srcFields
-    .filter((s) => dstNames.has(s.name))
+    .filter((s) => dstByName.has(s.name))
     .map((s) => {
-      const d = dstFields.find((x) => x.name === s.name)
+      const d = dstByName.get(s.name)
       return {
         src: s.name,
         dst: d.name,
@@ -157,6 +227,6 @@ export function fieldSelectOptions(fields) {
   return (fields || []).map((f) => ({
     value: f.name,
     label: f.name,
-    sub: [f.cn, f.type].filter(Boolean).join(' · '),
+    sub: [f.type, f.cn].filter(Boolean).join(' · '),
   }))
 }

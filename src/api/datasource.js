@@ -15,11 +15,18 @@ export function fetchDatasourcePage(filters = {}, { current = 1, size = 200 } = 
     status: filters.status,
     cat: filters.cat,
     category: filters.cat,
+    purpose: filters.purpose,
+    usableInDag: filters.usableInDag,
   })
 }
 
 export function fetchDatasourceDetail(id) {
   return http.get(`${DS}/detail`, { id })
+}
+
+/** 探测源端列清单（JDBC：table/column/type；非 JDBC 为表级占位） */
+export function fetchPreviewSchema(id) {
+  return http.get(`${DS}/previewSchema`, { id })
 }
 
 export function fetchDatasourceKpi() {
@@ -49,6 +56,10 @@ export function deleteDatasources(ids) {
 }
 
 export function testDatasource(payload) {
+  // 已登记源：只传 id（及可选 type），由后端读 Vault 真实探测
+  if (payload?.id && !payload.host && !payload.password && !payload.user && !payload.database) {
+    return http.post(`${DS}/test`, { id: payload.id, type: payload.type })
+  }
   return http.post(`${DS}/test`, toSubmitBody(payload))
 }
 
@@ -88,6 +99,14 @@ export function deleteTables(ids) {
 
 export function syncTables(dsId) {
   return http.post(`${DS}/table/sync`, { id: dsId })
+}
+
+/** 按连通参数 / 已登记 id 发现源端真实表（不落库） */
+export function discoverTables(payload) {
+  if (payload?.id && !payload.host && !payload.password && !payload.user && !payload.database) {
+    return http.post(`${DS}/table/discover`, { id: payload.id, type: payload.type })
+  }
+  return http.post(`${DS}/table/discover`, toSubmitBody(payload))
 }
 
 export function batchSyncTables(ids) {

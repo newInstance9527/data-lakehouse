@@ -594,7 +594,7 @@ export const DS_TYPE_FIELDS = {
       "l": "Bootstrap Servers",
       "t": "text",
       "req": 1,
-      "ph": "10.3.0.9",
+      "ph": "dev3.datagoo.cn:9562",
       "def": ""
     },
     {
@@ -602,7 +602,7 @@ export const DS_TYPE_FIELDS = {
       "l": "端口",
       "t": "text",
       "req": 1,
-      "def": "9092"
+      "def": "9562"
     },
     {
       "n": "topics",
@@ -1120,7 +1120,6 @@ export const DS_TYPE_FIELDS = {
       "n": "port",
       "l": "端口",
       "t": "text",
-      "req": 1,
       "def": "443"
     },
     {

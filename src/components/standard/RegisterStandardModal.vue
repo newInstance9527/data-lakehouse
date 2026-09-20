@@ -3,9 +3,12 @@ import { computed, reactive, ref, watch } from 'vue'
 import SearchSelect from '@/components/common/SearchSelect.vue'
 import { useStandards } from '@/composables/useStandards'
 import { useToast } from '@/composables/useToast'
+import { STD_FIELD_TYPE_OPTIONS } from '@/data/standards'
 
 const props = defineProps({
   open: { type: Boolean, default: false },
+  /** 编辑预填：{ kind:'field'|'code', ... }；空则为新建 */
+  initial: { type: Object, default: null },
 })
 const emit = defineEmits(['close', 'submit'])
 
@@ -15,7 +18,7 @@ const { fieldList } = useStandards()
 const form = reactive({
   kind: 'field',
   name: '',
-  type: 'VARCHAR(64)',
+  type: '',
   unit: '—',
   domain: '交易',
   desc: '',
@@ -24,23 +27,79 @@ const form = reactive({
 })
 
 const enumRows = ref([{ code: '', label: '' }])
+const editing = ref(false)
+
+const typeOptions = STD_FIELD_TYPE_OPTIONS
 
 const fieldOptions = computed(() =>
   fieldList.value.map((f) => ({
     value: f.name,
     label: f.name,
-    sub: `${f.domain} · ${f.type}${f.desc ? ` · ${f.desc}` : ''}`,
+    sub: `${f.domain || '—'} · ${f.type || '—'}${f.desc ? ` · ${f.desc}` : ''}`,
   })),
 )
+
+const title = computed(() => {
+  if (!editing.value) return '＋ 新建标准'
+  return form.kind === 'code' ? '编辑标准码值' : '编辑标准字段'
+})
+
+const subtitle = computed(() =>
+  editing.value
+    ? '修改后保存将覆盖门户登记（upsert）'
+    : '标准字段或标准码值 · 注册后可供资产映射与落地检测引用',
+)
+
+const submitLabel = computed(() => (editing.value ? '保存' : '注册入库'))
 
 watch(
   () => props.open,
   (v) => {
     if (!v) return
+    const init = props.initial
+    if (init && (init.kind === 'field' || init.kind === 'code' || init.name || init.id)) {
+      editing.value = true
+      const kind = init.kind || (init.id && init.values != null ? 'code' : 'field')
+      if (kind === 'code') {
+        Object.assign(form, {
+          kind: 'code',
+          name: init.name || '',
+          type: '',
+          unit: '—',
+          domain: '交易',
+          desc: '',
+          id: init.id || init.codeSetId || '',
+          field: init.field || init.fieldName || '',
+        })
+        const list =
+          Array.isArray(init.valueList) && init.valueList.length
+            ? init.valueList
+            : Array.isArray(init.items) && init.items.length
+              ? init.items
+              : []
+        enumRows.value = list.length
+          ? list.map((i) => ({ code: i.code || '', label: i.label || '' }))
+          : [{ code: '', label: '' }]
+      } else {
+        Object.assign(form, {
+          kind: 'field',
+          name: init.name || init.fieldName || '',
+          type: init.type || init.dataType || '',
+          unit: init.unit || '—',
+          domain: init.domain || init.domainCode || '交易',
+          desc: init.desc || init.description || '',
+          id: '',
+          field: '',
+        })
+        enumRows.value = [{ code: '', label: '' }]
+      }
+      return
+    }
+    editing.value = false
     Object.assign(form, {
       kind: 'field',
       name: '',
-      type: 'VARCHAR(64)',
+      type: '',
       unit: '—',
       domain: '交易',
       desc: '',
@@ -84,10 +143,11 @@ function submit() {
     emit('submit', {
       kind: 'field',
       name: form.name.trim(),
-      type: form.type.trim() || 'VARCHAR(64)',
+      type: String(form.type || '').trim() || undefined,
       unit: form.unit.trim() || '—',
       domain: form.domain,
       desc: form.desc.trim(),
+      editing: editing.value,
     })
   } else {
     if (!form.id.trim() || !form.name.trim() || !form.field.trim()) {
@@ -112,6 +172,7 @@ function submit() {
       name: form.name.trim(),
       field: form.field.trim(),
       values: serializeEnums(),
+      editing: editing.value,
     })
   }
   close()
@@ -124,13 +185,13 @@ function submit() {
       <div class="modal" style="width: 560px">
         <div class="modal-header">
           <div>
-            <div class="modal-title">＋ 新建标准</div>
-            <div class="modal-sub">标准字段或标准码值 · 注册后可供资产映射与落地检测引用</div>
+            <div class="modal-title">{{ title }}</div>
+            <div class="modal-sub">{{ subtitle }}</div>
           </div>
           <button class="btn btn-sm" @click="close">✕</button>
         </div>
         <div class="modal-body">
-          <div class="form-section">
+          <div v-if="!editing" class="form-section">
             <div class="form-section-title">类型</div>
             <div class="std-kind-tabs">
               <button
@@ -153,12 +214,30 @@ function submit() {
             <div class="form-grid">
               <label class="form-field">
                 <span class="form-label"><span class="req">*</span>字段名</span>
-                <input v-model="form.name" class="input" style="width: 100%" placeholder="如 order_status" />
+                <input
+                  v-model="form.name"
+                  class="input"
+                  style="width: 100%"
+                  placeholder="如 order_status"
+                  :disabled="editing"
+                />
+                <div v-if="editing" class="form-hint">字段名为稳定键，编辑时不可改</div>
               </label>
-              <label class="form-field">
-                <span class="form-label">类型</span>
-                <input v-model="form.type" class="input" style="width: 100%" placeholder="INT / VARCHAR(32)" />
-              </label>
+              <div class="form-field">
+                <span class="form-label">类型（可选）</span>
+                <SearchSelect
+                  v-model="form.type"
+                  :options="typeOptions"
+                  value-key="value"
+                  label-key="label"
+                  sub-key="sub"
+                  allow-custom
+                  placeholder="下拉选择，或输入如 DECIMAL(20,4)"
+                  empty-text="无匹配类型，可输入后使用自定义"
+                  custom-text="使用自定义类型"
+                />
+                <div class="form-hint">可留空；列表中选常用类型，或手输引擎专用类型</div>
+              </div>
               <label class="form-field">
                 <span class="form-label">单位</span>
                 <input v-model="form.unit" class="input" style="width: 100%" placeholder="元 / 分 / 码值 / —" />
@@ -187,7 +266,14 @@ function submit() {
             <div class="form-grid">
               <label class="form-field">
                 <span class="form-label"><span class="req">*</span>标准 ID</span>
-                <input v-model="form.id" class="input" style="width: 100%" placeholder="如 STD-C0021" />
+                <input
+                  v-model="form.id"
+                  class="input"
+                  style="width: 100%"
+                  placeholder="如 STD-C0021"
+                  :disabled="editing"
+                />
+                <div v-if="editing" class="form-hint">码值 ID 为稳定键，编辑时不可改</div>
               </label>
               <label class="form-field">
                 <span class="form-label"><span class="req">*</span>名称</span>
@@ -247,7 +333,7 @@ function submit() {
         <div class="modal-footer">
           <span style="flex: 1" />
           <button class="btn btn-sm" @click="close">取消</button>
-          <button class="btn btn-sm btn-primary" @click="submit">注册入库</button>
+          <button class="btn btn-sm btn-primary" @click="submit">{{ submitLabel }}</button>
         </div>
       </div>
     </div>

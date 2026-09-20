@@ -1,25 +1,168 @@
+/**
+ * ETL 编排：对接 /lh/etl（门户图 SoT；本地编辑，保存/校验/试跑/发布走后端）
+ */
 import { computed, ref } from 'vue'
 import {
+  backfillEtlDag,
+  createEtlDag,
+  deployEtlDag,
+  editEtlDag,
+  fetchEtlDags,
+  fetchEtlGraph,
+  fetchEtlRunDetail,
+  fetchEtlRuns,
+  saveEtlGraph,
+  trialEtlDag,
+  validateEtlDag,
+} from '@/api/etl'
+import {
   NODE_TYPES,
-  cloneTasks,
   defaultConfFor,
   mergeConfDefaults,
   uid,
 } from '@/data/etl'
-import { createTrialRun, seedTaskLogs } from '@/utils/etlRuns'
+import { formatNow } from '@/utils/etlRuns'
 
-const tasks = ref(cloneTasks().map(ensureLogs))
-const currentId = ref(tasks.value[0]?.id || '')
+const tasks = ref([])
+const currentId = ref('')
 const selNodeId = ref(null)
 const selEdgeIdx = ref(null)
-const connectFrom = ref(null) // node id waiting for target
-const forceCfgTab = ref(null) // 'runs' | null
+const connectFrom = ref(null)
+const forceCfgTab = ref(null)
+const loading = ref(false)
+const loaded = ref(false)
+const lastError = ref(null)
+const saving = ref(false)
+let loadPromise = null
 
-function ensureLogs(task) {
-  if (!task.logs || !task.logs.length) {
-    task.logs = seedTaskLogs(task)
+function mapRunStatus(st) {
+  const s = String(st || '').toLowerCase()
+  if (s === 'success' || s === 'done') return 'SUCCESS'
+  if (s === 'failed' || s === 'error' || s === 'blocked') return 'ERROR'
+  if (s === 'running') return 'RUNNING'
+  if (s === 'submitted' || s === 'pending') return 'RUNNING'
+  return String(st || 'PENDING').toUpperCase()
+}
+
+function fmtTs(v) {
+  if (!v) return '—'
+  if (typeof v === 'string') return v.replace('T', ' ').slice(0, 19)
+  try {
+    const d = new Date(v)
+    if (Number.isNaN(d.getTime())) return String(v)
+    const p = (n) => String(n).padStart(2, '0')
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+  } catch {
+    return String(v)
   }
+}
+
+function normalizeRun(row) {
+  if (!row) return null
+  const status = mapRunStatus(row.status)
+  const runId = row.runId || row.run
+  return {
+    run: runId,
+    status,
+    start: fmtTs(row.startedAt || row.start),
+    end: row.finishedAt || row.end ? fmtTs(row.finishedAt || row.end) : status === 'RUNNING' ? '—' : '—',
+    duration: row.duration || (status === 'RUNNING' ? '进行中' : '—'),
+    note: row.message || row.note || '',
+    trigger: row.trigger || row.triggerType || 'manual',
+    env: row.env || 'stg',
+    dsRunId: row.dsRunId,
+    opsPath:
+      row.opsPath ||
+      (runId ? `/ops?runId=${runId}${row.dagId ? `&dagId=${row.dagId}` : ''}` : ''),
+    alert: row.alert,
+    raw: row,
+    runNodes: row.nodes || row.runNodes,
+  }
+}
+
+function normalizeDag(row) {
+  if (!row) return null
+  return {
+    id: row.id,
+    name: row.name || row.dagCode,
+    dagCode: row.dagCode,
+    desc: row.description || row.desc || '',
+    cron: row.cron || '0 2 * * *',
+    owner: row.owner || '',
+    status: row.status || 'draft',
+    ver: row.ver || 'v0.1',
+    env: row.env || 'dev',
+    engine: row.defaultEngine || row.engine || 'flink',
+    sla: row.sla || '',
+    dsWorkflowCode: row.dsWorkflowCode,
+    nodes: Array.isArray(row.nodes) ? row.nodes : [],
+    edges: Array.isArray(row.edges) ? row.edges : [],
+    logs: Array.isArray(row.logs) ? row.logs : [],
+    dirty: false,
+  }
+}
+
+function normalizeNode(n) {
+  if (!n) return null
+  const type = n.type || n.nodeType
+  const id = n.id || n.nodeKey
+  let conf = n.conf
+  if (typeof conf === 'string') {
+    try {
+      conf = JSON.parse(conf)
+    } catch {
+      conf = {}
+    }
+  }
+  if (!conf || typeof conf !== 'object' || Array.isArray(conf)) conf = {}
+  return {
+    id,
+    type,
+    name: n.name || NODE_TYPES[type]?.label || id,
+    meta: n.meta || '',
+    x: Number(n.x ?? n.posX ?? 0),
+    y: Number(n.y ?? n.posY ?? 0),
+    status: n.status || 'pending',
+    conf: mergeConfDefaults(type, conf),
+    resolvedEngine: n.resolvedEngine,
+  }
+}
+
+function normalizeEdge(e) {
+  return {
+    from: e.from || e.fromNodeKey,
+    to: e.to || e.toNodeKey,
+    label: e.label || '',
+  }
+}
+
+function applyGraph(task, graph) {
+  if (!task || !graph) return task
+  if (graph.dag) {
+    const head = normalizeDag(graph.dag)
+    Object.assign(task, {
+      name: head.name,
+      dagCode: head.dagCode,
+      desc: head.desc,
+      cron: head.cron,
+      owner: head.owner,
+      status: head.status,
+      ver: head.ver,
+      env: head.env,
+      engine: head.engine,
+      sla: head.sla,
+      dsWorkflowCode: head.dsWorkflowCode,
+    })
+  }
+  task.nodes = (graph.nodes || []).map(normalizeNode).filter(Boolean)
+  task.edges = (graph.edges || []).map(normalizeEdge).filter((e) => e.from && e.to)
+  task.dirty = false
   return task
+}
+
+function markDirty() {
+  const t = tasks.value.find((x) => x.id === currentId.value)
+  if (t) t.dirty = true
 }
 
 export function useEtl() {
@@ -31,11 +174,76 @@ export function useEtl() {
     return t.nodes.find((n) => n.id === selNodeId.value) || null
   })
 
-  function selectTask(id) {
+  async function loadList() {
+    loading.value = true
+    lastError.value = null
+    try {
+      const page = await fetchEtlDags({}, { current: 1, size: 100 })
+      const records = (page?.records || []).map(normalizeDag).filter(Boolean)
+      const prevId = currentId.value
+      const byId = new Map(tasks.value.map((t) => [t.id, t]))
+      tasks.value = records.map((r) => {
+        const old = byId.get(r.id)
+        if (old && old.dirty) {
+          return { ...r, nodes: old.nodes, edges: old.edges, logs: old.logs, dirty: true }
+        }
+        return {
+          ...r,
+          nodes: old?.nodes || [],
+          edges: old?.edges || [],
+          logs: old?.logs || [],
+        }
+      })
+      loaded.value = true
+      const prefer = tasks.value.find((t) => t.id === prevId) || tasks.value[0]
+      if (prefer) {
+        await selectTask(prefer.id, { force: !prefer.nodes?.length })
+      } else {
+        currentId.value = ''
+      }
+      return tasks.value
+    } catch (e) {
+      lastError.value = e
+      console.error('[etl] loadList failed', e)
+      throw e
+    } finally {
+      loading.value = false
+    }
+  }
+
+  function ensureLoaded() {
+    if (loaded.value || loading.value || loadPromise) return loadPromise
+    loadPromise = loadList()
+      .catch(() => {})
+      .finally(() => {
+        loadPromise = null
+      })
+    return loadPromise
+  }
+
+  async function loadGraph(id) {
+    if (!id) return null
+    const graph = await fetchEtlGraph(id)
+    const t = tasks.value.find((x) => x.id === id)
+    if (t) applyGraph(t, graph)
+    return graph
+  }
+
+  async function selectTask(id, { force = false } = {}) {
     currentId.value = id
     selNodeId.value = null
     selEdgeIdx.value = null
     connectFrom.value = null
+    const t = tasks.value.find((x) => x.id === id)
+    if (!t) return
+    if (force || !t.nodes?.length) {
+      try {
+        await loadGraph(id)
+      } catch (e) {
+        lastError.value = e
+        console.error('[etl] loadGraph failed', e)
+      }
+    }
   }
 
   function selectNode(id) {
@@ -54,60 +262,139 @@ export function useEtl() {
   function clearSelection() {
     selNodeId.value = null
     selEdgeIdx.value = null
-    connectFrom.value = null
+    // 不在此处清 connectFrom：空白取消走 cancelConnect，避免误清
   }
 
-  function createTask(payload = {}) {
-    const id = uid('dag')
-    const row = {
-      id,
-      name: payload.name || `dag.new_${id.slice(-4)}`,
-      desc: payload.desc || '新建 ETL 任务',
+  async function createTask(payload = {}) {
+    const code = payload.dagCode || `dag.new_${uid('x').slice(-4)}`
+    const saved = await createEtlDag({
+      dagCode: code,
+      name: payload.name || payload.title || '新建 ETL 任务',
+      description: payload.desc || '新建 ETL 任务',
       cron: payload.cron || '0 2 * * *',
       owner: payload.owner || '当前用户',
-      status: 'draft',
-      ver: 'v0.1',
-      env: payload.env || 'dev',
-      engine: payload.engine || 'flink',
+      defaultEngine: payload.engine || 'flink',
       sla: payload.sla || '06:00',
-      nodes: [],
-      edges: [],
-      logs: [],
-    }
+      env: payload.env || 'dev',
+    })
+    const row = normalizeDag(saved)
+    row.nodes = []
+    row.edges = []
+    row.logs = []
     tasks.value.unshift(row)
-    selectTask(id)
+    await selectTask(row.id, { force: true })
     return row
   }
 
-  function trialRun(note) {
+  async function persistMeta(patch = {}) {
     const t = current.value
     if (!t) return null
-    if (!t.logs) t.logs = []
-    const row = createTrialRun(t, { status: 'RUNNING', note: note || 'TEST 环境试跑提交' })
-    t.logs.unshift(row)
-    // 节点状态：前几个 running/done，其余 pending
-    t.nodes.forEach((n, i) => {
-      if (i === 0) n.status = 'running'
-      else n.status = 'pending'
+    Object.assign(t, patch)
+    const saved = await editEtlDag({
+      id: t.id,
+      description: t.desc,
+      cron: t.cron,
+      owner: t.owner,
+      defaultEngine: t.engine,
+      sla: t.sla,
+      env: t.env,
+      status: patch.status ?? t.status,
     })
-    forceCfgTab.value = 'runs'
-    clearSelection()
-    return row
+    if (saved) {
+      t.status = saved.status || t.status
+      t.ver = saved.ver || t.ver
+      t.engine = saved.defaultEngine || saved.engine || t.engine
+      t.dsWorkflowCode = saved.dsWorkflowCode
+    }
+    return { task: t, dsSchedule: saved?.dsSchedule }
   }
 
-  function openRunsTab() {
-    forceCfgTab.value = 'runs'
-    clearSelection()
+  /** D1：暂停 / 恢复调度（立即写门户 status + DS release） */
+  async function setScheduleStatus(status) {
+    if (!['draft', 'prod', 'paused'].includes(status)) {
+      throw new Error('非法 status')
+    }
+    return persistMeta({ status })
   }
 
-  function clearForceCfgTab() {
-    forceCfgTab.value = null
+  /** D3：按水位补数 */
+  async function backfillCurrent({ markKey, markValue, env } = {}) {
+    const t = current.value
+    if (!t) return null
+    if (!markKey || !markValue) {
+      throw new Error('请填写 mark_key 与 mark_value')
+    }
+    const resp = await backfillEtlDag(t.id, {
+      markKey,
+      markValue,
+      env: env || t.env || 'prod',
+    })
+    await refreshRuns()
+    if (resp?.runId) {
+      const detail = await fetchEtlRunDetail(resp.runId).catch(() => null)
+      const row = normalizeRun(
+        detail || {
+          runId: resp.runId,
+          status: resp.status,
+          message: `补数 ${markKey}=${markValue}`,
+          env: resp.env,
+          trigger: 'backfill',
+          startedAt: formatNow(),
+        },
+      )
+      t.logs = [row, ...(t.logs || []).filter((l) => l.run !== row.run)]
+    }
+    return resp
   }
 
   function updateTaskMeta(patch) {
     const t = current.value
     if (!t) return
     Object.assign(t, patch)
+    markDirty()
+  }
+
+  async function saveCurrent() {
+    const t = current.value
+    if (!t) return null
+    saving.value = true
+    lastError.value = null
+    try {
+      await editEtlDag({
+        id: t.id,
+        name: t.name,
+        description: t.desc,
+        cron: t.cron,
+        owner: t.owner,
+        defaultEngine: t.engine,
+        sla: t.sla,
+        env: t.env,
+        status: t.status,
+      })
+      const graph = await saveEtlGraph(t.id, {
+        nodes: (t.nodes || []).map((n) => ({
+          id: n.id,
+          type: n.type,
+          name: n.name,
+          meta: n.meta,
+          x: n.x,
+          y: n.y,
+          conf: n.conf || {},
+        })),
+        edges: (t.edges || []).map((e) => ({
+          from: e.from,
+          to: e.to,
+          label: e.label || '',
+        })),
+      })
+      applyGraph(t, graph)
+      return t
+    } catch (e) {
+      lastError.value = e
+      throw e
+    } finally {
+      saving.value = false
+    }
   }
 
   function addNode(type, pos = {}) {
@@ -126,6 +413,7 @@ export function useEtl() {
       conf: mergeConfDefaults(type, defaultConfFor(type)),
     }
     t.nodes.push(node)
+    markDirty()
     selectNode(node.id)
     return node
   }
@@ -137,6 +425,7 @@ export function useEtl() {
     if (!n) return
     n.x = Math.max(0, x)
     n.y = Math.max(0, y)
+    markDirty()
   }
 
   function patchNode(id, patch) {
@@ -166,6 +455,7 @@ export function useEtl() {
     } else {
       Object.assign(n, patch)
     }
+    markDirty()
   }
 
   function removeNode(id) {
@@ -175,6 +465,7 @@ export function useEtl() {
     t.edges = t.edges.filter((e) => e.from !== id && e.to !== id)
     if (selNodeId.value === id) selNodeId.value = null
     if (connectFrom.value === id) connectFrom.value = null
+    markDirty()
   }
 
   function beginConnect(fromId) {
@@ -189,6 +480,7 @@ export function useEtl() {
     const exists = t.edges.some((e) => e.from === fromId && e.to === toId)
     if (exists) return false
     t.edges.push({ from: fromId, to: toId })
+    markDirty()
     return true
   }
 
@@ -201,22 +493,184 @@ export function useEtl() {
     if (!t || idx < 0 || idx >= t.edges.length) return
     t.edges.splice(idx, 1)
     if (selEdgeIdx.value === idx) selEdgeIdx.value = null
+    markDirty()
   }
 
-  function validateCurrent() {
+  async function validateCurrent() {
     const t = current.value
-    if (!t) return { ok: false, messages: ['未选择任务'] }
-    const messages = []
-    if (!t.nodes.length) messages.push('画布尚无节点')
-    const ids = new Set(t.nodes.map((n) => n.id))
-    t.edges.forEach((e, i) => {
-      if (!ids.has(e.from) || !ids.has(e.to)) messages.push(`连线 #${i + 1} 指向不存在的节点`)
+    if (!t) return { ok: false, messages: ['未选择任务'], issues: [] }
+    try {
+      await saveCurrent()
+      const r = await validateEtlDag(t.id)
+      const issues = Array.isArray(r?.issues) ? r.issues : []
+      // 失败面板只展示 error/warn；通过类 info 不展示
+      const visible = issues.filter((i) => i.level === 'error' || i.level === 'warn')
+      const messages = visible.map((i) => {
+        const level = i.level === 'error' ? '✗' : '!'
+        const ref = i.ref ? `[${i.ref}] ` : ''
+        return `${level} ${ref}${i.message || i.msg || '未知问题'}`
+      })
+      const ok = !!r?.ok
+      if (!messages.length) {
+        messages.push(ok ? '校验通过：结构与节点参数完整' : (r?.message || '校验未通过（无明细）'))
+      }
+      const errCount = issues.filter((i) => i.level === 'error').length
+      const summary = ok
+        ? null
+        : `校验未通过（${errCount || visible.length} 项）`
+      t.lastValidate = { ok, at: Date.now(), issues, messages, summary }
+      return { ok, messages, issues, summary, message: r?.message }
+    } catch (e) {
+      const msg = e.message || '校验失败'
+      t.lastValidate = { ok: false, at: Date.now(), issues: [], messages: [msg], summary: '校验失败' }
+      return { ok: false, messages: [msg], issues: [], summary: '校验失败' }
+    }
+  }
+
+  async function refreshRuns(dagId) {
+    const id = dagId || currentId.value
+    const t = tasks.value.find((x) => x.id === id)
+    if (!t) return []
+    try {
+      const page = await fetchEtlRuns({ dagId: id, current: 1, size: 50 })
+      const list = (page?.records || []).map(normalizeRun).filter(Boolean)
+      t.logs = list
+      return list
+    } catch (e) {
+      console.error('[etl] refreshRuns failed', e)
+      return t.logs || []
+    }
+  }
+
+  async function trialRun(note) {
+    const t = current.value
+    if (!t) return null
+    await saveCurrent()
+    const resp = await trialEtlDag(t.id, 'stg')
+    await refreshRuns(t.id)
+    let detail = null
+    try {
+      if (resp?.runId) {
+        detail = await fetchEtlRunDetail(resp.runId)
+        // DS 真跑：短轮询回写状态（后端 syncRunFromDs）
+        const terminal = new Set(['success', 'failed', 'blocked'])
+        for (let i = 0; i < 8 && detail && !terminal.has(String(detail.status || '').toLowerCase()); i++) {
+          await new Promise((r) => setTimeout(r, 1500))
+          detail = await fetchEtlRunDetail(resp.runId)
+        }
+        await refreshRuns(t.id)
+      }
+    } catch {
+      /* ignore */
+    }
+    const row = normalizeRun(detail || { runId: resp?.runId, status: resp?.status, message: note || resp?.message, env: 'stg', trigger: 'manual', startedAt: formatNow() })
+    if (row && !t.logs.some((l) => l.run === row.run)) {
+      t.logs.unshift(row)
+    } else if (row) {
+      const idx = t.logs.findIndex((l) => l.run === row.run)
+      if (idx >= 0) t.logs[idx] = { ...t.logs[idx], ...row }
+    }
+    const plan = resp?.plan || []
+    const qNodes = resp?.quality?.qualityNodes || []
+    const qByKey = Object.fromEntries(qNodes.map((x) => [x.nodeKey, x]))
+    const detailNodes = detail?.nodes || []
+    const dnByKey = Object.fromEntries(detailNodes.map((x) => [x.nodeKey, x]))
+    t.nodes.forEach((n, i) => {
+      const p = plan.find((x) => x.nodeKey === n.id)
+      if (p?.engine) n.resolvedEngine = p.engine
+      const dn = dnByKey[n.id]
+      if (dn?.status) {
+        const s = String(dn.status).toLowerCase()
+        if (s === 'success') n.status = 'done'
+        else if (s === 'failed' || s === 'blocked') n.status = s === 'blocked' ? 'blocked' : 'failed'
+        else if (s === 'running') n.status = 'running'
+        else n.status = 'pending'
+        return
+      }
+      const q = qByKey[n.id]
+      if (q) {
+        if (q.blocked) n.status = 'blocked'
+        else if (q.fail > 0) n.status = 'failed'
+        else if (!q.skipped) n.status = 'done'
+        else n.status = 'pending'
+      } else if (resp?.status === 'failed') {
+        n.status = 'pending'
+      } else if (resp?.localTrial?.success) {
+        n.status = 'done'
+      } else {
+        n.status = i === 0 ? 'running' : 'pending'
+      }
     })
-    const sources = t.nodes.filter((n) => (NODE_TYPES[n.type]?.group || '') === 'source')
-    const sinks = t.nodes.filter((n) => (NODE_TYPES[n.type]?.group || '') === 'sink')
-    if (!sources.length) messages.push('至少需要 1 个数据源节点')
-    if (!sinks.length) messages.push('至少需要 1 个目标节点')
-    return { ok: messages.length === 0, messages: messages.length ? messages : ['校验通过：节点与连线完整'] }
+    forceCfgTab.value = 'runs'
+    clearSelection()
+    return {
+      ...row,
+      quality: resp?.quality,
+      rawStatus: detail?.status || resp?.status,
+      rawMessage: detail?.message || resp?.message || row?.message,
+      message: detail?.message || resp?.message || row?.message,
+      openLineage: resp?.openLineage,
+      localTrial: resp?.localTrial,
+      ds: resp?.ds,
+      dsStart: resp?.dsStart,
+      alert: resp?.alert || detail?.alert,
+      opsPath: resp?.alert?.opsPath || detail?.opsPath || row?.opsPath,
+    }
+  }
+
+  async function publishCurrent() {
+    const t = current.value
+    if (!t) return null
+    await saveCurrent()
+    const v = await validateEtlDag(t.id)
+    if (!v?.ok) {
+      const issues = Array.isArray(v?.issues) ? v.issues : []
+      const detail =
+        v?.message ||
+        issues
+          .filter((i) => i.level === 'error')
+          .map((i) => `${i.ref ? `[${i.ref}] ` : ''}${i.message || ''}`)
+          .filter(Boolean)
+          .join('；') ||
+        '校验未通过'
+      t.lastValidate = {
+        ok: false,
+        at: Date.now(),
+        issues,
+        messages: issues
+          .filter((i) => i.level === 'error' || i.level === 'warn')
+          .map((i) => {
+            const level = i.level === 'error' ? '✗' : '!'
+            const ref = i.ref ? `[${i.ref}] ` : ''
+            return `${level} ${ref}${i.message || i.msg || ''}`
+          })
+          .filter(Boolean)
+          .slice(0, 12),
+        summary: `校验未通过（${issues.filter((i) => i.level === 'error').length} 项）`,
+      }
+      throw new Error(`发布失败：${detail}`)
+    }
+    const resp = await deployEtlDag(t.id)
+    t.status = resp?.status || 'prod'
+    t.ver = resp?.ver || t.ver
+    t.env = 'prod'
+    t.dsWorkflowCode = resp?.dsWorkflowCode
+    t.dirty = false
+    const plan = resp?.plan || []
+    t.nodes.forEach((n) => {
+      const p = plan.find((x) => x.nodeKey === n.id)
+      if (p?.engine) n.resolvedEngine = p.engine
+    })
+    return resp
+  }
+
+  function openRunsTab() {
+    forceCfgTab.value = 'runs'
+    clearSelection()
+  }
+
+  function clearForceCfgTab() {
+    forceCfgTab.value = null
   }
 
   return {
@@ -229,12 +683,23 @@ export function useEtl() {
     connectFrom,
     selectedNode,
     forceCfgTab,
+    loading,
+    loaded,
+    lastError,
+    saving,
+    ensureLoaded,
+    loadList,
+    loadGraph,
     selectTask,
     selectNode,
     selectEdge,
     clearSelection,
     createTask,
     updateTaskMeta,
+    persistMeta,
+    setScheduleStatus,
+    backfillCurrent,
+    saveCurrent,
     addNode,
     moveNode,
     patchNode,
@@ -245,6 +710,8 @@ export function useEtl() {
     removeEdge,
     validateCurrent,
     trialRun,
+    publishCurrent,
+    refreshRuns,
     openRunsTab,
     clearForceCfgTab,
   }

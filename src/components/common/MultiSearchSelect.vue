@@ -9,10 +9,14 @@ const props = defineProps({
   labelKey: { type: String, default: 'label' },
   subKey: { type: String, default: '' },
   searchKeys: { type: [Array, String], default: () => [] },
-  placeholder: { type: String, default: '搜索并多选' },
+  placeholder: { type: String, default: '搜索并选择' },
   disabled: { type: Boolean, default: false },
   emptyText: { type: String, default: '无匹配项' },
   max: { type: Number, default: 0 },
+  /** 允许输入不在 options 中的自定义值 */
+  allowCustom: { type: Boolean, default: false },
+  customText: { type: String, default: '使用自定义' },
+  searchPlaceholder: { type: String, default: '' },
 })
 
 const emit = defineEmits(['update:modelValue', 'change'])
@@ -32,9 +36,11 @@ const searchKeyList = computed(() => {
 })
 
 const selectedOpts = computed(() =>
-  (props.modelValue || [])
-    .map((v) => props.options.find((o) => String(o[props.valueKey]) === String(v)))
-    .filter(Boolean),
+  (props.modelValue || []).map((v) => {
+    const hit = props.options.find((o) => String(o[props.valueKey]) === String(v))
+    if (hit) return hit
+    return { [props.valueKey]: v, [props.labelKey]: v, __custom: true }
+  }),
 )
 
 const filtered = computed(() => {
@@ -46,6 +52,21 @@ const filtered = computed(() => {
   }
   return list
 })
+
+const customCandidate = computed(() => {
+  if (!props.allowCustom) return ''
+  const q = kw.value.trim()
+  if (!q) return ''
+  const exists =
+    props.options.some((o) => String(o[props.valueKey]) === q) || selectedSet.value.has(q)
+  return exists ? '' : q
+})
+
+const panelPlaceholder = computed(
+  () =>
+    props.searchPlaceholder ||
+    (props.allowCustom ? '搜索或输入自定义后回车…' : '搜索…'),
+)
 
 watch(
   () => props.disabled,
@@ -78,6 +99,11 @@ function isSelected(opt) {
   return selectedSet.value.has(String(opt[props.valueKey]))
 }
 
+function setNext(next) {
+  emit('update:modelValue', next)
+  emit('change', next)
+}
+
 function toggleOpt(opt) {
   const v = String(opt[props.valueKey])
   const cur = [...(props.modelValue || [])].map(String)
@@ -89,21 +115,35 @@ function toggleOpt(opt) {
     if (props.max > 0 && cur.length >= props.max) return
     next = [...cur, v]
   }
-  emit('update:modelValue', next)
-  emit('change', next)
+  setNext(next)
+  kw.value = ''
+}
+
+function pickCustom() {
+  const v = customCandidate.value
+  if (!v) return
+  if (props.max > 0 && (props.modelValue || []).length >= props.max) return
+  setNext([...(props.modelValue || []).map(String), v])
+  kw.value = ''
+}
+
+function onSearchKeydown(e) {
+  if (e.key === 'Enter' && props.allowCustom && customCandidate.value) {
+    e.preventDefault()
+    pickCustom()
+  }
+  if (e.key === 'Escape') open.value = false
 }
 
 function removeChip(v, e) {
   e?.stopPropagation()
   const next = (props.modelValue || []).map(String).filter((x) => x !== String(v))
-  emit('update:modelValue', next)
-  emit('change', next)
+  setNext(next)
 }
 
 function clearAll(e) {
   e.stopPropagation()
-  emit('update:modelValue', [])
-  emit('change', [])
+  setNext([])
   kw.value = ''
 }
 
@@ -146,7 +186,12 @@ function chipLabel(opt) {
     </button>
 
     <div v-if="open" class="mss-panel">
-      <input v-model="kw" class="input mss-input" placeholder="搜索指标 ID / 名称…" />
+      <input
+        v-model="kw"
+        class="input mss-input"
+        :placeholder="panelPlaceholder"
+        @keydown="onSearchKeydown"
+      />
       <div class="mss-list">
         <button
           v-for="opt in filtered"
@@ -162,7 +207,19 @@ function chipLabel(opt) {
             <span v-if="subKey && opt[subKey]" class="mss-opt-sub">{{ opt[subKey] }}</span>
           </span>
         </button>
-        <div v-if="!filtered.length" class="mss-empty">{{ emptyText }}</div>
+        <button
+          v-if="customCandidate"
+          type="button"
+          class="mss-option mss-custom"
+          @click="pickCustom"
+        >
+          <span class="mss-check">＋</span>
+          <span class="mss-opt-body">
+            <span class="mss-opt-main">{{ customText }}「{{ customCandidate }}」</span>
+            <span class="mss-opt-sub">回车确认</span>
+          </span>
+        </button>
+        <div v-if="!filtered.length && !customCandidate" class="mss-empty">{{ emptyText }}</div>
       </div>
       <div class="mss-foot">已选 {{ selectedOpts.length }} 项{{ max > 0 ? ` / 最多 ${max}` : '' }}</div>
     </div>
@@ -287,6 +344,13 @@ function chipLabel(opt) {
 .mss-option:hover,
 .mss-option.active {
   background: var(--primary-light, #e8f0ff);
+}
+.mss-custom {
+  border-top: 1px solid var(--border);
+  background: var(--bg-2, #f7f8fa);
+}
+.mss-custom .mss-opt-main {
+  color: var(--primary);
 }
 .mss-check {
   width: 14px;

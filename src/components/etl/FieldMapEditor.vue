@@ -58,16 +58,18 @@ function removeRow(i) {
       <SearchSelect
         :model-value="row.src"
         :options="srcOpts()"
+        sub-key="sub"
         allow-custom
-        :placeholder="srcLabel"
+        :placeholder="`搜索${srcLabel}或自定义`"
         @update:model-value="patchRow(i, 'src', $event)"
       />
       <span class="fmap-arrow">→</span>
       <SearchSelect
         :model-value="row.dst"
         :options="dstOpts()"
+        sub-key="sub"
         allow-custom
-        :placeholder="dstLabel"
+        :placeholder="`搜索${dstLabel}或自定义`"
         @update:model-value="patchRow(i, 'dst', $event)"
       />
       <select

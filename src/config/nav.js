@@ -51,7 +51,7 @@ export const NAV_GROUPS = [
   {
     title: '⑥ 申请与审批',
     items: [
-      { id: 'apply', label: '申请中心', icon: '📝', path: '/apply', badge: '5' },
+      { id: 'apply', label: '申请中心', icon: '📝', path: '/apply' },
     ],
   },
   {
@@ -72,6 +72,14 @@ export const NAV_GROUPS = [
       { id: 'aiassistant', label: 'AI 助手', icon: '🤖', path: '/aiassistant' },
       { id: 'aimodel', label: 'AI 模型管理', icon: '🧠', path: '/aimodel' },
       { id: 'knowledge', label: '知识库', icon: '📖', path: '/knowledge' },
+    ],
+  },
+  {
+    title: '⑨ 系统管理',
+    items: [
+      { id: 'sys-users', label: '用户管理', icon: '👤', path: '/sys/users' },
+      { id: 'sys-roles', label: '角色管理', icon: '🎭', path: '/sys/roles' },
+      { id: 'sys-menus', label: '菜单管理', icon: '📋', path: '/sys/menus' },
     ],
   },
 ]

@@ -1,22 +1,132 @@
 <script setup>
-import { ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, onMounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
 import CreateFormModal from '@/components/common/CreateFormModal.vue'
 import ListPager from '@/components/common/ListPager.vue'
 import { useToast } from '@/composables/useToast'
 import { usePager } from '@/composables/usePager'
+import { useSession } from '@/composables/useSession'
 import { EXPORT_APPLY_FORM } from '@/data/createForms'
 import { pageGuideOf } from '@/data/pageGuides'
-import { EXPORT_FLOW, EXPORT_JOBS, EXPORT_KPIS, exportJobStatusMeta } from '@/data/export'
+import { EXPORT_FLOW, exportJobStatusMeta } from '@/data/export'
+import { pushExportApply } from '@/composables/useApplyBoard'
+import { fetchExportSummary, fetchExportJobs, fetchExportAudit } from '@/api/export'
 
+const route = useRoute()
 const router = useRouter()
 const { showToast } = useToast()
+const { user } = useSession()
 const guide = pageGuideOf('export')
 
 const createOpen = ref(false)
-const jobs = ref(EXPORT_JOBS.map((j) => ({ ...j })))
+const loading = ref(false)
+const jobs = ref([])
+const summary = ref(null)
 const { page, pageSize, total, totalPages, paged, pageNums, goPage, resetPage } = usePager(jobs)
+
+const ws = computed(() => user.value?.ws || 'default')
+
+const kpis = computed(() => {
+  const s = summary.value || {}
+  return [
+    {
+      icon: '📤',
+      color: 'blue',
+      value: String(s.activeJobs ?? '—'),
+      unit: '个',
+      label: '活跃出湖作业',
+      trend: s.sinkCount != null ? `ETL 挂接 ${s.sinkCount}` : '独立 SA',
+      trendUp: true,
+    },
+    {
+      icon: '✅',
+      color: 'green',
+      value: String(s.approved ?? '—'),
+      unit: '个',
+      label: '已审批',
+      trend: '含脱敏',
+      trendUp: true,
+    },
+    {
+      icon: '⏳',
+      color: 'orange',
+      value: String(s.pending ?? '—'),
+      unit: '个',
+      label: '待审批',
+      trend: '申请中心',
+      trendUp: false,
+    },
+    {
+      icon: '🔄',
+      color: 'purple',
+      value: String(s.targets ?? '—'),
+      unit: '个',
+      label: '回流目标',
+      trend: 'MySQL/Redis/ES',
+      trendUp: true,
+    },
+    {
+      icon: '⏰',
+      color: 'red',
+      value: String(s.expiringSoon ?? '—'),
+      unit: '个',
+      label: '即将到期',
+      trend: '7 天内',
+      trendUp: false,
+    },
+  ]
+})
+
+onMounted(async () => {
+  if (route.query.action === 'apply') {
+    createOpen.value = true
+  }
+  await loadBoard()
+})
+
+async function loadBoard() {
+  loading.value = true
+  try {
+    const [sum, list] = await Promise.all([
+      fetchExportSummary({ ws: ws.value }),
+      fetchExportJobs({ ws: ws.value }),
+    ])
+    summary.value = sum || {}
+    jobs.value = (Array.isArray(list) ? list : []).map(normalizeJob)
+    resetPage()
+  } catch (e) {
+    showToast(`出湖运营台加载失败：${e.message || e}`, 'warning')
+  } finally {
+    loading.value = false
+  }
+}
+
+function normalizeJob(row) {
+  return {
+    job: row.job || row.ticketNo || '—',
+    ticketNo: row.ticketNo || row.job,
+    ticketId: row.ticketId,
+    src: row.src || '—',
+    target: row.target || '—',
+    purpose: String(row.purpose || '').slice(0, 40) || '—',
+    freq: row.freq || '—',
+    mask: row.mask || '待配置',
+    expire: row.expire || '长期',
+    status: row.status || 'ok',
+    ticketStatus: row.ticketStatus || '',
+    dagCode: row.dagCode,
+    nodeKey: row.nodeKey,
+  }
+}
+
+function statusLabel(j) {
+  if (j.ticketStatus === 'pending') return { tag: 'tag-orange', label: '待审批' }
+  if (j.ticketStatus === 'rejected' || j.ticketStatus === 'cancelled') {
+    return { tag: 'tag-red', label: '已驳回' }
+  }
+  return exportJobStatusMeta(j.status)
+}
 
 function newExportApply() {
   createOpen.value = true
@@ -30,32 +140,82 @@ function formatExpire(payload) {
   return payload.expire || '30天'
 }
 
-function onExportApply(payload) {
-  const id = `EXP-${String(100 + jobs.value.length + 1).padStart(3, '0')}`
+async function onExportApply(payload) {
   const expire = formatExpire(payload)
-  const shortTable = String(payload.table || '')
-    .replace(/^(ads|dwd|dws)\./, '')
-    .replace(/^[\w]+\./, '')
-  jobs.value.unshift({
-    job: id,
-    src: shortTable || payload.table,
+  const result = await pushExportApply({
+    table: payload.table,
+    purpose: payload.purpose,
     target: payload.target,
-    purpose: payload.purpose.slice(0, 40),
-    freq: '待审批',
-    mask: '待配置',
     expire,
-    status: 'warn',
+    applicant: '我',
   })
-  resetPage()
-  showToast(`✅ 出湖申请已提交：${id} · ${payload.table} → ${payload.target} · ${expire}`, 'success')
+  const ticketNo = result.ticketNo
+  createOpen.value = false
+  const tip = result.degraded
+    ? `⚠️ 出湖申请已落本地演示：${ticketNo}（后端暂不可用：${result.message || ''}）`
+    : `✅ 出湖申请已提交：${ticketNo} · 已进入申请中心待审批；通过后将单号填回 ETL ticketNo`
+  showToast(tip, result.degraded ? 'warning' : 'success', { duration: 8000 })
+  if (route.query.from === 'etl') {
+    try {
+      navigator.clipboard?.writeText?.(ticketNo)
+      showToast(`已复制单号 ${ticketNo}（审批通过后方可用于发布）`, 'info')
+    } catch {
+      /* ignore */
+    }
+  }
+  if (!result.degraded) {
+    await loadBoard()
+  } else {
+    jobs.value.unshift({
+      job: ticketNo,
+      ticketNo,
+      src: String(payload.table || '')
+        .replace(/^(ads|dwd|dws)\./, '')
+        .replace(/^[\w]+\./, '') || payload.table,
+      target: payload.target,
+      purpose: String(payload.purpose || '').slice(0, 40),
+      freq: '待审批(本地)',
+      mask: '待配置',
+      expire,
+      status: 'warn',
+      ticketStatus: 'pending',
+    })
+    resetPage()
+  }
 }
 
-function exportAudit() {
-  showToast('📋 出湖审计报告导出中 · CSV（时间/目标/表/行数/审批人/用途）', 'success')
+async function exportAudit() {
+  try {
+    const data = await fetchExportAudit({ ws: ws.value })
+    const lines = Array.isArray(data?.lines) ? data.lines : []
+    if (!lines.length) {
+      showToast(data?.hint || '暂无出湖审计记录', 'info')
+      return
+    }
+    const header = ['time', 'ticketNo', 'src', 'target', 'purpose', 'approver', 'status', 'dagCode']
+    const csv = [
+      header.join(','),
+      ...lines.map((l) =>
+        header
+          .map((k) => `"${String(l[k] ?? '').replace(/"/g, '""')}"`)
+          .join(','),
+      ),
+    ].join('\n')
+    const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `export-audit-${ws.value}-${Date.now()}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+    showToast(`📋 已导出审计摘要 ${lines.length} 条（一期 soft）`, 'success')
+  } catch (e) {
+    showToast(`审计导出失败：${e.message || e}`, 'error')
+  }
 }
 
 function goApply() {
-  router.push('/apply')
+  router.push({ path: '/apply', query: { tab: 'export' } })
 }
 
 function go(path) {
@@ -64,6 +224,14 @@ function go(path) {
 
 function goCatalog(src) {
   router.push({ path: '/catalog', query: { q: src } })
+}
+
+function goEtl(j) {
+  if (j.dagCode) {
+    router.push({ path: '/etl', query: { dag: j.dagCode } })
+  } else {
+    router.push('/etl')
+  }
 }
 </script>
 
@@ -76,6 +244,9 @@ function goCatalog(src) {
     >
       <button type="button" class="btn btn-sm" @click="newExportApply">＋ 出湖申请</button>
       <button type="button" class="btn btn-sm" @click="exportAudit">📋 出湖审计</button>
+      <button type="button" class="btn btn-sm" @click="loadBoard" :disabled="loading">
+        {{ loading ? '刷新中…' : '↻ 刷新' }}
+      </button>
       <button type="button" class="btn btn-sm btn-primary" @click="goApply">🔗 申请审批</button>
     </PageHeader>
 
@@ -87,7 +258,7 @@ function goCatalog(src) {
     />
 
     <div class="kpi-grid exp-kpi">
-      <div v-for="(k, i) in EXPORT_KPIS" :key="i" class="kpi-card" :class="k.color">
+      <div v-for="(k, i) in kpis" :key="i" class="kpi-card" :class="k.color">
         <div class="kpi-icon" :class="k.color">{{ k.icon }}</div>
         <div class="kpi-value">
           {{ k.value }}<span class="kpi-unit">{{ k.unit }}</span>
@@ -134,11 +305,17 @@ function goCatalog(src) {
               <th>脱敏</th>
               <th>到期</th>
               <th>状态</th>
+              <th>ETL</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-if="!paged.length">
-              <td colspan="8" style="text-align: center; color: var(--text-3); padding: 24px">暂无作业</td>
+            <tr v-if="loading && !paged.length">
+              <td colspan="9" style="text-align: center; color: var(--text-3); padding: 24px">加载中…</td>
+            </tr>
+            <tr v-else-if="!paged.length">
+              <td colspan="9" style="text-align: center; color: var(--text-3); padding: 24px">
+                暂无作业 · 可先「出湖申请」或在 ETL 出湖 sink 填入已审批 EXP
+              </td>
             </tr>
             <tr v-for="j in paged" :key="j.job">
               <td><code class="exp-job-id">{{ j.job }}</code></td>
@@ -149,14 +326,26 @@ function goCatalog(src) {
               <td style="font-size: 11px">{{ j.purpose }}</td>
               <td style="font-size: 11px">{{ j.freq }}</td>
               <td>
-                <span v-if="j.mask === '无'" class="muted">无</span>
+                <span v-if="j.mask === '无' || j.mask === '待配置'" class="muted">{{ j.mask }}</span>
                 <span v-else class="tag tag-purple" style="font-size: 10px">{{ j.mask }}</span>
               </td>
               <td style="font-size: 11px">{{ j.expire }}</td>
               <td>
-                <span class="tag" :class="exportJobStatusMeta(j.status).tag" style="font-size: 10px">
-                  {{ exportJobStatusMeta(j.status).label }}
+                <span class="tag" :class="statusLabel(j).tag" style="font-size: 10px">
+                  {{ statusLabel(j).label }}
                 </span>
+              </td>
+              <td>
+                <button
+                  v-if="j.dagCode"
+                  type="button"
+                  class="btn-link"
+                  style="font-size: 11px"
+                  @click="goEtl(j)"
+                >
+                  {{ j.dagCode }}
+                </button>
+                <span v-else class="muted" style="font-size: 11px">—</span>
               </td>
             </tr>
           </tbody>
@@ -179,7 +368,7 @@ function goCatalog(src) {
       </div>
       <div class="card-body exp-link-body">
         <div class="exp-link-row">
-          <button type="button" class="btn-link" @click="go('/apply')">申请审批</button>
+          <button type="button" class="btn-link" @click="goApply">申请审批</button>
           <span>→</span>
           <button type="button" class="btn-link" @click="go('/security')">安全脱敏</button>
           <span>→</span>
@@ -277,5 +466,15 @@ function goCatalog(src) {
   font-size: 12px;
   font-weight: 400;
   color: var(--text-3);
+}
+@media (max-width: 1100px) {
+  .exp-kpi {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+@media (max-width: 720px) {
+  .exp-kpi {
+    grid-template-columns: repeat(2, 1fr);
+  }
 }
 </style>

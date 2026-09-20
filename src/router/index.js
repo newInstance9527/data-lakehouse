@@ -1,9 +1,16 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
+import { getToken } from '@/api/token'
+import { useSession } from '@/composables/useSession'
 
 const routes = [
+  {
+    path: '/login',
+    name: 'login',
+    component: () => import('@/views/LoginView.vue'),
+    meta: { public: true, id: 'login' },
+  },
   { path: '/', name: 'overview', component: () => import('@/views/OverviewView.vue'), meta: { id: 'overview' } },
   { path: '/catalog', name: 'catalog', component: () => import('@/views/CatalogView.vue'), meta: { id: 'catalog' } },
-  // 后续按模块顺序替换为真实页面
   { path: '/datasource', name: 'datasource', component: () => import('@/views/DatasourceView.vue'), meta: { id: 'datasource' } },
   {
     path: '/datasource/:id/tables',
@@ -47,9 +54,44 @@ const routes = [
   { path: '/aiassistant', name: 'aiassistant', component: () => import('@/views/AiAssistantView.vue'), meta: { id: 'aiassistant' } },
   { path: '/aimodel', name: 'aimodel', component: () => import('@/views/AiModelView.vue'), meta: { id: 'aimodel' } },
   { path: '/knowledge', name: 'knowledge', component: () => import('@/views/KnowledgeView.vue'), meta: { id: 'knowledge' } },
+  { path: '/sys/users', name: 'sys-users', component: () => import('@/views/SysUserView.vue'), meta: { id: 'sys-users' } },
+  { path: '/sys/roles', name: 'sys-roles', component: () => import('@/views/SysRoleView.vue'), meta: { id: 'sys-roles' } },
+  { path: '/sys/menus', name: 'sys-menus', component: () => import('@/views/SysMenuView.vue'), meta: { id: 'sys-menus' } },
 ]
 
-export default createRouter({
+const router = createRouter({
   history: createWebHashHistory(),
   routes,
 })
+
+let sessionBootstrapped = false
+
+router.beforeEach(async (to) => {
+  const { bootstrapSession, canAccessNav, isLoggedIn, ready } = useSession()
+  if (!sessionBootstrapped || !ready.value) {
+    await bootstrapSession()
+    sessionBootstrapped = true
+  }
+
+  if (to.meta?.public) {
+    if (to.name === 'login' && getToken() && isLoggedIn.value) {
+      return typeof to.query.redirect === 'string' ? to.query.redirect : '/'
+    }
+    return true
+  }
+
+  if (!getToken() || !isLoggedIn.value) {
+    return {
+      path: '/login',
+      query: { redirect: to.fullPath },
+    }
+  }
+
+  const navId = to.meta?.id
+  if (navId && !canAccessNav(navId)) {
+    return { path: '/', replace: true }
+  }
+  return true
+})
+
+export default router

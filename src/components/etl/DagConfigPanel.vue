@@ -32,13 +32,31 @@ const emit = defineEmits([
   'trial-run',
   'clear-force-tab',
   'open-runs',
+  'set-status',
+  'backfill',
 ])
 
-const { fieldList } = useStandards()
+const { fieldList, ensureLoaded: ensureStdLoaded, loaded: stdLoaded } = useStandards()
 const manualTab = ref(null)
+const bfMarkKey = ref('dt')
+const bfMarkValue = ref('')
+
+watch(
+  () => props.node?.type,
+  (t) => {
+    if (t === 'mapping' || (t && String(t).startsWith('sink_'))) {
+      ensureStdLoaded()?.catch?.(() => {})
+    }
+  },
+  { immediate: true },
+)
 
 const tab = computed(() => {
-  if (props.forceTab === 'runs') return 'runs'
+  // 已选中节点时优先展示节点配置，避免 forceTab=runs 挡住
+  if (props.node && manualTab.value === 'node') return 'node'
+  if (props.forceTab === 'runs' && manualTab.value !== 'node' && manualTab.value !== 'task' && manualTab.value !== 'edge') {
+    return 'runs'
+  }
   if (manualTab.value) return manualTab.value
   if (props.node) return 'node'
   if (props.edgeIdx != null) return 'edge'
@@ -53,7 +71,10 @@ function setTab(t) {
 watch(
   () => props.node?.id,
   () => {
-    if (props.node) manualTab.value = 'node'
+    if (props.node) {
+      manualTab.value = 'node'
+      emit('clear-force-tab')
+    }
   },
 )
 
@@ -87,10 +108,35 @@ const mapDstFields = computed(() => {
     if (props.targetFields.length) return props.targetFields
     return props.upstreamFields
   }
+  // mapping：目标列优先标准字段
+  const std = (fieldList.value || [])
+    .filter((f) => f?.name)
+    .map((f) => ({
+      name: f.name,
+      cn: f.desc || f.description || '',
+      type: f.type || f.dataType || 'STRING',
+    }))
+  if (std.length) return std
   if (props.targetFields.length) return props.targetFields
-  const std = fieldList.value.map((f) => ({ name: f.name, cn: f.desc, type: f.type }))
-  return std.length ? std : props.upstreamFields
+  return props.upstreamFields
 })
+
+function seedMapsFromStd() {
+  const std = mapDstFields.value
+  if (!std.length) return
+  const existing = new Set((conf.value.fieldMaps || conf.value.mapList || []).map((m) => m.dst || m.std))
+  const add = std
+    .filter((f) => !existing.has(f.name))
+    .slice(0, 20)
+    .map((f) => ({
+      src: '',
+      dst: f.name,
+      transform: conf.value.strategy === '码值 CASE' ? '码值 CASE' : '直接映射',
+    }))
+  if (!add.length) return
+  const cur = conf.value.fieldMaps || conf.value.mapList || []
+  patchConf('fieldMaps', [...cur, ...add])
+}
 
 const cronIsCustom = computed(() => {
   if (!props.task) return false
@@ -98,7 +144,18 @@ const cronIsCustom = computed(() => {
 })
 
 function patchTask(key, val) {
+  if (key === 'status') {
+    emit('set-status', val)
+    return
+  }
   emit('update-task', { [key]: val })
+}
+
+function submitBackfill() {
+  emit('backfill', {
+    markKey: bfMarkKey.value?.trim(),
+    markValue: bfMarkValue.value?.trim(),
+  })
 }
 
 function patchNodeField(key, val) {
@@ -186,6 +243,7 @@ function onAutoMap() {
             <select class="select" :value="task.status" @change="patchTask('status', $event.target.value)">
               <option v-for="(m, k) in TASK_STATUS_META" :key="k" :value="k">{{ m.label }}</option>
             </select>
+            <div class="form-hint">prod / paused 会同步 DS 流程上线/下线</div>
           </label>
         </div>
         <label class="form-field">
@@ -201,6 +259,26 @@ function onAutoMap() {
           </template>
           <template v-else>暂无记录</template>
         </div>
+
+        <div class="sec-title" style="margin-top: 14px">补数（水位）</div>
+        <div class="form-grid-2">
+          <label class="form-field">
+            <span class="form-label">mark_key</span>
+            <input v-model="bfMarkKey" class="input" placeholder="dt" />
+          </label>
+          <label class="form-field">
+            <span class="form-label">mark_value</span>
+            <input v-model="bfMarkValue" class="input" placeholder="2026-09-18" />
+          </label>
+        </div>
+        <button
+          type="button"
+          class="btn btn-sm btn-primary"
+          style="margin-top: 6px"
+          :disabled="!task || (task.status !== 'prod' && task.status !== 'paused')"
+          @click="submitBackfill"
+        >🔧 发起补数</button>
+        <div class="form-hint">仅 prod/paused 可补；写水位并触发 DS 实例，生成带 run_id 的执行记录</div>
       </div>
 
       <div v-show="tab === 'node'" class="dag-cfg-body">
@@ -234,8 +312,21 @@ function onAutoMap() {
           />
 
           <div v-if="showFieldMap" class="sec-title" style="margin-top: 14px">字段映射</div>
+          <div v-if="showFieldMap && node.type === 'mapping'" class="form-hint">
+            目标列来自<strong>数据标准字段</strong>；可先选节点上的 stdRef/码值，再点「带入标准字段」补齐映射行。
+            <button
+              type="button"
+              class="btn btn-sm"
+              style="margin-left: 8px"
+              :disabled="!stdLoaded || !mapDstFields.length"
+              @click="seedMapsFromStd"
+            >带入标准字段</button>
+          </div>
           <div v-if="showFieldMap && String(node.type).startsWith('sink_')" class="form-hint">
             将上游输出写入目标表：请先配置目标表，再做 upstream → 目标列映射。
+          </div>
+          <div v-if="showFieldMap && !mapSrcFields.length" class="form-hint" style="color: #d48806">
+            暂无上游字段：请确认①源节点已选<strong>表</strong>并连线到本节点；②数据源已同步表清单；③保存后重新点开本节点。
           </div>
           <FieldMapEditor
             v-if="showFieldMap"
@@ -244,7 +335,7 @@ function onAutoMap() {
             :src-fields="mapSrcFields"
             :dst-fields="mapDstFields"
             src-label="上游字段"
-            :dst-label="String(node.type).startsWith('sink_') ? '目标表字段' : '标准/目标字段'"
+            :dst-label="String(node.type).startsWith('sink_') ? '目标表字段' : '标准字段'"
             @update:model-value="onFieldMaps"
             @auto-map="onAutoMap"
           />

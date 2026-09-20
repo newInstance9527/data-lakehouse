@@ -16,6 +16,8 @@ import {
 import { tablesToSchema } from '@/utils/schemaList'
 
 const sources = ref([])
+/** ETL 编排可用源（usable_in_dag），与全量 sources 分轨，避免冲掉数据源中心列表 */
+const dagSources = ref([])
 const loaded = ref(false)
 const loading = ref(false)
 let loadError = null
@@ -37,6 +39,20 @@ export function useDatasources() {
       throw e
     } finally {
       loading.value = false
+    }
+  }
+
+  /** 仅在线且 purposes 含 ingest/export；写入 dagSources，不覆盖 sources */
+  async function loadDagUsableSources() {
+    try {
+      const page = await fetchDatasourcePage({ usableInDag: '1' }, { current: 1, size: 500 })
+      dagSources.value = (page?.records || []).map(normalizeSource)
+      return dagSources.value
+    } catch (e) {
+      console.warn('[datasource] loadDagUsableSources failed', e)
+      // 回退：用本地 sources 客户端过滤
+      dagSources.value = (sources.value || []).filter(isUsableInDag)
+      return dagSources.value
     }
   }
 
@@ -146,11 +162,13 @@ export function useDatasources() {
 
   return {
     sources,
+    dagSources,
     list,
     loaded,
     loading,
     getLoadError: () => loadError,
     loadSources,
+    loadDagUsableSources,
     getSource,
     updateSource,
     upsertSource,
@@ -166,17 +184,38 @@ export function useDatasources() {
   }
 }
 
+/** 与后端 usableInDag=1 对齐 */
+export function isUsableInDag(s) {
+  if (!s) return false
+  const st = String(s.status || '').toLowerCase()
+  if (st && st !== 'online') return false
+  const raw = s.purposes ?? s.purpose ?? ''
+  const p = typeof raw === 'string' ? raw : JSON.stringify(raw || [])
+  if (!p || p === '[]' || p === 'null') return true
+  return p.includes('ingest') || p.includes('export')
+}
+
 function normalizeSource(row) {
   if (!row) return row
+  const conn = row.conn && typeof row.conn === 'object' ? row.conn : {}
   return {
     ...row,
-    password: row.password || '******',
+    ...Object.fromEntries(
+      Object.entries(conn).filter(([k]) => row[k] == null || row[k] === ''),
+    ),
+    password: row.password || (conn.password ? '******' : '') || '******',
     health: row.health ?? row.healthScore ?? 0,
-    schema: row.schema || '',
+    schema: row.schema || tablesToSchema(row.tables) || '',
     lag: row.lag || '',
     desc: row.desc || '',
     asset: row.asset ?? null,
+    linkedAssets: Array.isArray(row.linkedAssets) ? row.linkedAssets : [],
+    host: row.host || conn.host || '',
+    port: row.port || conn.port || '',
+    database: row.database || conn.database || '',
+    user: row.user || conn.user || conn.username || '',
     tables: Array.isArray(row.tables) ? row.tables.map(normalizeTable) : row.tables,
+    conn,
   }
 }
 
@@ -190,5 +229,6 @@ function normalizeTable(t) {
     encoding: t.encoding || 'utf8mb4',
     engine: t.engine || '',
     rowCount: t.rowCount,
+    syncedAt: t.syncedAt || '',
   }
 }
