@@ -256,13 +256,18 @@ async function onNewScript() {
   }
 }
 
+function scriptFileName(raw) {
+  const base = String(raw || '').trim().replace(/\\/g, '/').split('/').pop() || ''
+  const withExt = /\.sql$/i.test(base) ? base : base ? `${base}.sql` : ''
+  if (/^[A-Za-z0-9][A-Za-z0-9_.-]*\.sql$/i.test(withExt)) return withExt
+  const stamp = new Date().toISOString().replace(/\D/g, '').slice(0, 14)
+  return `from_query_${stamp}.sql`
+}
+
 async function importSqlDraft(sql, suggestedName) {
   const text = String(sql || '').trim()
   if (!text) return
-  const raw = suggestedName
-    ? String(suggestedName)
-    : `from_query_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}.sql`
-  const name = raw.endsWith('.sql') ? raw : `${raw}.sql`
+  const name = scriptFileName(suggestedName)
   try {
     const created = await createScript({
       ws: currentWs.value,

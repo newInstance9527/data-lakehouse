@@ -102,17 +102,45 @@ export const APPLY_PUBLISH_ENVS = [
 ]
 
 export function buildApplyAssetOptions(assets = []) {
-  return assets.map((a) => {
-    const ownerLabel = a.ownerName || a.techOwnerName || a.owner || '—'
+  return assets
+    .filter((a) => a && (a.id || a.assetCode || a.key))
+    .map((a) => {
+      const ownerLabel = a.ownerName || a.techOwnerName || a.owner || '—'
+      const code = a.assetCode || a.key || a.name || a.id
+      const title = a.cnName || a.name || code
+      return {
+        /** 后端 table_read / resource_manage 认 gov_asset.id */
+        value: a.id || code,
+        label: `${code} · ${title}`,
+        sub: `${a.layerLabel || a.layer || '—'} · ${a.level || '内部'} · Owner ${ownerLabel}`,
+        name: title,
+        level: a.level || '内部',
+        owner: ownerLabel,
+        domain: a.domainLabel || a.domain || '',
+        layer: a.layerLabel || a.layer || '',
+        assetCode: code,
+      }
+    })
+}
+
+/** 出湖申请可选源表（优先 ADS/DWD/DWS；无分层时退回全部已登记表） */
+export function buildApplyExportOptions(assets = []) {
+  const rows = assets.filter((a) => a && (a.assetCode || a.key || a.name))
+  const layered = rows.filter((a) =>
+    ['ads', 'dwd', 'dws'].includes(String(a.layer || '').toLowerCase()),
+  )
+  const list = layered.length ? layered : rows
+  return list.map((a) => {
+    const code = a.assetCode || a.key || a.name
+    const title = a.cnName || a.name || code
     return {
-      value: a.key,
-      label: `${a.key} · ${a.name}`,
-      sub: `${a.layerLabel || a.layer} · ${a.level || '内部'} · Owner ${ownerLabel}`,
-      name: a.name,
-      level: a.level || '内部',
-      owner: ownerLabel,
-      domain: a.domainLabel || a.domain,
+      value: code,
+      label: `${code} · ${title}`,
+      sub: `${a.layerLabel || a.layer || '—'} · ${a.domainLabel || a.domain || '—'} · ${a.ownerName || a.owner || '—'}`,
+      name: title,
       layer: a.layerLabel || a.layer,
+      domain: a.domainLabel || a.domain,
+      assetId: a.id,
     }
   })
 }

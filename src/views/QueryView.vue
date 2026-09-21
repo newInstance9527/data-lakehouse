@@ -23,7 +23,6 @@ import {
 import {
   QUERY_CATALOG,
   QUERY_HISTORY,
-  QUERY_TABS_SEED,
   RESULT_COLUMNS,
   buildDemoResultRows,
 } from '@/data/query'
@@ -37,8 +36,19 @@ const editorRef = ref(null)
 const catalog = reactive([])
 const catalogDegraded = ref(false)
 const catalogQuery = ref('')
-const tabs = ref(QUERY_TABS_SEED.map((t) => ({ ...t })))
-const activeTabId = ref(tabs.value[0]?.id || '')
+const catWidth = ref(Number(localStorage.getItem('lh.query.catWidth')) || 300)
+const catResizing = ref(false)
+function blankQueryTab() {
+  return {
+    id: 'tab_query_1',
+    name: '查询 1',
+    closable: true,
+    sql: '',
+  }
+}
+
+const tabs = ref([blankQueryTab()])
+const activeTabId = ref(tabs.value[0].id)
 const running = ref(false)
 const showResult = ref(false)
 const resultRows = ref([])
@@ -187,22 +197,8 @@ function resolveExecSql() {
   return sel || all
 }
 
-function asDatabases(tree) {
-  const out = []
-  for (const node of tree || []) {
-    const children = node.children || []
-    const groups = children.filter((c) => c && c.type !== 'table' && c.type !== 'column')
-    if (groups.length) {
-      for (const g of groups) out.push({ ...g, type: 'database' })
-    } else {
-      out.push({ ...node, type: 'database' })
-    }
-  }
-  return out
-}
-
 function seedCatalogFallback() {
-  const tree = asDatabases(structuredClone(QUERY_CATALOG))
+  const tree = structuredClone(QUERY_CATALOG).filter((n) => !n.locked)
   calmLargeSchemas(tree)
   catalog.splice(0, catalog.length, ...tree)
   catalogDegraded.value = true
@@ -240,11 +236,12 @@ function isOpen(node) {
 const visibleTableCount = computed(() => {
   const q = catalogQuery.value.trim().toLowerCase()
   let n = 0
-  for (const db of catalog) {
-    if (db.locked) continue
-    for (const tb of db.children || []) {
-      if (tb.type && tb.type !== 'table') continue
-      if (!q || branchHit(tb, q) || nodeBlob(db).includes(q)) n += 1
+  for (const ds of catalog) {
+    for (const sch of ds.children || []) {
+      for (const tb of sch.children || []) {
+        if (tb.type && tb.type !== 'table') continue
+        if (!q || branchHit(tb, q) || nodeBlob(sch).includes(q) || nodeBlob(ds).includes(q)) n += 1
+      }
     }
   }
   return n
@@ -273,9 +270,10 @@ async function ensureColumns(table) {
 }
 
 function calmLargeSchemas(nodes) {
-  for (const db of nodes || []) {
-    const tables = (db.children || []).filter((c) => !c.type || c.type === 'table')
-    if (tables.length > 12) db.open = false
+  for (const ds of nodes || []) {
+    for (const sch of ds.children || []) {
+      if ((sch.children || []).length > 12) sch.open = false
+    }
   }
 }
 
@@ -302,9 +300,8 @@ async function loadSchemaTree() {
   try {
     const tree = await fetchSchemaTree()
     if (Array.isArray(tree)) {
-      const dbs = asDatabases(tree)
-      calmLargeSchemas(dbs)
-      catalog.splice(0, catalog.length, ...dbs)
+      calmLargeSchemas(tree)
+      catalog.splice(0, catalog.length, ...tree)
       catalogDegraded.value = false
       apiOnline.value = true
       return
@@ -330,35 +327,38 @@ async function loadHistory() {
   if (!history.value.length) history.value = [...QUERY_HISTORY]
 }
 
+let appliedLinkKey = ''
+
 function applyDeepLink() {
   const q = route.query || {}
   const sql = typeof q.sql === 'string' ? q.sql : ''
   const fqn = typeof q.fqn === 'string' ? q.fqn : ''
-  if (sql) {
-    const id = `tab_deep_${Date.now()}`
+  if (!sql && !fqn) return
+  const key = sql ? `sql:${sql}` : `fqn:${fqn}`
+  if (key === appliedLinkKey) return
+  appliedLinkKey = key
+
+  const content = sql
+    ? sql
+    : `SELECT *\nFROM ${fqn}\nWHERE dt >= date_add('day', -7, current_date)\nLIMIT 100`
+  const name = sql ? 'draft_from_link.sql' : `${fqn.split('.').pop() || 'query'}.sql`
+  const only = tabs.value.length === 1 ? tabs.value[0] : null
+  if (only && !String(only.sql || '').trim()) {
+    only.sql = content
+    only.name = name
+    activeTabId.value = only.id
+  } else {
+    const id = `tab_link_${Date.now()}`
     tabs.value.push({
       id,
-      name: 'draft_from_link.sql',
+      name,
       closable: true,
-      sql,
+      sql: content,
     })
     activeTabId.value = id
-    showToast('已从深链载入 SQL 草稿（未自动执行）', 'info')
-    return
   }
-  if (fqn) {
-    const sample = `SELECT *\nFROM ${fqn}\nWHERE dt >= date_add('day', -7, current_date)\nLIMIT 100;`
-    const id = `tab_fqn_${Date.now()}`
-    tabs.value.push({
-      id,
-      name: `${fqn.split('.').pop() || 'query'}.sql`,
-      closable: true,
-      sql: sample,
-    })
-    activeTabId.value = id
-    activeTableId.value = fqn.replace(/\./g, '_')
-    showToast(`已预插表 ${fqn}（未自动执行）`, 'info')
-  }
+  if (fqn && !sql) activeTableId.value = fqn.replace(/\./g, '_')
+  showToast(sql ? '已从深链载入 SQL 草稿（未自动执行）' : `已预插表 ${fqn}（未自动执行）`, 'info')
 }
 
 watch(
@@ -371,26 +371,27 @@ onMounted(async () => {
   applyDeepLink()
 })
 
-function goApplyRead(node) {
-  showToast('未授权，前往申请读权限', 'warning')
-  router.push({
-    path: '/apply',
-    query: {
-      type: 'table',
-      assetId: node.assetId || '',
-      name: node.name || '',
-      assetCode: node.assetCode || node.name || '',
-      privilege: 'SELECT',
-    },
-  })
+function onCatResizeStart(e) {
+  e.preventDefault()
+  catResizing.value = true
+  const startX = e.clientX
+  const startW = catWidth.value
+  const onMove = (ev) => {
+    const next = Math.min(520, Math.max(220, startW + (ev.clientX - startX)))
+    catWidth.value = next
+  }
+  const onUp = () => {
+    catResizing.value = false
+    localStorage.setItem('lh.query.catWidth', String(catWidth.value))
+    window.removeEventListener('mousemove', onMove)
+    window.removeEventListener('mouseup', onUp)
+  }
+  window.addEventListener('mousemove', onMove)
+  window.addEventListener('mouseup', onUp)
 }
 
 function toggleNode(node) {
-  if (node.locked) {
-    goApplyRead(node)
-    return
-  }
-  if (node.type === 'database' || node.type === 'catalog' || node.type === 'schema') {
+  if (node.type === 'datasource' || node.type === 'catalog' || node.type === 'schema') {
     node.open = !node.open
   }
 }
@@ -398,26 +399,24 @@ function toggleNode(node) {
 async function toggleTableCols(table, e) {
   e?.stopPropagation()
   if (!table) return
-  if (table.locked) {
-    goApplyRead(table)
-    return
-  }
   table.open = !table.open
   if (table.open) await ensureColumns(table)
 }
 
+/** Trino /v1/statement 不接受结尾分号；只去掉末尾一个，不拆多语句。 */
+function withoutTrailingSemicolon(sql) {
+  const s = String(sql ?? '').trim()
+  if (s.endsWith(';')) return s.slice(0, -1).trim()
+  return s
+}
+
 function insertTable(table) {
-  if (!table) return
-  if (table.locked) {
-    goApplyRead(table)
-    return
-  }
-  if (table.runnable === false || !table.sampleSql) {
-    showToast('未挂接查询引擎，不能插入 SQL', 'warning')
+  if (!table?.sampleSql || table.runnable === false) {
+    showToast(table?.message || '无法插入：未进入即席查询面或无权限', 'warning')
     return
   }
   activeTableId.value = table.id
-  sqlText.value = table.sampleSql
+  sqlText.value = withoutTrailingSemicolon(table.sampleSql)
   showToast(`已插入表：${table.name || table.assetCode || ''}`, 'success')
 }
 
@@ -581,6 +580,17 @@ async function onExplain() {
   }
 }
 
+/** 开发脚本路径只允许 ASCII；页签名「查询 1」不能直接当文件名 */
+function scriptFileName(raw) {
+  const base = String(raw || '').trim().replace(/\\/g, '/').split('/').pop() || ''
+  const withExt = /\.sql$/i.test(base) ? base : base ? `${base}.sql` : ''
+  if (/^[A-Za-z0-9][A-Za-z0-9_.-]*\.sql$/i.test(withExt) && !/^unsaved_/i.test(withExt)) {
+    return withExt
+  }
+  const stamp = new Date().toISOString().replace(/\D/g, '').slice(0, 14)
+  return `from_query_${stamp}.sql`
+}
+
 function onSaveAsDevelopDraft() {
   const sql = String(sqlText.value || '').trim()
   if (!sql) {
@@ -588,7 +598,7 @@ function onSaveAsDevelopDraft() {
     return
   }
   const tab = activeTab.value
-  const name = tab?.name && !/^unsaved_/i.test(tab.name) ? tab.name : `from_query_${Date.now()}.sql`
+  const name = scriptFileName(tab?.name)
   router.push({
     path: '/develop',
     query: { importSql: sql, name },
@@ -611,6 +621,89 @@ function onSaveSql() {
 function summarize(sql) {
   const one = String(sql || '').replace(/\s+/g, ' ').trim()
   return one.length > 56 ? `${one.slice(0, 56)}…` : one
+}
+
+/** 在目录树中按 id / assetId / fqn 找表节点 */
+function findTableNode(idOrFqn) {
+  const q = String(idOrFqn || '').trim()
+  if (!q) return null
+  for (const ds of catalog) {
+    for (const sch of ds.children || []) {
+      for (const tb of sch.children || []) {
+        if (!tb || tb.type !== 'table') continue
+        if (
+          tb.id === q ||
+          tb.assetId === q ||
+          tb.fqn === q ||
+          tb.queryFqn === q ||
+          tb.gravFqn === q
+        ) {
+          return tb
+        }
+      }
+    }
+  }
+  return null
+}
+
+/** 从 SQL 提取 catalog.schema.table */
+function parseFqnsFromSql(sql) {
+  const re =
+    /(?:from|join)\s+(?:"([^"]+)"|`([^`]+)`|([A-Za-z_][\w$]*))\s*\.\s*(?:"([^"]+)"|`([^`]+)`|([A-Za-z_][\w$]*))\s*\.\s*(?:"([^"]+)"|`([^`]+)`|([A-Za-z_][\w$]*))/gi
+  const out = []
+  let m
+  while ((m = re.exec(String(sql || '')))) {
+    const cat = m[1] || m[2] || m[3]
+    const sch = m[4] || m[5] || m[6]
+    const tbl = m[7] || m[8] || m[9]
+    if (cat && sch && tbl) out.push(`${cat}.${sch}.${tbl}`)
+  }
+  return out
+}
+
+/** 即席 → 申请中心：优先当前选中表，否则解析 SQL 中的表 */
+function resolveApplyTableContext(sql) {
+  const active = findTableNode(activeTableId.value)
+  if (active) {
+    return {
+      assetId: active.assetId || (String(active.id || '').match(/^\d+$/) ? active.id : '') || '',
+      assetCode: active.assetCode || '',
+      name: active.hint || active.name || '',
+      fqn: active.queryFqn || active.fqn || '',
+    }
+  }
+  const fqns = parseFqnsFromSql(sql || sqlText.value)
+  for (const fqn of fqns) {
+    const node = findTableNode(fqn)
+    if (node) {
+      return {
+        assetId: node.assetId || (String(node.id || '').match(/^\d+$/) ? node.id : '') || '',
+        assetCode: node.assetCode || '',
+        name: node.hint || node.name || '',
+        fqn: node.queryFqn || node.fqn || fqn,
+      }
+    }
+  }
+  if (fqns[0]) {
+    const parts = fqns[0].split('.')
+    return {
+      assetId: '',
+      assetCode: parts[parts.length - 1] || '',
+      name: parts[parts.length - 1] || fqns[0],
+      fqn: fqns[0],
+    }
+  }
+  return null
+}
+
+function goApplySelect(sql) {
+  const ctx = resolveApplyTableContext(sql)
+  const query = { type: 'perm', privilege: 'SELECT', from: 'query' }
+  if (ctx?.assetId) query.assetId = ctx.assetId
+  if (ctx?.assetCode) query.assetCode = ctx.assetCode
+  if (ctx?.name) query.name = ctx.name
+  if (ctx?.fqn) query.fqn = ctx.fqn
+  router.push({ path: '/apply', query })
 }
 
 function applyExecResult(data, sql) {
@@ -649,14 +742,14 @@ function applyExecResult(data, sql) {
 
   if (data.blocked || data.status === 'blocked') {
     showToast(data.message || data.statusLabel || '查询被治理拦截', 'warning')
-    if (data.errorCode === 'ACCESS_DENIED' || data.applyHint) {
+    if (data.errorCode === 'IMPERSONATION_DENIED') {
+      showToast(
+        'Trino 代执行未开通：服务账号无法冒充映射主体。请配置 rules.json impersonation（与申请 SELECT 无关）',
+        'warning',
+      )
+    } else if (data.errorCode === 'ACCESS_DENIED' || data.applyHint) {
       const go = window.confirm('未授权访问表/列。是否前往申请中心申请 SELECT？')
-      if (go) {
-        router.push({
-          path: '/apply',
-          query: { type: 'table', privilege: 'SELECT' },
-        })
-      }
+      if (go) goApplySelect(sql)
     }
     if (data.errorCode === 'CONCURRENCY_LIMIT') {
       showToast(
@@ -777,7 +870,8 @@ async function runQuery() {
       })
     } catch (streamErr) {
       if (streamErr?.name === 'AbortError') throw streamErr
-      // SSE 不可用时回退普通 POST
+      // 已收到 error 事件就不要再打一遍普通 POST，否则按钮会一直停在执行中
+      if (streamErr?.sse) throw streamErr
       data = await execQuery(payload)
     }
     apiOnline.value = true
@@ -794,7 +888,7 @@ async function runQuery() {
       return
     }
     const msg = e?.message || '执行失败'
-    if (/网络|Failed to fetch|401|登录/i.test(msg) || !apiOnline.value) {
+    if (!e?.sse && (/网络|Failed to fetch|401|登录/i.test(msg) || !apiOnline.value)) {
       await runQueryDemo(sql)
     } else {
       showResult.value = true
@@ -802,11 +896,11 @@ async function runQuery() {
       lastMeta.value.statusLabel = '失败'
       lastMeta.value.message = msg
       showToast(msg, 'error')
-      if (/未授权|无权限|denied|Forbidden|ACCESS_DENIED/i.test(msg)) {
+      if (/cannot impersonate|IMPERSONATION/i.test(msg)) {
+        showToast('Trino 代执行未开通（admin 无法冒充映射主体），请配置 rules.json impersonation', 'warning')
+      } else if (/未授权|无权限|denied|Forbidden|ACCESS_DENIED/i.test(msg)) {
         const go = window.confirm('可能未授权。是否前往申请中心？')
-        if (go) {
-          router.push({ path: '/apply', query: { type: 'table', privilege: 'SELECT' } })
-        }
+        if (go) goApplySelect(sql)
       }
     }
   } finally {
@@ -873,7 +967,7 @@ function cellClass(col, row) {
       限额：adhoc 默认 10GB / 硬顶 50GB。
     </div>
 
-    <div class="query-layout">
+    <div class="query-layout" :class="{ resizing: catResizing }" :style="{ '--cat-w': catWidth + 'px' }">
       <aside class="card query-cat">
         <div class="card-header cat-head">
           <div class="card-title">目录</div>
@@ -884,83 +978,106 @@ function cellClass(col, row) {
             v-model="catalogQuery"
             type="search"
             class="cat-search-input"
-            placeholder="搜索库、表、列"
+            placeholder="搜索数据源、schema、表、列"
             aria-label="搜索目录"
           />
         </div>
         <div class="cat-body">
-          <div v-if="apiOnline && !catalog.length" class="cat-empty">当前工作空间还没有已登记的表</div>
-          <template v-for="db in catalog" :key="db.id">
+          <div v-if="apiOnline && !catalog.length" class="cat-empty">
+            暂无可用表：需为资产拥有者或已获 SELECT，且表已挂接并进入查询面（默认仅 iceberg；登记名 ds_* 不可直接即席）
+          </div>
+          <template v-for="ds in catalog" :key="ds.id">
             <button
-              v-if="showNode(db, false)"
+              v-if="showNode(ds, false)"
               type="button"
-              class="cat-node database"
-              :class="{ locked: db.locked, open: isOpen(db) }"
-              @click="toggleNode(db)"
+              class="cat-node datasource"
+              :class="{ open: isOpen(ds) }"
+              @click="toggleNode(ds)"
             >
-              <span class="cat-chev" :class="{ open: isOpen(db), locked: db.locked }" aria-hidden="true" />
-              <span v-if="db.layer" class="layer-chip" :class="`layer-${String(db.layer).toLowerCase()}`">{{ db.layer }}</span>
+              <span class="cat-chev" :class="{ open: isOpen(ds) }" aria-hidden="true" />
+              <span class="cat-mark cat">DS</span>
               <span class="cat-label">
-                <span class="cat-name">{{ db.name }}</span>
-                <span v-if="db.hint" class="cat-hint">{{ db.hint }}</span>
+                <span class="cat-name">{{ ds.name }}</span>
               </span>
-              <span v-if="db.locked" class="cat-lock">未授权</span>
-              <span v-else class="cat-rows">{{ db.tableCount ?? (db.children || []).length }}</span>
+              <span v-if="ds.engine" class="cat-engine">{{ ds.engine }}</span>
+              <span class="cat-rows">{{ ds.tableCount ?? 0 }}</span>
             </button>
-            <template v-if="isOpen(db) && !db.locked">
-              <div
-                v-for="tb in listedTables(db, ancestorHit(db))"
-                :key="tb.id"
-                class="cat-table-block"
-                :class="{ active: tb.id === activeTableId }"
-              >
-                <div class="cat-node table" :class="{ locked: tb.locked }">
-                  <button type="button" class="cat-chev-btn" :aria-expanded="!!isOpen(tb)" @click="toggleTableCols(tb, $event)">
-                    <span class="cat-chev" :class="{ open: isOpen(tb), locked: tb.locked }" aria-hidden="true" />
-                  </button>
-                  <button type="button" class="cat-table-main" @click="insertTable(tb)">
-                    <span v-if="tb.star" class="cat-star" title="常用">★</span>
-                    <span class="cat-name">{{ tb.name }}</span>
-                    <span v-if="tb.hint" class="cat-hint">{{ tb.hint }}</span>
-                  </button>
-                  <span v-if="tb.locked" class="cat-lock">未授权</span>
-                  <span v-else-if="tb.runnable === false" class="cat-hint">未挂接</span>
-                  <span v-if="tb.rows" class="cat-rows">{{ tb.rows }}</span>
-                </div>
-                <div v-if="isOpen(tb)" class="cat-cols">
-                  <div v-if="tb.columnsLoading" class="cat-col empty">读取列…</div>
-                  <div v-else-if="tb.columnsError && !(tb.columns || []).length" class="cat-col empty">列信息暂不可用</div>
-                  <div v-else-if="!(tb.columns || []).length" class="cat-col empty">无列</div>
-                  <button
-                    v-for="col in tb.columns || []"
-                    :key="col.name"
-                    type="button"
-                    class="cat-col"
-                    :title="col.comment || col.type"
-                    @click="insertColumn(tb, col)"
+            <template v-if="isOpen(ds)">
+              <template v-for="sch in ds.children || []" :key="sch.id">
+                <button
+                  v-if="showNode(sch, ancestorHit(ds))"
+                  type="button"
+                  class="cat-node schema"
+                  :class="{ open: isOpen(sch) }"
+                  @click="toggleNode(sch)"
+                >
+                  <span class="cat-chev" :class="{ open: isOpen(sch) }" aria-hidden="true" />
+                  <span class="cat-label">
+                    <span class="cat-name">{{ sch.name }}</span>
+                  </span>
+                  <span class="cat-rows">{{ sch.tableCount ?? (sch.children || []).length }}</span>
+                </button>
+                <template v-if="isOpen(sch)">
+                  <div
+                    v-for="tb in listedTables(sch, ancestorHit(ds) || ancestorHit(sch))"
+                    :key="tb.id"
+                    class="cat-table-block"
+                    :class="{ active: tb.id === activeTableId }"
                   >
-                    <span class="cat-col-name" :class="{ masked: col.masked }">{{ col.name }}</span>
-                    <span class="cat-col-type">{{ col.type }}</span>
-                    <span v-if="col.partition" class="col-flag part">分区</span>
-                    <span v-if="col.masked" class="col-flag mask">脱敏</span>
+                    <div class="cat-node table">
+                      <button type="button" class="cat-chev-btn" :aria-expanded="!!isOpen(tb)" @click="toggleTableCols(tb, $event)">
+                        <span class="cat-chev" :class="{ open: isOpen(tb) }" aria-hidden="true" />
+                      </button>
+                      <button type="button" class="cat-table-main" @click="insertTable(tb)">
+                        <span v-if="tb.star" class="cat-star" title="常用">★</span>
+                        <span class="cat-name">{{ tb.name }}</span>
+                        <span v-if="tb.hint" class="cat-hint">{{ tb.hint }}</span>
+                      </button>
+                    </div>
+                    <div v-if="isOpen(tb)" class="cat-cols">
+                      <div v-if="tb.columnsLoading" class="cat-col empty">读取列…</div>
+                      <div v-else-if="tb.columnsError && !(tb.columns || []).length" class="cat-col empty">列信息暂不可用</div>
+                      <div v-else-if="!(tb.columns || []).length" class="cat-col empty">无列</div>
+                      <button
+                        v-for="col in tb.columns || []"
+                        :key="col.name"
+                        type="button"
+                        class="cat-col"
+                        :title="col.comment || col.type"
+                        @click="insertColumn(tb, col)"
+                      >
+                        <span class="cat-col-name" :class="{ masked: col.masked }">{{ col.name }}</span>
+                        <span class="cat-col-type">{{ col.type }}</span>
+                        <span v-if="col.partition" class="col-flag part">分区</span>
+                        <span v-if="col.masked" class="col-flag mask">脱敏</span>
+                      </button>
+                    </div>
+                  </div>
+                  <button
+                    v-if="hiddenTableCount(sch, ancestorHit(ds) || ancestorHit(sch))"
+                    type="button"
+                    class="cat-more"
+                    @click="sch.showAll = true"
+                  >
+                    还有 {{ hiddenTableCount(sch, ancestorHit(ds) || ancestorHit(sch)) }} 张表
                   </button>
-                </div>
-              </div>
-              <button
-                v-if="hiddenTableCount(db, ancestorHit(db))"
-                type="button"
-                class="cat-more"
-                @click="db.showAll = true"
-              >
-                还有 {{ hiddenTableCount(db, ancestorHit(db)) }} 张表
-              </button>
+                </template>
+              </template>
             </template>
           </template>
-          <div v-if="catalogQuery.trim() && !visibleTableCount && !catalog.some((c) => c.locked && showNode(c, false))" class="cat-empty">
+          <div v-if="catalogQuery.trim() && !visibleTableCount" class="cat-empty">
             没有匹配「{{ catalogQuery.trim() }}」的库表
           </div>
         </div>
-        <div class="cat-foot">点表插入 SQL · 展开查看列 · 点列插入字段</div>
+        <div class="cat-foot">仅展示已授权 / 拥有者可用表 · 点表插入 SQL · 展开看列</div>
+        <div
+          class="cat-resizer"
+          title="拖动调整宽度"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="调整目录宽度"
+          @mousedown="onCatResizeStart"
+        />
       </aside>
 
       <div class="query-main">
@@ -1126,7 +1243,9 @@ function cellClass(col, row) {
                   <td :colspan="Math.max(resultColumns.length, 1)" class="empty">查询执行中…</td>
                 </tr>
                 <tr v-else-if="!resultRows.length">
-                  <td :colspan="Math.max(resultColumns.length, 1)" class="empty">无数据行</td>
+                  <td :colspan="Math.max(resultColumns.length, 1)" class="empty">
+                    {{ lastMeta.status === 'failed' ? lastMeta.message || '查询失败' : '无数据行' }}
+                  </td>
                 </tr>
               </tbody>
             </table>
@@ -1187,12 +1306,17 @@ function cellClass(col, row) {
 }
 .query-layout {
   display: grid;
-  grid-template-columns: 280px 1fr;
+  grid-template-columns: var(--cat-w, 300px) 1fr;
   gap: 16px;
   align-items: start;
 }
+.query-layout.resizing {
+  cursor: col-resize;
+  user-select: none;
+}
 @media (max-width: 960px) {
   .query-layout { grid-template-columns: 1fr; }
+  .cat-resizer { display: none; }
 }
 
 .query-cat {
@@ -1203,6 +1327,30 @@ function cellClass(col, row) {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+.cat-resizer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 8px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 2;
+}
+.cat-resizer::after {
+  content: '';
+  position: absolute;
+  top: 12px;
+  bottom: 12px;
+  right: 2px;
+  width: 2px;
+  border-radius: 1px;
+  background: transparent;
+  transition: background 0.12s ease;
+}
+.cat-resizer:hover::after,
+.query-layout.resizing .cat-resizer::after {
+  background: var(--primary);
 }
 .cat-head {
   gap: 8px;
@@ -1256,12 +1404,12 @@ function cellClass(col, row) {
   min-width: 0;
 }
 .cat-node:hover { background: var(--bg-2); }
-.cat-node.database {
+.cat-node.datasource {
   font-weight: 600;
   color: var(--text-1);
   margin-top: 2px;
 }
-.cat-node.database.locked { color: var(--text-4); }
+.cat-node.schema { padding-left: 10px; }
 .cat-node.table {
   padding: 3px 4px 3px 18px;
   cursor: default;

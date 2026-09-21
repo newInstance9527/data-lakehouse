@@ -24,19 +24,7 @@ export default defineConfig({
     strictPort: true,
     open: true,
     proxy: {
-      '/lh': {
-        target: process.env.VITE_API_PROXY || 'http://127.0.0.1:8080',
-        changeOrigin: true,
-      },
-      '/auth': {
-        target: process.env.VITE_API_PROXY || 'http://127.0.0.1:8080',
-        changeOrigin: true,
-      },
-      '/sys': {
-        target: process.env.VITE_API_PROXY || 'http://127.0.0.1:8080',
-        changeOrigin: true,
-      },
-      '/api': {
+      '/lakehouse': {
         target: process.env.VITE_API_PROXY || 'http://127.0.0.1:8080',
         changeOrigin: true,
       },

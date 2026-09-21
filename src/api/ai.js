@@ -2,11 +2,10 @@
  * AI 模型 / 助手 / 知识库 API（对齐 /lh/ai/* · /lh/knowledge/*）
  */
 import { getToken } from './token.js'
-import { ApiError, http } from './http.js'
+import { API_BASE, ApiError, http } from './http.js'
 
 const AI = '/lh/ai'
 const KB = '/lh/knowledge'
-const BASE = import.meta.env.VITE_API_BASE || ''
 
 /** ========== 模型管理 ========== */
 
@@ -77,7 +76,7 @@ export function streamAiChat(body, { onEvent, onError, onDone } = {}) {
 
   ;(async () => {
     try {
-      const res = await fetch(`${BASE}${AI}/chat`, {
+      const res = await fetch(`${API_BASE}${AI}/chat`, {
         method: 'POST',
         headers,
         body: JSON.stringify(body),

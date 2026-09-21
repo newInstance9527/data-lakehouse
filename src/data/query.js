@@ -10,33 +10,8 @@ SELECT
 FROM iceberg.dwd_trade.dwd_order_detail
 WHERE dt BETWEEN '2026-08-27' AND '2026-09-02'
 GROUP BY dt, order_channel, buyer_mobile
-ORDER BY dt DESC, gmv DESC;
-`
-
-export const QUERY_TABS_SEED = [
-  {
-    id: 'tab_unsaved',
-    name: 'unsaved_20260903_1435.sql',
-    closable: true,
-    sql: DEFAULT_SQL,
-  },
-  {
-    id: 'tab_gmv30',
-    name: 'gmv_by_channel_30d.sql',
-    closable: true,
-    sql: `SELECT
-  dt,
-  order_channel,
-  SUM(pay_amt) AS gmv
-FROM iceberg.dwd_trade.dwd_order_detail
-WHERE dt BETWEEN date_sub(current_date, 30) AND current_date
-  AND is_paid = 1
-GROUP BY dt, order_channel
 ORDER BY dt DESC, gmv DESC
-LIMIT 500;
-`,
-  },
-]
+`
 
 /** Catalog 树：catalog → schema → table；columns 仅演示降级，线上走 columns 接口 */
 export const QUERY_CATALOG = [
@@ -62,7 +37,7 @@ export const QUERY_CATALOG = [
             rows: '2.3亿',
             fqn: 'iceberg.ods_trade.s_order',
             sampleSql:
-              "SELECT *\nFROM iceberg.ods_trade.s_order\nWHERE dt >= date_sub(current_date, 7)\nLIMIT 100;",
+              "SELECT *\nFROM iceberg.ods_trade.s_order\nWHERE dt >= date_sub(current_date, 7)\nLIMIT 100",
             columns: [
               { name: 'dt', type: 'date', partition: true, comment: '分区' },
               { name: 'order_id', type: 'bigint' },

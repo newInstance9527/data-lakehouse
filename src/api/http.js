@@ -2,7 +2,7 @@
 
 import { clearToken, getToken } from './token'
 
-const BASE = import.meta.env.VITE_API_BASE || ''
+export const API_BASE = import.meta.env.VITE_API_BASE || '/lakehouse'
 const RELOGIN_CODES = new Set([401, 1011007, 1011008])
 
 export class ApiError extends Error {
@@ -31,7 +31,7 @@ function goLogin() {
 }
 
 async function request(method, path, { params, body, skipAuth } = {}) {
-  let url = `${BASE}${path}`
+  let url = `${API_BASE}${path}`
   if (params && typeof params === 'object') {
     const qs = new URLSearchParams()
     Object.entries(params).forEach(([k, v]) => {

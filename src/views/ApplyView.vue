@@ -23,6 +23,7 @@ import {
   APPLY_TYPE_OPTIONS,
   applyTabMatches,
   buildApplyAssetOptions,
+  buildApplyExportOptions,
   buildApplyMetricOptions,
   buildApplyReleaseOptions,
   issueApiCallToken,
@@ -36,8 +37,7 @@ import { fetchDatasourcePage } from '@/api/datasource'
 import { fetchEtlDags } from '@/api/etl'
 import { useApplyBoard, pushExportApply, approveExportOnBoard, hydrateApplyBoardFromServer } from '@/composables/useApplyBoard'
 import { useMetrics } from '@/composables/useMetrics'
-import { EXPORT_TABLE_OPTIONS } from '@/data/createForms'
-import { ASSET_DATA } from '@/data/assets'
+import { useAssets } from '@/composables/useAssets'
 import { PUBLISH_HISTORY } from '@/data/publish'
 import { OPS_RESOURCE_ENABLED, opsResourceLabel } from '@/data/opsResourceTypes'
 
@@ -47,26 +47,43 @@ const { showToast } = useToast()
 const guide = pageGuideOf('apply')
 const { pending, mine } = useApplyBoard()
 const { catalog: metricCatalog, ensureLoaded: ensureMetricsLoaded } = useMetrics()
+const { list: assetList, ensureLoaded: ensureAssetsLoaded } = useAssets()
+const assetsLive = ref(false)
+const assetsLoadError = ref('')
 
-onMounted(() => {
+onMounted(async () => {
   hydrateApplyBoardFromServer()
   loadOpsResourceOptions()
   ensureMetricsLoaded()
+  try {
+    await ensureAssetsLoaded()
+    assetsLive.value = true
+    assetsLoadError.value = ''
+    if (!assetList.value.length) {
+      showToast('资产目录暂无已登记表，请先在资产目录登记', 'warning')
+    }
+    // 资产到位后再按深链（含即席 fqn）补全选中项
+    refillAssetFromRoute()
+  } catch (e) {
+    assetsLive.value = false
+    assetsLoadError.value = e?.message || '资产列表加载失败'
+    showToast('申请可选表加载失败：请确认已登录且 /lh/catalog 可用（不再回落演示表）', 'warning')
+  }
 })
 
 const TYPE_LABEL = Object.fromEntries(APPLY_TYPE_OPTIONS.map((o) => [o.value, o.label]))
 const SIDE_LABEL = { pending: '处理中', approved: '已通过', rejected: '已驳回' }
 const METRIC_OPTIONS = computed(() => buildApplyMetricOptions(metricCatalog.value))
-const ASSET_OPTIONS = buildApplyAssetOptions(ASSET_DATA)
+const ASSET_OPTIONS = computed(() => buildApplyAssetOptions(assetList.value))
 const RELEASE_OPTIONS = buildApplyReleaseOptions(PUBLISH_HISTORY)
-const EXPORT_OPTIONS = EXPORT_TABLE_OPTIONS
+const EXPORT_OPTIONS = computed(() => buildApplyExportOptions(assetList.value))
 const SCOPE_LABEL = Object.fromEntries(APPLY_METRIC_SCOPES.map((o) => [o.value, o.label]))
 const PERM_LEVEL_CLS = Object.fromEntries(APPLY_PERM_LEVELS.map((o) => [o.value, o.cls]))
 
 function emptyForm() {
   return {
     type: 'perm',
-    asset: ASSET_OPTIONS[0]?.value || '',
+    asset: '',
     assetCode: '',
     assetName: '',
     apiPath: APPLY_API_OPTIONS[0]?.value || '/api/gmv/daily',
@@ -75,7 +92,7 @@ function emptyForm() {
     purpose: '',
     expire: '30天',
     metricKind: 'query',
-    metricId: METRIC_OPTIONS.value[0]?.value || 'M-0001',
+    metricId: METRIC_OPTIONS.value[0]?.value || '',
     metricScope: 'dashboard',
     metricDomain: '交易域',
     metricNameNew: '',
@@ -84,14 +101,14 @@ function emptyForm() {
     metricFromVer: '',
     metricToVer: '',
     permMode: 'read',
-    permLevel: ASSET_OPTIONS[0]?.level || '内部',
+    permLevel: '内部',
     columns: '',
     tableKind: 'read',
     tableNameNew: '',
     releasePkg: RELEASE_OPTIONS[0]?.value || '',
     publishEnv: 'stg',
     rollbackPlan: '',
-    exportTable: EXPORT_OPTIONS[0]?.value || '',
+    exportTable: '',
     exportTarget: 'BI 报表',
     resourceType: 'asset',
     resourceId: '',
@@ -171,14 +188,92 @@ function onOpsEtlPicked(id) {
 }
 
 const selectedMetric = computed(() => METRIC_OPTIONS.value.find((o) => o.value === form.value.metricId) || null)
-const selectedAsset = computed(() => ASSET_OPTIONS.find((o) => o.value === form.value.asset) || null)
+const selectedAsset = computed(() => ASSET_OPTIONS.value.find((o) => o.value === form.value.asset) || null)
 const selectedRelease = computed(() => RELEASE_OPTIONS.find((o) => o.value === form.value.releasePkg) || null)
+
+/** 深链 / 即席带入：按 id、assetCode、fqn 末段匹配已登记资产 */
+function resolveAssetPrefill(assetId, assetCode, fqn) {
+  const opts = ASSET_OPTIONS.value
+  if (assetId) {
+    const byId = opts.find((o) => o.value === assetId)
+    if (byId) {
+      return { id: byId.value, code: byId.assetCode || assetCode, name: byId.name || byId.label }
+    }
+  }
+  const codeHint = (assetCode || (fqn ? fqn.split('.').pop() : '') || '').trim()
+  if (codeHint) {
+    const byCode = opts.find(
+      (o) =>
+        o.assetCode === codeHint ||
+        o.value === codeHint ||
+        (fqn && (o.assetCode === fqn || String(o.label || '').includes(fqn))),
+    )
+    if (byCode) {
+      return { id: byCode.value, code: byCode.assetCode || codeHint, name: byCode.name || byCode.label }
+    }
+  }
+  if (fqn) {
+    const byFqn = opts.find(
+      (o) =>
+        o.assetCode &&
+        (fqn === o.assetCode || fqn.endsWith(`.${o.assetCode}`) || fqn.toLowerCase().endsWith(`.${String(o.assetCode).toLowerCase()}`)),
+    )
+    if (byFqn) {
+      return { id: byFqn.value, code: byFqn.assetCode, name: byFqn.name || byFqn.label }
+    }
+  }
+  return {
+    id: assetId || '',
+    code: assetCode || codeHint || '',
+    name: '',
+  }
+}
+
+/** 资产列表加载完成后，按路由参数回填申请表 */
+function refillAssetFromRoute() {
+  const q = route.query || {}
+  const t = q.type
+  if (t !== 'perm' && t !== 'table' && !(q.from === 'query' || q.privilege === 'SELECT')) {
+    return
+  }
+  if (!creating.value && t !== 'perm' && t !== 'table') {
+    return
+  }
+  const assetId = (typeof q.assetId === 'string' && q.assetId) || (typeof q.asset === 'string' && q.asset) || ''
+  const assetCode = typeof q.assetCode === 'string' ? q.assetCode : ''
+  const assetName = typeof q.name === 'string' ? q.name : ''
+  const fqn = typeof q.fqn === 'string' ? q.fqn : ''
+  if (!assetId && !assetCode && !fqn) return
+
+  const resolved = resolveAssetPrefill(assetId, assetCode, fqn)
+  if (!resolved.id && !resolved.code && !fqn) return
+
+  creating.value = true
+  if (form.value.type !== 'perm' && form.value.type !== 'table') {
+    form.value.type = 'perm'
+  }
+  if (q.from === 'query' || q.privilege === 'SELECT') {
+    form.value.type = 'perm'
+    form.value.permMode = 'read'
+    activeTab.value = 'perm'
+  }
+  if (resolved.id) form.value.asset = resolved.id
+  else if (assetId) form.value.asset = assetId
+  form.value.assetCode = resolved.code || assetCode || form.value.assetCode
+  form.value.assetName = assetName || resolved.name || fqn || form.value.assetName
+  if ((q.from === 'query' || q.privilege === 'SELECT') && !form.value.purpose) {
+    form.value.purpose = `即席查询申请 SELECT · ${form.value.assetName || form.value.assetCode || fqn}`
+  }
+  if (form.value.type === 'perm' && selectedAsset.value) {
+    form.value.permLevel = selectedAsset.value.level || form.value.permLevel
+  }
+}
 
 /** 目录深链带来的真实资产 id，并入申请下拉 */
 const permAssetOptions = computed(() => {
   const id = form.value.asset
-  if (!id) return ASSET_OPTIONS
-  if (ASSET_OPTIONS.some((o) => o.value === id)) return ASSET_OPTIONS
+  if (!id) return ASSET_OPTIONS.value
+  if (ASSET_OPTIONS.value.some((o) => o.value === id)) return ASSET_OPTIONS.value
   return [
     {
       value: id,
@@ -188,8 +283,9 @@ const permAssetOptions = computed(() => {
       level: form.value.permLevel || '内部',
       owner: '—',
       domain: '',
+      assetCode: form.value.assetCode || '',
     },
-    ...ASSET_OPTIONS,
+    ...ASSET_OPTIONS.value,
   ]
 })
 
@@ -257,7 +353,7 @@ watch(
       const privRaw =
         typeof route.query.privilege === 'string' ? route.query.privilege.toUpperCase() : 'MANAGE'
       const opsPrivilege = APPLY_OPS_PRIVILEGES.some((p) => p.value === privRaw) ? privRaw : 'MANAGE'
-      const matched = assetId && ASSET_OPTIONS.some((o) => o.value === assetId)
+      const matched = assetId && ASSET_OPTIONS.value.some((o) => o.value === assetId)
       form.value = {
         ...emptyForm(),
         type: 'manage',
@@ -282,7 +378,7 @@ watch(
         expire: '30天',
       }
     } else if (t === 'perm' || t === 'table' || t === 'publish') {
-      activeTab.value = t
+      activeTab.value = t === 'table' && route.query.privilege === 'SELECT' ? 'perm' : t
       creating.value = true
       const assetId =
         (typeof route.query.assetId === 'string' && route.query.assetId) ||
@@ -290,15 +386,23 @@ watch(
         ''
       const assetCode = typeof route.query.assetCode === 'string' ? route.query.assetCode : ''
       const assetName = typeof route.query.name === 'string' ? route.query.name : ''
-      const matched = assetId && ASSET_OPTIONS.some((o) => o.value === assetId)
+      const fqn = typeof route.query.fqn === 'string' ? route.query.fqn : ''
+      const fromQuery = route.query.from === 'query' || route.query.privilege === 'SELECT'
+      const resolved = resolveAssetPrefill(assetId, assetCode, fqn)
+      const type = fromQuery && (t === 'table' || t === 'perm') ? 'perm' : t
       form.value = {
         ...emptyForm(),
-        type: t,
-        asset: matched ? assetId : assetId || emptyForm().asset,
-        assetCode,
-        assetName: assetName || (matched ? ASSET_OPTIONS.find((o) => o.value === assetId)?.label : '') || '',
+        type,
+        permMode: type === 'perm' ? 'read' : emptyForm().permMode,
+        asset: resolved.id || assetId || emptyForm().asset,
+        assetCode: resolved.code || assetCode || (fqn ? fqn.split('.').pop() : ''),
+        assetName: assetName || resolved.name || fqn || '',
+        purpose:
+          fromQuery && (assetName || fqn || resolved.name)
+            ? `即席查询申请 SELECT · ${assetName || resolved.name || fqn}`
+            : emptyForm().purpose,
       }
-      if (t === 'perm' && selectedAsset.value) form.value.permLevel = selectedAsset.value.level || '内部'
+      if (type === 'perm' && selectedAsset.value) form.value.permLevel = selectedAsset.value.level || '内部'
     }
   },
   { immediate: true },
@@ -327,9 +431,15 @@ watch(
     if (form.value.type === 'perm' && selectedAsset.value) {
       form.value.permLevel = selectedAsset.value.level || form.value.permLevel
     }
+    const opt =
+      selectedAsset.value ||
+      permAssetOptions.value.find((o) => o.value === form.value.asset)
+    if (opt && (form.value.type === 'perm' || form.value.type === 'table' || form.value.type === 'manage')) {
+      form.value.assetName = opt.name || opt.label || form.value.assetName
+      form.value.assetCode = opt.assetCode || form.value.assetCode
+    }
     if (form.value.type === 'manage' && form.value.resourceType === 'asset') {
       form.value.resourceId = form.value.asset || ''
-      const opt = permAssetOptions.value.find((o) => o.value === form.value.asset)
       if (opt) {
         form.value.resourceName = opt.label || opt.name || ''
         form.value.assetName = form.value.resourceName
@@ -1398,6 +1508,17 @@ function displayToken() {
     <div v-if="creating" class="card apply-form-card">
       <div class="card-header">
         <div class="card-title">+ 新建申请</div>
+        <p v-if="assetsLoadError" class="tip" style="margin: 0 0 8px">
+          可选表未加载：{{ assetsLoadError }}（不会回落演示数据）
+        </p>
+        <p v-else-if="assetsLive && !ASSET_OPTIONS.length" class="tip" style="margin: 0 0 8px">
+          资产目录暂无已登记表 · 请先在
+          <button type="button" class="btn-link" @click="router.push('/catalog')">资产目录</button>
+          登记后再申请
+        </p>
+        <p v-else-if="assetsLive" class="tip" style="margin: 0 0 8px">
+          可选表来自门户资产目录（{{ ASSET_OPTIONS.length }}）· 提交挂 gov_asset.id
+        </p>
         <button type="button" class="btn btn-sm" @click="creating = false">取消</button>
       </div>
       <div class="card-body apply-form">
@@ -1512,9 +1633,9 @@ function displayToken() {
             <SearchSelect
               v-model="form.asset"
               :options="permAssetOptions"
-              placeholder="搜索表 / 资产"
+              placeholder="搜索已登记表 / 资产"
               sub-key="sub"
-              :search-keys="['name', 'level', 'owner', 'domain', 'value']"
+              :search-keys="['name', 'level', 'owner', 'domain', 'value', 'assetCode']"
               @update:model-value="onOpsAssetPicked"
             />
           </label>
@@ -1584,12 +1705,15 @@ function displayToken() {
             <SearchSelect
               v-model="form.asset"
               :options="permAssetOptions"
-              placeholder="搜索表 / 资产"
+              placeholder="搜索已登记表 / 资产"
               sub-key="sub"
-              :search-keys="['name', 'level', 'owner', 'domain', 'value']"
+              :search-keys="['name', 'level', 'owner', 'domain', 'value', 'assetCode']"
             />
             <span v-if="form.assetCode || form.assetName" class="muted" style="font-size: 11px; margin-top: 4px">
               来自资产目录：{{ form.assetName || form.assetCode }}
+            </span>
+            <span v-else-if="!ASSET_OPTIONS.length" class="muted" style="font-size: 11px; margin-top: 4px">
+              暂无可选表
             </span>
           </label>
           <label>
@@ -1630,10 +1754,13 @@ function displayToken() {
             <SearchSelect
               v-model="form.asset"
               :options="ASSET_OPTIONS"
-              placeholder="搜索资产表"
+              placeholder="搜索已登记资产表"
               sub-key="sub"
-              :search-keys="['name', 'level', 'owner', 'domain', 'value']"
+              :search-keys="['name', 'level', 'owner', 'domain', 'value', 'assetCode']"
             />
+            <span v-if="!ASSET_OPTIONS.length" class="muted" style="font-size: 11px; margin-top: 4px">
+              暂无可选表
+            </span>
           </label>
           <label v-if="form.tableKind !== 'register'" class="wide">
             <span>{{ form.tableKind === 'alter' ? '变更说明 / 字段' : '字段范围（可空=全列）' }}</span>

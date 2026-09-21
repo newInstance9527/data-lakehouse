@@ -1,11 +1,10 @@
 /**
  * 即席查询 API（对齐 /lh/compute/query，兼容 /lh/query）
  */
-import { http } from './http.js'
+import { API_BASE, http } from './http.js'
 import { getToken } from './token.js'
 
 const Q = '/lh/compute/query'
-const BASE = import.meta.env.VITE_API_BASE || ''
 
 /** adhoc 默认扫描上限 10 GiB；硬顶 50 GiB（与后端 CpQueryScanGuard 一致） */
 export const ADHOC_SCAN_LIMIT_BYTES = 10 * 1024 * 1024 * 1024
@@ -27,7 +26,7 @@ export async function execQueryStream(payload, { onStarted, onProgress, signal }
   const token = getToken()
   if (token) headers.token = token
 
-  const res = await fetch(`${BASE}${Q}/exec-stream`, {
+  const res = await fetch(`${API_BASE}${Q}/exec-stream`, {
     method: 'POST',
     headers,
     body: JSON.stringify(payload),
@@ -65,19 +64,19 @@ export async function execQueryStream(payload, { onStarted, onProgress, signal }
     else if (name === 'progress') onProgress?.(data)
     else if (name === 'done') donePayload = data
     else if (name === 'error') {
-      streamError = new Error((data && data.message) || raw || '执行失败')
+      const err = new Error((data && data.message) || raw || '执行失败')
+      err.sse = true
+      streamError = err
     }
   }
 
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buf += decoder.decode(value, { stream: true })
-    const parts = buf.split(/\r?\n/)
-    buf = parts.pop() ?? ''
+  const consume = (chunk, finalChunk) => {
+    const parts = chunk.split(/\r?\n/)
+    if (!finalChunk) buf = parts.pop() ?? ''
     for (const line of parts) {
       if (line === '') {
         flush()
+        if (streamError || donePayload != null) return true
         continue
       }
       if (line.startsWith(':')) continue
@@ -89,14 +88,24 @@ export async function execQueryStream(payload, { onStarted, onProgress, signal }
         dataLines.push(line.slice(5).trimStart())
       }
     }
+    return false
   }
-  if (buf.trim()) {
-    const line = buf
-    if (line.startsWith('event:')) eventName = line.slice(6).trim()
-    else if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart())
-  }
-  flush()
 
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buf += decoder.decode(value, { stream: true })
+    if (consume(buf, false)) break
+  }
+  if (!streamError && donePayload == null && buf.trim()) {
+    consume(`${buf}\n`, true)
+  } else if (!streamError && donePayload == null) {
+    flush()
+  }
+
+  if (streamError || donePayload != null) {
+    reader.cancel().catch(() => {})
+  }
   if (streamError) throw streamError
   if (donePayload == null) throw new Error('SSE 未收到 done 事件')
   return donePayload
@@ -144,6 +153,21 @@ export function fetchQueryDatasets(params = {}) {
     ws: params.ws,
     limit: params.limit ?? 30,
   })
+}
+
+/** 即席查询面：白名单 ∩ SHOW CATALOGS */
+export function fetchQuerySurface() {
+  return http.get(`${Q}/query-surface`)
+}
+
+/** Grav→Trino catalog 映射 */
+export function fetchCatalogMaps(params = {}) {
+  return http.get(`${Q}/catalog-map`, { ws: params.ws })
+}
+
+/** 联邦源开通 */
+export function upsertCatalogMap(payload) {
+  return http.post(`${Q}/catalog-map`, payload)
 }
 
 /** 查询治理总览：规则 / 队列 / KPI / 审计（与即席同源） */
