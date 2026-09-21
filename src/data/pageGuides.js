@@ -686,8 +686,8 @@ export const PAGE_GUIDES = {
       heading: '模块功能',
       type: 'text',
       content: [
-        '门户为治理壳：在 SQLREST Manager 用 SQL 或 Groovy 构建接口（元数据树、入参解析、认证/流量控制）；默认对外边缘为 SQLREST Gateway。',
-        '门户负责数据源投影、同步接口目录、登记资产/指标绑定与概览；简易草稿向导仅作可选兜底。APISIX 仅在 edge-mode=apisix|both 时启用。',
+        '门户通过后端调用 SQLREST Manager API（assignment create/update、debug、publish、deploy）完成 SQL/Groovy 接口构建与上线；默认对外边缘为 SQLREST Gateway。',
+        '数据源由门户投影到 SQLREST；门户保存资产/指标绑定与发布态。Manager UI 仅作辅助查看，不是构建主路径。',
       ],
     },
     {
@@ -699,8 +699,8 @@ export const PAGE_GUIDES = {
       heading: '使用示例',
       type: 'steps',
       items: [
-        '先「投影待同步源」，再点「打开 SQLREST 构建」在 Manager 完成 SQL/Groovy 与调试',
-        '「同步接口目录」或「登记绑定」拉回门户并关联资产/指标',
+        '投影数据源后点「构建 API」，选源并填写 SQL 或 Groovy，试跑走 debug API',
+        '发布时调用 SQLREST publish/deploy，并写入门户绑定',
         '调用方走 SQLREST Gateway；需要统一平台边缘时再开 APISIX',
       ],
     },

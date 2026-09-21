@@ -102,18 +102,13 @@ function transformLabel(v) {
   return FIELD_TRANSFORM_OPTIONS.find((o) => o.value === v)?.label || v || '原样'
 }
 
-function openSqlrestBuild() {
-  const url = openManager('interfaceCreate')
-  if (!url) showToast('未配置 SQLREST Manager 地址', 'warning')
-}
-
-function openSqlrestList() {
-  const url = openManager('interfaceList')
-  if (!url) showToast('未配置 SQLREST Manager 地址', 'warning')
-}
-
-function openDraftWizard() {
+function buildApi() {
   createOpen.value = true
+}
+
+function openManagerAdvanced() {
+  const url = openManager('interfaceList')
+  if (!url) showToast('无法打开 SQLREST Manager（请检查部署台账地址）', 'warning')
 }
 
 function onPublishApi(row) {
@@ -224,14 +219,14 @@ function goAsset(asset) {
   <div class="ds-page">
     <PageHeader
       title="数据服务中心"
-      subtitle="治理壳：SQL/Groovy 在 SQLREST Manager 构建 · 默认边缘 SQLREST Gateway · 门户负责投影绑定与目录"
+      subtitle="经 SQLREST Manager API 构建（SQL/Groovy）· 默认边缘 Gateway · 门户负责投影绑定与发布编排"
       :guide="guide"
     >
-      <button type="button" class="btn btn-sm btn-primary" @click="openSqlrestBuild">打开 SQLREST 构建</button>
+      <button type="button" class="btn btn-sm btn-primary" @click="buildApi">构建 API</button>
       <button type="button" class="btn btn-sm" @click="syncFromSqlrest">同步接口目录</button>
       <button type="button" class="btn btn-sm" @click="registerOpen = true">登记绑定</button>
       <button type="button" class="btn btn-sm" @click="goApply()">申请凭证</button>
-      <button type="button" class="btn btn-sm btn-ghost" @click="openDraftWizard">简易草稿</button>
+      <button type="button" class="btn btn-sm btn-ghost" @click="openManagerAdvanced">打开 Manager</button>
     </PageHeader>
 
     <ApiBuildWizard :open="createOpen" @close="createOpen = false" @publish="onPublishApi" />
@@ -254,15 +249,15 @@ function goAsset(asset) {
         <div class="ds-step">
           <span class="ds-step-n">2</span>
           <div>
-            <div class="ds-step-t">Manager 构建</div>
-            <div class="tip">元数据树 · SQL/Groovy · 入参解析 · 认证/限流</div>
+            <div class="ds-step-t">API 构建</div>
+            <div class="tip">门户向导 → SQLREST create/debug API（SQL/Groovy）</div>
           </div>
         </div>
         <div class="ds-step">
           <span class="ds-step-n">3</span>
           <div>
-            <div class="ds-step-t">同步 / 登记</div>
-            <div class="tip">拉回接口目录并绑定资产/指标</div>
+            <div class="ds-step-t">发布上线</div>
+            <div class="tip">SQLREST publish/deploy · 绑定资产/指标</div>
           </div>
         </div>
         <div class="ds-step">
@@ -286,7 +281,7 @@ function goAsset(asset) {
         >
           投影待同步源 ({{ pendingProject.length }})
         </button>
-        <button type="button" class="btn btn-sm" @click="openSqlrestList">接口列表</button>
+        <button type="button" class="btn btn-sm" @click="openManagerAdvanced">Manager 接口列表</button>
         <button type="button" class="btn btn-sm" @click="openManager('client')">客户端</button>
         <button type="button" class="btn btn-sm" @click="openManager('online')">在线服务</button>
       </div>

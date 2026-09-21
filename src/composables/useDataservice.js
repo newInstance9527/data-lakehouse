@@ -157,9 +157,9 @@ export function useDataservice() {
       sql: form.sql,
       method: form.method,
       params: form.params,
-      datasourceId: undefined,
-      // portal ds → 后端投影
-      ...{},
+      portalDsId: form.datasourceId || form.portalDsId,
+      dsId: form.datasourceId || form.portalDsId,
+      engine: form.engine || 'SQL',
     })
   }
 
@@ -183,6 +183,7 @@ export function useDataservice() {
       ownerUser: form.owner,
       publishEnv: form.publishEnv,
       sql: form.sql,
+      engine: form.engine || 'SQL',
       params: form.params,
       responses: form.responses,
       responseFormat: form.responseFormat,
@@ -190,7 +191,10 @@ export function useDataservice() {
       description: form.desc || form.name,
     })
     const binding = buildRes?.binding
-    if (!binding?.id) throw new Error(buildRes?.sqlrest?.message || '构建失败')
+    if (!binding?.id) throw new Error(buildRes?.sqlrest?.message || '构建失败（SQLREST API）')
+    if (buildRes?.ok === false) {
+      throw new Error(buildRes?.sqlrest?.message || binding.lastError || 'SQLREST 创建/更新失败')
+    }
     const pub = await publishDataapi(binding.id)
     await ensureLoaded(true)
     return { build: buildRes, publish: pub, binding: pub?.binding || binding }

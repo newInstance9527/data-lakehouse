@@ -9,8 +9,8 @@ export const API_BUILD_STEPS = [
   { id: 'params', title: '配参', desc: '入参、出参与响应转换' },
   { id: 'auth', title: '鉴权', desc: 'Token / OAuth2 / 免鉴权' },
   { id: 'limit', title: '全局限流', desc: '接口总 QPS / 熔断' },
-  { id: 'test', title: '测试', desc: 'SQLREST 试跑校验' },
-  { id: 'publish', title: '发布', desc: '推送到 APISIX' },
+  { id: 'test', title: '测试', desc: '调用 SQLREST debug API' },
+  { id: 'publish', title: '发布', desc: 'SQLREST publish/deploy' },
 ]
 
 /** 自定义 SQL 可选数据源（在线 · 可查询类） */
@@ -205,6 +205,7 @@ export function defaultApiBuildForm() {
     metricId: API_METRIC_OPTIONS[0]?.value || 'M-0001',
     tableKey: API_TABLE_OPTIONS[0]?.value || 'ads.ads_gmv_board',
     datasourceId: defaultDs,
+    engine: 'SQL',
     sql: 'SELECT dt, channel, total_gmv\nFROM ads.ads_gmv_board\nWHERE dt = {{dt}}\nLIMIT {{limit}}',
     path: '/api/gmv/daily',
     name: '日 GMV 查询',

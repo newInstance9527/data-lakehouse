@@ -26,7 +26,7 @@ const props = defineProps({
 
 const emit = defineEmits(['close', 'publish'])
 const { showToast } = useToast()
-const { runTrial, runBuildAndPublish } = useDataservice()
+const { runTrial, runBuildAndPublish, sqlrestDs } = useDataservice()
 
 const step = ref(0)
 const form = reactive(defaultApiBuildForm())
@@ -36,6 +36,20 @@ const publishing = ref(false)
 const steps = API_BUILD_STEPS
 const isLast = computed(() => step.value === steps.length - 1)
 const isFirst = computed(() => step.value === 0)
+
+/** 优先用门户已投影/可投影数据源（listForSqlrest），否则回落演示选项 */
+const datasourceOptions = computed(() => {
+  const live = (sqlrestDs.value || [])
+    .filter((d) => d.projectable || d.projected)
+    .map((d) => ({
+      value: d.id,
+      label: `${d.name || d.dsCode || d.id}${d.projected ? ' · 已投影' : ' · 待投影'}`,
+      sub: `${d.type || ''} · ${d.sqlrestName || d.sqlrestDatasourceId || ''}`,
+      name: d.name,
+      type: d.type,
+    }))
+  return live.length ? live : API_DATASOURCE_OPTIONS
+})
 
 watch(
   () => props.open,
@@ -65,7 +79,7 @@ function validateStep(idx) {
     if (form.srcType === '表' && !form.tableKey) return '请选择表'
     if (form.srcType === 'SQL') {
       if (!form.datasourceId) return '请选择数据源'
-      if (!form.sql?.trim()) return '请填写自定义 SQL'
+      if (!form.sql?.trim()) return form.engine === 'GROOVY' ? '请填写 Groovy 脚本' : '请填写自定义 SQL'
     }
   }
   if (idx === 1) {
@@ -283,8 +297,8 @@ async function publish() {
       <div class="modal api-wiz">
         <div class="modal-header">
           <div>
-            <div class="modal-title">📝 构建 API</div>
-            <div class="modal-sub">选指标/表 → 配参（入参/出参转换）→ 鉴权 → 全局限流 → 测试 → 发布到 APISIX</div>
+            <div class="modal-title">构建 API</div>
+            <div class="modal-sub">门户编排 → 调用 SQLREST Manager API（create / debug / publish / deploy）· 默认边缘 Gateway</div>
           </div>
           <button type="button" class="btn btn-sm" @click="close">✕</button>
         </div>
@@ -354,25 +368,32 @@ async function publish() {
                 />
               </label>
               <template v-else>
+                <label class="form-field">
+                  <span class="form-label"><span class="req">*</span>执行引擎</span>
+                  <select v-model="form.engine" class="select" style="width: 100%">
+                    <option value="SQL">SQL 语句</option>
+                    <option value="GROOVY">Groovy 脚本</option>
+                  </select>
+                </label>
                 <label class="form-field wide">
-                  <span class="form-label"><span class="req">*</span>数据源</span>
+                  <span class="form-label"><span class="req">*</span>数据源（门户 → 投影 SQLREST）</span>
                   <SearchSelect
                     v-model="form.datasourceId"
-                    :options="API_DATASOURCE_OPTIONS"
-                    placeholder="搜索已登记且在线的查询数据源"
+                    :options="datasourceOptions"
+                    placeholder="搜索可投影 / 已投影数据源"
                     sub-key="sub"
-                    :search-keys="['name', 'type', 'endpoint', 'value']"
+                    :search-keys="['name', 'type', 'value', 'label']"
                   />
                 </label>
                 <label class="form-field wide">
-                  <span class="form-label"><span class="req">*</span>自定义 SQL</span>
+                  <span class="form-label"><span class="req">*</span>{{ form.engine === 'GROOVY' ? 'Groovy 脚本' : '自定义 SQL' }}</span>
                   <SqlEditor
                     v-model="form.sql"
                     compact
                     :rows="8"
-                    label="SQL"
-                    :hint="`执行引擎 · ${apiDatasourceLabel(form.datasourceId)}`"
-                    placeholder="SELECT ..."
+                    :label="form.engine === 'GROOVY' ? 'Groovy' : 'SQL'"
+                    :hint="`经 SQLREST ${form.engine || 'SQL'} API · ${form.datasourceId || '未选源'}`"
+                    :placeholder="form.engine === 'GROOVY' ? '// groovy ...' : 'SELECT ...'"
                   />
                 </label>
               </template>
