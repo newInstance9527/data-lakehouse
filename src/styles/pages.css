@@ -1374,9 +1374,12 @@
 }
 .dag-edges {
   position: absolute;
-  inset: 0;
+  left: 0;
+  top: 0;
+  display: block;
   pointer-events: none;
   overflow: visible;
+  z-index: 0;
 }
 .dag-edge {
   fill: none;

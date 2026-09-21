@@ -297,25 +297,25 @@ export function defaultConfFor(type) {
       // ===== Iceberg 入湖 =====
       case 'sink_iceberg':
         return {
-          catalog:'prod_catalog', database:'dwd', table:'dwd_order_detail',
-          warehouse:'s3://iceberg-warehouse/prod',
-          partition:'dt', partitionTransform:'day', // identity / year / month / day / hour / bucket[N]
-          writeMode:'upsert', // append / overwrite / upsert / cdc
-          pk:'id', mergeOnRead:false,
+          catalog:'iceberg', database:'ods', table:'',
+          warehouse:'s3a://warehouse/',
+          partition:'', partitionTransform:'day', // identity / year / month / day / hour / bucket[N]
+          writeMode:'append', // append / overwrite / upsert / cdc
+          pk:'', mergeOnRead:false,
           formatVersion:2, compression:'zstd',
           fileSizeMb:128,
           autoCreate:'off', // off / if_not_exists / fail_if_missing
           schemaFrom:'upstream', // upstream / mapping / explicit
           registerAfterCreate:true,
-          saRole:'job.trade.dwd_writer',
+          saRole:'',
           icebergProps:{
             'write.distribution-mode':'hash',
             'write.parquet.compression-codec':'zstd',
             'engine.hive.enabled':'true'
           },
-          enableExpire:true, expireDays:180,
-          enableCompact:true, compactTargetMb:256,
-          enableVacuum:true, vacuumRetainDays:7
+          enableExpire:false, expireDays:180,
+          enableCompact:false, compactTargetMb:256,
+          enableVacuum:false, vacuumRetainDays:7
         };
       // ===== ClickHouse =====
       case 'sink_ck':

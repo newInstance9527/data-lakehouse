@@ -1164,8 +1164,8 @@ function onCodeSetPick(v) {
   <template v-else-if="type === 'sink_iceberg'">
     <div class="sec-title">Iceberg 目标</div>
     <div class="form-grid-2">
-      <label class="form-field"><span class="form-label">Catalog</span><input class="input" :value="conf.catalog" @input="set('catalog', $event.target.value)" /></label>
-      <label class="form-field"><span class="form-label">Database</span><input class="input" :value="conf.database" @input="set('database', $event.target.value)" /></label>
+      <label class="form-field"><span class="form-label">Catalog</span><input class="input" :value="conf.catalog" placeholder="iceberg" @input="set('catalog', $event.target.value)" /></label>
+      <label class="form-field"><span class="form-label">Database</span><input class="input" :value="conf.database" placeholder="ods" @input="set('database', $event.target.value)" /></label>
     </div>
     <label class="form-field">
       <span class="form-label">表</span>
@@ -1264,7 +1264,7 @@ function onCodeSetPick(v) {
     <details class="adv-fold">
       <summary>高级：Warehouse / 文件大小 / 表维护（建议独立生命周期作业）</summary>
       <div class="form-grid-2" style="margin-top: 8px">
-        <label class="form-field"><span class="form-label">Warehouse</span><input class="input" :value="conf.warehouse" @input="set('warehouse', $event.target.value)" /></label>
+        <label class="form-field"><span class="form-label">Warehouse</span><input class="input" :value="conf.warehouse" placeholder="s3a://warehouse/" @input="set('warehouse', $event.target.value)" /></label>
         <label class="form-field"><span class="form-label">目标文件大小(MB)</span><input class="input" type="number" :value="conf.fileSizeMb" @input="set('fileSizeMb', Number($event.target.value))" /></label>
       </div>
       <div class="chk-group" style="margin-top: 8px">

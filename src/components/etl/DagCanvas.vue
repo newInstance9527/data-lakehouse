@@ -39,8 +39,8 @@ const bounds = computed(() => {
   let maxX = 1600
   let maxY = 900
   props.nodes.forEach((n) => {
-    maxX = Math.max(maxX, n.x + NODE_W + 200)
-    maxY = Math.max(maxY, n.y + NODE_H + 200)
+    maxX = Math.max(maxX, Number(n.x) + NODE_W + 200)
+    maxY = Math.max(maxY, Number(n.y) + NODE_H + 200)
   })
   return { w: maxX, h: maxY }
 })
@@ -63,19 +63,53 @@ function statusOf(st) {
 }
 
 function portPos(n, port) {
-  if (port === 'out') return { x: n.x + NODE_W, y: n.y + NODE_H / 2 }
-  return { x: n.x, y: n.y + NODE_H / 2 }
+  const x = Number(n.x) || 0
+  const y = Number(n.y) || 0
+  if (port === 'out') return { x: x + NODE_W, y: y + NODE_H / 2 }
+  return { x, y: y + NODE_H / 2 }
 }
 
-function edgePath(e) {
-  const a = props.nodes.find((n) => n.id === e.from)
-  const b = props.nodes.find((n) => n.id === e.to)
-  if (!a || !b) return ''
+function nodeIdOf(n) {
+  return String(n?.id ?? n?.nodeKey ?? '')
+}
+
+function edgeEnds(e) {
+  return {
+    from: String(e?.from ?? e?.fromNodeKey ?? ''),
+    to: String(e?.to ?? e?.toNodeKey ?? ''),
+  }
+}
+
+function bezier(a, b) {
   const p1 = portPos(a, 'out')
   const p2 = portPos(b, 'in')
   const dx = Math.max(40, (p2.x - p1.x) / 2)
   return `M ${p1.x} ${p1.y} C ${p1.x + dx} ${p1.y}, ${p2.x - dx} ${p2.y}, ${p2.x} ${p2.y}`
 }
+
+/** 显式依赖 nodes 的 id/x/y 与 edges，避免新建任务连线后 SVG 不重绘 */
+const edgeDraws = computed(() => {
+  const byId = new Map()
+  for (const n of props.nodes || []) {
+    const id = nodeIdOf(n)
+    if (id) byId.set(id, n)
+    void n.x
+    void n.y
+  }
+  const out = []
+  ;(props.edges || []).forEach((e, i) => {
+    const { from, to } = edgeEnds(e)
+    const a = byId.get(from)
+    const b = byId.get(to)
+    if (!a || !b) return
+    out.push({
+      key: `${from}->${to}#${i}`,
+      d: bezier(a, b),
+      i,
+    })
+  })
+  return out
+})
 
 function clientToWorld(clientX, clientY) {
   const el = canvasEl.value
@@ -152,7 +186,7 @@ function onInPort(n, ev) {
   if (props.connectFrom) {
     if (props.connectFrom !== n.id) emit('complete-connect', n.id)
     else emit('cancel-connect')
-  } else {
+  } else if (ev.type !== 'mouseup') {
     emit('select-node', n.id)
   }
 }
@@ -298,14 +332,20 @@ defineExpose({ zoomBy, resetView, resetZoom: resetView, zoom, panX, panY })
       @auxclick.prevent
     >
       <div class="dag-world" :style="worldStyle">
-        <svg class="dag-edges" :width="bounds.w" :height="bounds.h">
+        <svg
+          class="dag-edges"
+          :width="bounds.w"
+          :height="bounds.h"
+          :viewBox="`0 0 ${bounds.w} ${bounds.h}`"
+          preserveAspectRatio="none"
+        >
           <path
-            v-for="(e, i) in edges"
-            :key="i"
+            v-for="e in edgeDraws"
+            :key="e.key"
             class="dag-edge"
-            :class="{ active: selectedEdgeIdx === i }"
-            :d="edgePath(e)"
-            @click.stop="emit('select-edge', i)"
+            :class="{ active: selectedEdgeIdx === e.i }"
+            :d="e.d"
+            @click.stop="emit('select-edge', e.i)"
             @mousedown.stop
           />
         </svg>
@@ -329,8 +369,9 @@ defineExpose({ zoomBy, resetView, resetZoom: resetView, zoom, panX, panY })
             v-if="(defOf(n.type).ports || []).includes('in')"
             class="d-port in"
             title="输入 · 点击完成连线"
-            @mousedown.stop
-            @click.stop.prevent="onInPort(n, $event)"
+            @mousedown.stop.prevent="onInPort(n, $event)"
+            @mouseup.stop.prevent="onInPort(n, $event)"
+            @click.stop.prevent
           />
           <div class="dag-node-body">
             <div class="dn-top">
@@ -344,8 +385,8 @@ defineExpose({ zoomBy, resetView, resetZoom: resetView, zoom, panX, panY })
             v-if="(defOf(n.type).ports || []).includes('out')"
             class="d-port out"
             title="输出 · 点击开始连线"
-            @mousedown.stop
-            @click.stop.prevent="onOutPort(n, $event)"
+            @mousedown.stop.prevent="onOutPort(n, $event)"
+            @click.stop.prevent
           />
         </div>
       </div>

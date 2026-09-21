@@ -453,7 +453,7 @@ export function useEtl() {
       status: 'pending',
       conf: mergeConfDefaults(type, defaultConfFor(type)),
     }
-    t.nodes.push(node)
+    t.nodes = [...(t.nodes || []), node]
     markDirty()
     selectNode(node.id)
     return node
@@ -518,9 +518,12 @@ export function useEtl() {
     const fromId = connectFrom.value
     connectFrom.value = null
     if (!t || !fromId || !toId || fromId === toId) return false
-    const exists = t.edges.some((e) => e.from === fromId && e.to === toId)
+    const from = String(fromId)
+    const to = String(toId)
+    const exists = (t.edges || []).some((e) => String(e.from) === from && String(e.to) === to)
     if (exists) return false
-    t.edges.push({ from: fromId, to: toId })
+    // 换新数组，保证画布立刻画出连线（不必等保存回写）
+    t.edges = [...(t.edges || []), { from, to, label: '' }]
     markDirty()
     return true
   }
