@@ -29,6 +29,26 @@ export function fetchPreviewSchema(id) {
   return http.get(`${DS}/previewSchema`, { id })
 }
 
+/** 分层元数据：Schema 列表（JDBC；非 JDBC 返回空数组） */
+export function fetchMetaSchemas(id) {
+  return http.get(`${DS}/meta/schemas`, { id })
+}
+
+/** 分层元数据：表列表 */
+export function fetchMetaTables(id, schema) {
+  return http.get(`${DS}/meta/tables`, { id, schema })
+}
+
+/** 分层元数据：视图列表 */
+export function fetchMetaViews(id, schema) {
+  return http.get(`${DS}/meta/views`, { id, schema })
+}
+
+/** 分层元数据：列列表（name / type / remarks） */
+export function fetchMetaColumns(id, schema, table) {
+  return http.get(`${DS}/meta/columns`, { id, schema, table })
+}
+
 export function fetchDatasourceKpi() {
   return http.get(`${DS}/kpi`)
 }

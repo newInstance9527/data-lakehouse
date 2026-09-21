@@ -3,7 +3,7 @@ import { computed, ref, watch, onUnmounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import AppDrawer from '@/components/common/AppDrawer.vue'
 import { NODE_TYPES } from '@/data/etl'
-import { fetchEtlRunDetail, fetchEtlRunNodeLog } from '@/api/etl'
+import { fetchEtlRunDetail, fetchEtlRunNodeLog, fetchEtlRunResultPreview } from '@/api/etl'
 import { RUN_STATUS_META, buildRunDetail } from '@/utils/etlRuns'
 import { useToast } from '@/composables/useToast'
 
@@ -32,6 +32,14 @@ const nodeLogLineNum = ref(0)
 const nodeLogAutoFollow = ref(true)
 const nodeLogPreRef = ref(null)
 let nodeLogPollTimer = null
+
+/** 目标表结果预览（试跑成功核对） */
+const RESULT_PREVIEW_TYPES = new Set(['sink_iceberg', 'sink_ck', 'sink_rdb'])
+const previewOpen = ref(false)
+const previewLoading = ref(false)
+const previewError = ref('')
+const previewData = ref(null)
+const previewNodeKey = ref('')
 
 const logs = computed(() => props.task?.logs || [])
 
@@ -78,6 +86,30 @@ const activeNodeKey = computed(() => {
   )
   return api?.nodeKey || n.nodeId || ''
 })
+
+const runSucceeded = computed(() => {
+  const st = String(activeLogRow.value?.status || '').toUpperCase()
+  return st === 'SUCCESS'
+})
+
+const previewableSinks = computed(() => {
+  if (!runSucceeded.value || !detail.value?.nodes) return []
+  return detail.value.nodes.filter((n) => RESULT_PREVIEW_TYPES.has(n.type))
+})
+
+const canPreviewActiveNode = computed(() => {
+  const n = activeNode.value
+  if (!n || !runSucceeded.value) return false
+  return RESULT_PREVIEW_TYPES.has(n.type) && (n.status === 'done' || n.status === 'warn')
+})
+
+const previewCols = computed(() => {
+  const cols = previewData.value?.columns
+  if (!Array.isArray(cols)) return []
+  return cols.map((c) => (typeof c === 'string' ? c : c?.name || c?.enName || String(c)))
+})
+
+const previewRows = computed(() => (Array.isArray(previewData.value?.rows) ? previewData.value.rows : []))
 
 function stopNodeLogPoll() {
   if (nodeLogPollTimer) {
@@ -164,6 +196,7 @@ watch(
     statusFilter.value = 'ALL'
     triggerFilter.value = 'ALL'
     resetNodeLog()
+    closeResultPreview()
   },
 )
 
@@ -268,6 +301,52 @@ function goOps() {
 function goNodeOnCanvas(nodeId) {
   emit('select-node', nodeId)
   emit('close')
+}
+
+async function openResultPreview(node) {
+  const runId = activeRun.value
+  const nodeKey = node?.nodeId || activeNodeKey.value
+  if (!runId || !nodeKey) {
+    showToast('缺少 runId / 节点', 'error')
+    return
+  }
+  previewOpen.value = true
+  previewLoading.value = true
+  previewError.value = ''
+  previewData.value = null
+  previewNodeKey.value = nodeKey
+  try {
+    const d = await fetchEtlRunResultPreview(runId, nodeKey, { limit: 20 })
+    previewData.value = d || null
+    if (d && d.ok === false) {
+      previewError.value = d.message || '预览失败'
+    }
+  } catch (e) {
+    previewError.value = e?.message || String(e)
+  } finally {
+    previewLoading.value = false
+  }
+}
+
+function closeResultPreview() {
+  previewOpen.value = false
+  previewLoading.value = false
+  previewError.value = ''
+  previewData.value = null
+  previewNodeKey.value = ''
+}
+
+function cellText(row, col) {
+  const v = row?.[col]
+  if (v == null) return '—'
+  if (typeof v === 'object') {
+    try {
+      return JSON.stringify(v)
+    } catch {
+      return String(v)
+    }
+  }
+  return String(v)
 }
 </script>
 
@@ -433,6 +512,23 @@ executor: {{ detail.app.executors }}
 shuffle: {{ detail.app.shuffle }}
 checkpoint: {{ detail.app.checkpoint }}</pre>
             </div>
+            <div v-if="previewableSinks.length" class="trd-card block">
+              <div class="trd-card-label">核对目标数据</div>
+              <div class="form-hint" style="margin-bottom: 8px">
+                试跑已成功 · 从目标库抽样预览，核对写出结果（LIMIT 20）
+              </div>
+              <div class="trd-preview-sinks">
+                <button
+                  v-for="n in previewableSinks"
+                  :key="n.nodeId"
+                  type="button"
+                  class="btn btn-sm"
+                  @click="openResultPreview(n)"
+                >
+                  预览 · {{ n.name }}
+                </button>
+              </div>
+            </div>
           </div>
 
           <!-- 节点 -->
@@ -461,6 +557,12 @@ checkpoint: {{ detail.app.checkpoint }}</pre>
                     <input v-model="nodeLogAutoFollow" type="checkbox" />
                     跟随滚动
                   </label>
+                  <button
+                    v-if="canPreviewActiveNode"
+                    type="button"
+                    class="btn btn-sm btn-primary"
+                    @click="openResultPreview(activeNode)"
+                  >预览目标数据</button>
                   <button
                     type="button"
                     class="btn btn-sm"
@@ -526,6 +628,50 @@ checkpoint: {{ detail.app.checkpoint }}</pre>
         <div v-else class="trd-detail-pane empty-pane">选择左侧一条执行记录查看详情</div>
       </div>
     </div>
+
+    <Teleport to="body">
+      <div v-if="previewOpen" class="modal-mask trd-preview-mask" @click.self="closeResultPreview">
+        <div class="modal trd-preview-modal" role="dialog" aria-modal="true">
+          <div class="modal-header">
+            <div>
+              <div class="modal-title">目标数据预览</div>
+              <div class="modal-sub">
+                {{ previewData?.target || previewData?.qualifiedName || previewNodeKey || '—' }}
+                <template v-if="previewData?.source"> · {{ previewData.source }}</template>
+                <template v-if="previewData?.rowCount != null"> · {{ previewData.rowCount }} 行</template>
+              </div>
+            </div>
+            <button type="button" class="btn btn-sm" @click="closeResultPreview">关闭</button>
+          </div>
+          <div class="modal-body">
+            <div v-if="previewLoading" class="form-hint">正在拉取目标表样本…</div>
+            <div v-else-if="previewError" class="form-hint err-text">{{ previewError }}</div>
+            <template v-else>
+              <div v-if="previewData?.message" class="form-hint" style="margin-bottom: 8px">{{ previewData.message }}</div>
+              <div v-if="previewData?.sql" class="form-hint trd-preview-sql"><code>{{ previewData.sql }}</code></div>
+              <div v-if="!previewCols.length" class="form-hint">无列数据</div>
+              <div v-else class="trd-preview-table-wrap">
+                <table class="trd-preview-table">
+                  <thead>
+                    <tr>
+                      <th v-for="c in previewCols" :key="c">{{ c }}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(row, i) in previewRows" :key="i">
+                      <td v-for="c in previewCols" :key="c">{{ cellText(row, c) }}</td>
+                    </tr>
+                    <tr v-if="!previewRows.length">
+                      <td :colspan="previewCols.length" class="muted">表为空或无样本行</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </template>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </AppDrawer>
 </template>
 
@@ -833,6 +979,56 @@ checkpoint: {{ detail.app.checkpoint }}</pre>
 .log-pre.err {
   color: #cf1322;
   background: rgba(245, 34, 45, 0.04);
+}
+
+.trd-preview-sinks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.trd-preview-mask {
+  z-index: 1200;
+}
+.trd-preview-modal {
+  width: min(920px, 94vw);
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+}
+.trd-preview-modal .modal-body {
+  overflow: auto;
+  min-height: 120px;
+}
+.trd-preview-sql {
+  margin-bottom: 8px;
+  word-break: break-all;
+}
+.trd-preview-table-wrap {
+  overflow: auto;
+  max-height: 56vh;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.trd-preview-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.trd-preview-table th,
+.trd-preview-table td {
+  border-bottom: 1px solid var(--border);
+  padding: 6px 8px;
+  text-align: left;
+  white-space: nowrap;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.trd-preview-table th {
+  position: sticky;
+  top: 0;
+  background: var(--bg-2, #fafafa);
+  font-weight: 600;
 }
 
 @media (max-width: 900px) {

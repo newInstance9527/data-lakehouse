@@ -531,7 +531,18 @@ async function openPreviewTab() {
 
 function goQuery() {
   close()
-  router.push('/query')
+  const a = props.asset || {}
+  const fqn =
+    a.fqn ||
+    a.gravFqn ||
+    a.objectName ||
+    a.tableName ||
+    (a.omFqn && String(a.omFqn).includes('.') ? String(a.omFqn).split('.').slice(-3).join('.') : '') ||
+    a.name
+  router.push({
+    path: '/query',
+    query: fqn ? { fqn: String(fqn) } : {},
+  })
 }
 
 function goDatasource() {

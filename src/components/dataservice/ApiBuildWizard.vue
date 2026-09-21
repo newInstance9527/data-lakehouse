@@ -4,6 +4,7 @@ import SearchSelect from '@/components/common/SearchSelect.vue'
 import SqlEditor from '@/components/etl/SqlEditor.vue'
 import { useToast } from '@/composables/useToast'
 import { useDataservice } from '@/composables/useDataservice'
+import { resolveSqlDialect } from '@/utils/sqlDialect'
 import {
   API_BUILD_STEPS,
   API_DATASOURCE_OPTIONS,
@@ -50,6 +51,14 @@ const datasourceOptions = computed(() => {
     }))
   return live.length ? live : API_DATASOURCE_OPTIONS
 })
+
+const wizardDialectType = computed(() => {
+  if (form.srcType !== 'SQL') return 'trino'
+  const row = (sqlrestDs.value || []).find((d) => d.id === form.datasourceId)
+  return row?.sqlrestType || row?.type || ''
+})
+
+const wizardDialect = computed(() => resolveSqlDialect(wizardDialectType.value))
 
 watch(
   () => props.open,
@@ -391,9 +400,11 @@ async function publish() {
                     v-model="form.sql"
                     compact
                     :rows="8"
+                    :language="form.engine === 'GROOVY' ? 'groovy' : 'sql'"
+                    :dialect="wizardDialectType"
                     :label="form.engine === 'GROOVY' ? 'Groovy' : 'SQL'"
-                    :hint="`经 SQLREST ${form.engine || 'SQL'} API · ${form.datasourceId || '未选源'}`"
-                    :placeholder="form.engine === 'GROOVY' ? '// groovy ...' : 'SELECT ...'"
+                    :hint="form.engine === 'GROOVY' ? 'Groovy 关键字 / 字符串 / 方法调用高亮' : `${wizardDialect.family ? `${wizardDialect.label} · 按 ${wizardDialect.family}` : wizardDialect.label} · ${wizardDialect.quoteHint}`"
+                    :placeholder="form.engine === 'GROOVY' ? '// groovy' : wizardDialect.sample"
                   />
                 </label>
               </template>
@@ -415,10 +426,11 @@ async function publish() {
                   :rows="8"
                   default-editing
                   label="SQL 模板"
+                  :dialect="wizardDialectType"
                   :hint="
                     form.srcType === 'SQL'
-                      ? `可用 {{param}} · 数据源 ${apiDatasourceLabel(form.datasourceId)}`
-                      : '可用 {{param}} 占位 · SQLREST 编译'
+                      ? `${wizardDialect.label} · ${wizardDialect.quoteHint} · 可用 {{param}}`
+                      : `Trino · ${wizardDialect.quoteHint} · 可用 {{param}}`
                   "
                   placeholder="SELECT ... WHERE dt = {{dt}}"
                 />

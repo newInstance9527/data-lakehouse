@@ -35,9 +35,9 @@ import { createApplyTicket, approveTicket as apiApproveTicket, rejectTicket as a
 import { fetchDatasourcePage } from '@/api/datasource'
 import { fetchEtlDags } from '@/api/etl'
 import { useApplyBoard, pushExportApply, approveExportOnBoard, hydrateApplyBoardFromServer } from '@/composables/useApplyBoard'
+import { useMetrics } from '@/composables/useMetrics'
 import { EXPORT_TABLE_OPTIONS } from '@/data/createForms'
 import { ASSET_DATA } from '@/data/assets'
-import { METRIC_CATALOG } from '@/data/metrics'
 import { PUBLISH_HISTORY } from '@/data/publish'
 import { OPS_RESOURCE_ENABLED, opsResourceLabel } from '@/data/opsResourceTypes'
 
@@ -46,15 +46,17 @@ const router = useRouter()
 const { showToast } = useToast()
 const guide = pageGuideOf('apply')
 const { pending, mine } = useApplyBoard()
+const { catalog: metricCatalog, ensureLoaded: ensureMetricsLoaded } = useMetrics()
 
 onMounted(() => {
   hydrateApplyBoardFromServer()
   loadOpsResourceOptions()
+  ensureMetricsLoaded()
 })
 
 const TYPE_LABEL = Object.fromEntries(APPLY_TYPE_OPTIONS.map((o) => [o.value, o.label]))
 const SIDE_LABEL = { pending: '处理中', approved: '已通过', rejected: '已驳回' }
-const METRIC_OPTIONS = buildApplyMetricOptions(METRIC_CATALOG)
+const METRIC_OPTIONS = computed(() => buildApplyMetricOptions(metricCatalog.value))
 const ASSET_OPTIONS = buildApplyAssetOptions(ASSET_DATA)
 const RELEASE_OPTIONS = buildApplyReleaseOptions(PUBLISH_HISTORY)
 const EXPORT_OPTIONS = EXPORT_TABLE_OPTIONS
@@ -73,7 +75,7 @@ function emptyForm() {
     purpose: '',
     expire: '30天',
     metricKind: 'query',
-    metricId: METRIC_OPTIONS[0]?.value || 'M-0001',
+    metricId: METRIC_OPTIONS.value[0]?.value || 'M-0001',
     metricScope: 'dashboard',
     metricDomain: '交易域',
     metricNameNew: '',
@@ -168,7 +170,7 @@ function onOpsEtlPicked(id) {
   form.value.resourceName = opt?.label || opt?.name || ''
 }
 
-const selectedMetric = computed(() => METRIC_OPTIONS.find((o) => o.value === form.value.metricId) || null)
+const selectedMetric = computed(() => METRIC_OPTIONS.value.find((o) => o.value === form.value.metricId) || null)
 const selectedAsset = computed(() => ASSET_OPTIONS.find((o) => o.value === form.value.asset) || null)
 const selectedRelease = computed(() => RELEASE_OPTIONS.find((o) => o.value === form.value.releasePkg) || null)
 
@@ -222,7 +224,7 @@ watch(
         ...emptyForm(),
         type: 'metric',
         metricKind: typeof route.query.kind === 'string' ? route.query.kind : 'query',
-        metricId: mid && METRIC_OPTIONS.some((o) => o.value === mid) ? mid : emptyForm().metricId,
+        metricId: mid && METRIC_OPTIONS.value.some((o) => o.value === mid) ? mid : emptyForm().metricId,
       }
       syncMetricVersionDefaults()
     } else if (t === 'export') {
@@ -915,13 +917,20 @@ async function approveTicket(id) {
   if (idx < 0) return
   const ticket = pending.value[idx]
 
-  // perm / ops 均须打后端；此前仅 perm 调 API，ops 本地撕卡后 hydrate 又回待审批
-  if ((ticket.type === 'perm' || ticket.type === 'ops') && (ticket.fromServer || ticket.serverId)) {
+  // perm / ops / publish(api_publish) 均须打后端
+  if (
+    (ticket.type === 'perm' || ticket.type === 'ops' || ticket.type === 'publish') &&
+    (ticket.fromServer || ticket.serverId)
+  ) {
     try {
       await apiApproveTicket(ticket.serverId || ticket.id)
       const ok = await hydrateApplyBoardFromServer().catch(() => false)
       if (ok) {
-        showToast(`✅ 已通过 ${ticket.ticketNo || id} · 已写 sec_auth_grant（门户生效）`, 'success')
+        const tip =
+          ticket.type === 'publish'
+            ? `✅ 已通过 ${ticket.ticketNo || id} · 可填回数据服务工作台发布`
+            : `✅ 已通过 ${ticket.ticketNo || id} · 已写 sec_auth_grant（门户生效）`
+        showToast(tip, 'success')
         return
       }
     } catch (e) {

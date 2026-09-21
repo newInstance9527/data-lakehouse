@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
 import CreateFormModal from '@/components/common/CreateFormModal.vue'
@@ -7,17 +7,13 @@ import AppDrawer from '@/components/common/AppDrawer.vue'
 import ListPager from '@/components/common/ListPager.vue'
 import { useToast } from '@/composables/useToast'
 import { usePager } from '@/composables/usePager'
-import { COMPLIANCE_DELETE_FORM } from '@/data/createForms'
+import { slaCls, statusMeta, useCompliance } from '@/composables/useCompliance'
+import { COMPLIANCE_DELETE_FORM, SUBJECT_MAP_FORM } from '@/data/createForms'
 import { pageGuideOf } from '@/data/pageGuides'
 import {
-  COMPLIANCE_KPIS,
   COMPLIANCE_STAGES,
   COMPLIANCE_STATUS_TABS,
-  COMPLIANCE_TICKETS,
-  complianceTypeCls,
-  filterComplianceTickets,
-  impactHintForSubject,
-  nextComplianceId,
+  DEL_TARGET_STATUS_CLS,
 } from '@/data/compliance'
 
 const route = useRoute()
@@ -25,19 +21,83 @@ const router = useRouter()
 const { showToast } = useToast()
 const guide = pageGuideOf('compliance')
 
-const tickets = ref(COMPLIANCE_TICKETS.map((t) => ({ ...t, timeline: [...(t.timeline || [])] })))
-const tab = ref('all')
+const {
+  loading,
+  actionBusy,
+  degraded,
+  coverage,
+  requests,
+  detail,
+  evidence,
+  lastDryRun,
+  subjectMaps,
+  kpis,
+  overdueCount,
+  dueSoonCount,
+  loadBoard,
+  openDetail,
+  create,
+  assess,
+  editPlan,
+  dryRun,
+  submit,
+  schedule,
+  execute,
+  verify,
+  restrict,
+  hold,
+  release,
+  abort,
+  loadEvidence,
+  loadSubjectMaps,
+  saveSubjectMap,
+} = useCompliance()
+
+const view = ref('requests')
+const tab = ref('')
 const query = ref('')
 const createOpen = ref(false)
+const mapOpen = ref(false)
 const detailOpen = ref(false)
-const activeId = ref('')
+const drawerTab = ref('overview')
 
-const active = computed(() => tickets.value.find((t) => t.id === activeId.value) || null)
+const confirmNo = ref('')
+const excludeId = ref('')
+const excludeReason = ref('')
+const restrictReason = ref('法定保存期未届满')
+const holdReason = ref('')
+const abortReason = ref('')
 
-const filtered = computed(() => filterComplianceTickets(tickets.value, tab.value, query.value))
+const filtered = computed(() => {
+  const s = query.value.trim().toLowerCase()
+  if (!s) return requests.value
+  return requests.value.filter(
+    (r) =>
+      String(r.reqNo || '').toLowerCase().includes(s) ||
+      String(r.subjectMasked || '').toLowerCase().includes(s) ||
+      String(r.sourceRef || '').toLowerCase().includes(s) ||
+      String(r.ticketNo || '').toLowerCase().includes(s),
+  )
+})
 const { page, pageSize, total, totalPages, paged, pageNums, goPage, resetPage } = usePager(filtered)
 
-watch([tab, query], () => resetPage())
+const targets = computed(() => detail.value?.targets || [])
+const timeline = computed(() => detail.value?.timeline || [])
+const plan = computed(() => detail.value?.planSummary || {})
+
+const canAssess = computed(() => ['assessing', 'pending_approval', 'restricted'].includes(detail.value?.status))
+const canSubmit = computed(() => detail.value?.status === 'assessing' && (plan.value.included || 0) > 0)
+const canSchedule = computed(() => detail.value?.status === 'pending_approval' && detail.value?.ticketNo)
+const canExecute = computed(() => ['scheduled', 'pending_approval', 'partial_failed'].includes(detail.value?.status))
+const canVerify = computed(() => ['verifying', 'executing', 'partial_failed'].includes(detail.value?.status))
+
+onMounted(() => reload())
+
+watch(tab, () => {
+  resetPage()
+  reload()
+})
+watch(query, () => resetPage())
 
 watch(
   () => route.query.create,
@@ -47,146 +107,193 @@ watch(
   { immediate: true },
 )
 
-function openCreate() {
-  createOpen.value = true
+watch(view, (v) => {
+  if (v === 'maps' && !subjectMaps.value.length) {
+    loadSubjectMaps().catch((e) => showToast(`主体索引加载失败：${e.message}`, 'warning'))
+  }
+})
+
+watch(drawerTab, (t) => {
+  if (t === 'evidence' && detail.value && !degraded.value) {
+    loadEvidence(detail.value.id).catch((e) => showToast(`证据包读取失败：${e.message}`, 'warning'))
+  }
+})
+
+async function reload() {
+  try {
+    await loadBoard({ status: tab.value || undefined, size: 200 })
+  } catch {
+    showToast('⚠ 合规删除接口不可用，已切换到演示数据', 'warning')
+  }
 }
 
-function onCreate(payload) {
-  const id = nextComplianceId(tickets.value)
-  const subject = String(payload.subject || '').trim()
-  const impact = String(payload.impact || '').trim() || impactHintForSubject(subject)
-  const type = payload.type || '被遗忘权'
-  const row = {
-    id,
-    subject,
-    type,
-    scope: payload.scope || '指定行',
-    law: payload.law || '',
-    impact,
-    tables: [],
-    approver: payload.approver || '安全岗+法务+Owner',
-    approval: '安全岗待审',
-    approvalPending: true,
-    status: '审批中',
-    statusKey: 'pending',
-    statusCls: 'tag-orange',
-    applicant: '当前用户',
-    createdAt: new Date().toISOString().slice(0, 16).replace('T', ' '),
-    deadline: payload.deadline || '7 天内',
-    execMode: payload.execMode || 'Iceberg equality delete + CK ALTER DELETE',
-    timeline: [
-      { name: '创建工单', status: 'done', time: '刚刚' },
-      { name: '血缘影响评估', status: 'current', time: '排队中', opinion: impact.slice(0, 40) },
-      { name: '安全岗审批', status: 'pending' },
-      { name: '法务审批', status: 'pending' },
-      { name: 'Owner 签批', status: 'pending' },
-      { name: '平台执行', status: 'pending' },
-      { name: '审计归档', status: 'pending' },
-    ],
+function fmt(v) {
+  if (!v) return '—'
+  return String(v).replace('T', ' ').slice(0, 16)
+}
+
+function targetCls(status) {
+  return DEL_TARGET_STATUS_CLS[status] || 'tag-gray'
+}
+
+async function show(reqId) {
+  try {
+    await openDetail(reqId)
+    drawerTab.value = 'overview'
+    confirmNo.value = ''
+    excludeId.value = ''
+    detailOpen.value = true
+  } catch (e) {
+    showToast(`详情读取失败：${e.message}`, 'warning')
   }
-  tickets.value = [row, ...tickets.value]
+}
+
+async function guarded(fn, okMsg) {
+  try {
+    const res = await fn()
+    if (okMsg) showToast(okMsg, 'success')
+    return res
+  } catch (e) {
+    showToast(`✕ ${e.message}`, 'warning')
+    return null
+  }
+}
+
+async function onCreate(payload) {
+  const res = await guarded(() => create(payload))
+  if (!res) return
   createOpen.value = false
-  if (route.query.create) {
-    router.replace({ path: '/compliance', query: {} })
+  if (route.query.create) router.replace({ path: '/compliance', query: {} })
+  showToast(`✅ 已受理 ${res.reqNo} · 已按主体索引展开 ${res.planSummary?.total ?? 0} 个载体`, 'success')
+  show(res.id)
+}
+
+async function onSaveMap(payload) {
+  const saved = await guarded(() => saveSubjectMap(payload), '✅ 主体索引已登记')
+  if (saved) mapOpen.value = false
+}
+
+function doAssess() {
+  guarded(() => assess(detail.value.id), '🔍 已重新展开删除计划')
+}
+
+async function doDryRun() {
+  const res = await guarded(() => dryRun(detail.value.id))
+  if (res) showToast(`🧮 试算命中 ${res.rowsEstTotal} 行 · ${res.targets?.length ?? 0} 个载体`, 'success')
+}
+
+function doSubmit() {
+  guarded(async () => {
+    const r = await submit(detail.value.id)
+    showToast(`📮 已提交审批 ${r.ticketNo}`, 'success')
+    return r
+  })
+}
+
+function doSchedule() {
+  guarded(() => schedule(detail.value.id), '🕑 已排期到下一维护窗口')
+}
+
+async function doExecute() {
+  if (confirmNo.value.trim() !== detail.value.reqNo) {
+    showToast('请回填请求号确认后再执行', 'warning')
+    return
   }
-  showToast(`✅ 已创建 ${id} · 已通知审批链：${row.approver}`, 'success')
-  openDetail(id)
+  const res = await guarded(() =>
+    execute({ reqId: detail.value.id, confirmReqNo: confirmNo.value.trim() }),
+  )
+  if (res) {
+    confirmNo.value = ''
+    drawerTab.value = 'exec'
+    showToast('⚡ 已执行：Iceberg 已合并并定向过期快照，进入验证', 'success')
+  }
 }
 
-function openDetail(id) {
-  activeId.value = id
-  detailOpen.value = true
+function doVerify() {
+  guarded(() => verify(detail.value.id), '✅ 残留反查完成')
 }
 
-function closeDetail() {
-  detailOpen.value = false
+function doRestrict(targetIds) {
+  if (!restrictReason.value.trim()) {
+    showToast('限制处理须填写依据', 'warning')
+    return
+  }
+  guarded(
+    () => restrict({ reqId: detail.value.id, targetIds, reason: restrictReason.value.trim() }),
+    '🚫 已转限制处理 · 撤 ACL + 强制脱敏 + 禁出湖/API/训练',
+  )
 }
 
-function exportList() {
-  showToast('📤 合规删除工单导出中 · CSV（工单号,类型,主体,状态,截止日）', 'success')
+function doExclude(t) {
+  if (!excludeReason.value.trim()) {
+    showToast('排除载体必须填写理由', 'warning')
+    return
+  }
+  guarded(
+    () => editPlan({ reqId: detail.value.id, excludeIds: [t.id], excludeReason: excludeReason.value.trim() }),
+    `已排除 ${t.objectFqn}`,
+  ).then(() => {
+    excludeId.value = ''
+    excludeReason.value = ''
+  })
 }
 
-function goLifecycle() {
-  router.push('/lifecycle')
+function doHold() {
+  if (!holdReason.value.trim()) {
+    showToast('冻结须填写原因', 'warning')
+    return
+  }
+  guarded(() => hold({ reqId: detail.value.id, reason: holdReason.value.trim() }), '🔒 已冻结')
+}
+
+function doRelease() {
+  guarded(() => release({ reqId: detail.value.id, reason: '冻结条件消失' }), '🔓 已解除冻结')
+}
+
+function doAbort() {
+  if (!abortReason.value.trim()) {
+    showToast('中止须填写原因', 'warning')
+    return
+  }
+  guarded(() => abort({ reqId: detail.value.id, remark: abortReason.value.trim() }), '已中止请求')
+}
+
+function refreshEvidence() {
+  guarded(() => loadEvidence(detail.value.id), '📦 证据包已刷新')
 }
 
 function goLineage(table) {
   router.push({ path: '/lineage', query: { q: table } })
 }
 
-function approve(t) {
-  if (!t) return
-  const idx = tickets.value.findIndex((x) => x.id === t.id)
-  if (idx < 0) return
-  const next = { ...tickets.value[idx] }
-  if (next.statusKey === 'pending') {
-    next.approval = '三方 ✓'
-    next.approvalPending = false
-    next.status = '待执行'
-    next.statusKey = 'ready'
-    next.statusCls = 'tag-blue'
-    next.timeline = (next.timeline || []).map((n) =>
-      n.status === 'current' ? { ...n, status: 'done', time: '刚刚', opinion: '同意' } : n,
-    )
-    const exec = next.timeline.find((n) => n.name.includes('执行') && n.status === 'pending')
-    if (exec) exec.status = 'current'
-  }
-  tickets.value.splice(idx, 1, next)
-  showToast(`✓ 已同意 ${t.id} · 进入待执行`, 'success')
+function goLifecycle() {
+  router.push('/lifecycle')
 }
 
-function reject(t) {
-  if (!t) return
-  const idx = tickets.value.findIndex((x) => x.id === t.id)
-  if (idx < 0) return
-  const next = {
-    ...tickets.value[idx],
-    status: '已驳回',
-    statusKey: 'rejected',
-    statusCls: 'tag-red',
-    approvalPending: false,
-    approval: '已驳回',
-  }
-  tickets.value.splice(idx, 1, next)
-  showToast(`✕ 已驳回 ${t.id}`, 'warning')
+function goTicket(ticketNo) {
+  router.push({ path: '/apply', query: { q: ticketNo } })
 }
 
-function execute(t) {
-  if (!t) return
-  const idx = tickets.value.findIndex((x) => x.id === t.id)
-  if (idx < 0) return
-  const next = {
-    ...tickets.value[idx],
-    status: '已执行',
-    statusKey: 'done',
-    statusCls: 'tag-green',
-    executedAt: '刚刚',
-  }
-  next.timeline = (next.timeline || []).map((n) => {
-    if (n.status === 'current') return { ...n, status: 'done', time: '刚刚', opinion: '删除完成' }
-    return n
-  })
-  tickets.value.splice(idx, 1, next)
-  showToast(`⚡ 已提交执行 ${t.id} · ${next.execMode}`, 'success')
-}
-
-function destroy(t) {
-  if (!t) return
-  showToast(`🔥 物理销毁已排队 ${t.id} · 不可逆 · 审计已留痕`, 'warning')
+function exportList() {
+  showToast('📤 导出合规删除台账 · CSV（请求号,主体掩码,类型,状态,截止日,审批单）', 'success')
 }
 </script>
 
 <template>
   <div class="cp-page">
     <PageHeader
-      title="合规删除工单"
-      subtitle="被遗忘权 · 错误擦除 · 监管责令 · 合同到期 · 三方审批 · 不可逆执行"
+      title="合规删除 / 被遗忘权"
+      subtitle="主体索引 · 载体矩阵 · Iceberg/CK 硬删序列 · 限制处理兜底 · 证据链"
       :guide="guide"
     >
       <button type="button" class="btn btn-sm" @click="exportList">📤 导出</button>
       <button type="button" class="btn btn-sm" @click="goLifecycle">⏳ 生命周期</button>
-      <button type="button" class="btn btn-sm btn-primary" @click="openCreate">＋ 创建工单</button>
+      <button type="button" class="btn btn-sm btn-primary" @click="createOpen = true">＋ 受理请求</button>
     </PageHeader>
+
+    <div v-if="degraded" class="cp-degraded">
+      ⚠ 未连上 <code>/lh/compliance</code>，当前为演示数据，执行类操作不可用。
+    </div>
 
     <CreateFormModal
       :open="createOpen"
@@ -194,9 +301,15 @@ function destroy(t) {
       @close="createOpen = false"
       @submit="onCreate"
     />
+    <CreateFormModal
+      :open="mapOpen"
+      v-bind="SUBJECT_MAP_FORM"
+      @close="mapOpen = false"
+      @submit="onSaveMap"
+    />
 
     <div class="kpi-grid cp-kpi">
-      <div v-for="(k, i) in COMPLIANCE_KPIS" :key="i" class="kpi-card" :class="k.color">
+      <div v-for="(k, i) in kpis" :key="i" class="kpi-card" :class="k.color">
         <div class="kpi-icon" :class="k.color">{{ k.icon }}</div>
         <div class="kpi-value">
           {{ k.value }}<span class="kpi-unit">{{ k.unit }}</span>
@@ -206,10 +319,16 @@ function destroy(t) {
       </div>
     </div>
 
-    <!-- 流程设计 -->
     <div class="card cp-flow">
       <div class="card-header">
-        <div class="card-title">流程设计 <span class="tip">· 创建 → 评估 → 审批 → 执行 → 归档 → 销毁</span></div>
+        <div class="card-title">
+          执行序列
+          <span class="tip">· 受理评估 → 审批 → 排期 → 执行 → 验证 → 归档销毁</span>
+        </div>
+        <div v-if="overdueCount || dueSoonCount" class="cp-sla-chips">
+          <span v-if="overdueCount" class="tag tag-red">超期 {{ overdueCount }}</span>
+          <span v-if="dueSoonCount" class="tag tag-orange">3 日内到期 {{ dueSoonCount }}</span>
+        </div>
       </div>
       <div class="card-body cp-stages">
         <div v-for="(s, i) in COMPLIANCE_STAGES" :key="s.id" class="cp-stage">
@@ -222,19 +341,30 @@ function destroy(t) {
         </div>
       </div>
       <div class="cp-flow-note">
-        ⚠ 禁止与快照过期同窗口执行；DELETE 须经血缘 K 链路传播，否则看板可能「幽灵复活」。
+        ⚠ Iceberg 必须走完 <code>DELETE → rewrite_data_files → 定向 expire_snapshots → 孤儿收尾</code>：
+        只做 DELETE 等于没删（旧快照仍可时间旅行读回）；只做 TTL 过期也不等于合规删除。
       </div>
     </div>
 
-    <!-- 工单列表 -->
-    <div class="card cp-list-card">
+    <div class="cp-switch">
+      <button type="button" class="cp-tab" :class="{ active: view === 'requests' }" @click="view = 'requests'">
+        删除请求
+      </button>
+      <button type="button" class="cp-tab" :class="{ active: view === 'maps' }" @click="view = 'maps'">
+        主体索引
+        <span v-if="coverage?.gapCount" class="tag tag-orange">缺口 {{ coverage.gapCount }}</span>
+      </button>
+    </div>
+
+    <!-- 请求台账 -->
+    <div v-if="view === 'requests'" class="card cp-list-card">
       <div class="card-header cp-list-hd">
-        <div class="card-title">工单管理</div>
+        <div class="card-title">请求台账 <span v-if="loading" class="tip">· 加载中…</span></div>
         <div class="cp-filters">
           <div class="cp-tabs">
             <button
               v-for="t in COMPLIANCE_STATUS_TABS"
-              :key="t.id"
+              :key="t.id || 'all'"
               type="button"
               class="cp-tab"
               :class="{ active: tab === t.id }"
@@ -243,75 +373,59 @@ function destroy(t) {
               {{ t.label }}
             </button>
           </div>
-          <input
-            v-model="query"
-            class="input input-sm cp-search"
-            placeholder="搜工单号 / 主体 / 类型"
-          />
+          <input v-model="query" class="input input-sm cp-search" placeholder="搜请求号 / 主体 / 单号" />
         </div>
       </div>
       <div class="card-body" style="padding: 0">
         <table class="table">
           <thead>
             <tr>
-              <th>工单</th>
-              <th>主体</th>
+              <th>请求号</th>
+              <th>主体（掩码）</th>
               <th>类型</th>
               <th>范围</th>
-              <th>影响</th>
-              <th>审批</th>
+              <th>计划载体</th>
+              <th>审批单</th>
               <th>截止</th>
               <th>状态</th>
               <th>操作</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="t in paged" :key="t.id">
+            <tr v-for="r in paged" :key="r.id">
               <td>
-                <button type="button" class="btn-link" @click="openDetail(t.id)">
-                  <code>{{ t.id }}</code>
+                <button type="button" class="btn-link" @click="show(r.id)">
+                  <code>{{ r.reqNo }}</code>
                 </button>
               </td>
-              <td>{{ t.subject }}</td>
-              <td><span class="tag" :class="complianceTypeCls(t.type)">{{ t.type }}</span></td>
-              <td style="font-size: 12px">{{ t.scope }}</td>
-              <td class="cp-impact">{{ t.impact }}</td>
-              <td style="font-size: 11px">
-                {{ t.approval }}
-                <span v-if="t.approvalPending" class="tag tag-orange">待签</span>
+              <td><code class="cp-mask">{{ r.subjectMasked }}</code></td>
+              <td>{{ r.reqTypeLabel }}</td>
+              <td style="font-size: 12px">{{ r.scopeLabel }}</td>
+              <td style="font-size: 12px">
+                {{ r.planSummary?.included ?? 0 }} 项
+                <span v-if="r.planSummary?.restricted" class="tag tag-orange">
+                  限制 {{ r.planSummary.restricted }}
+                </span>
               </td>
-              <td style="font-size: 12px">{{ t.deadline }}</td>
-              <td><span class="tag" :class="t.statusCls">{{ t.status }}</span></td>
+              <td style="font-size: 11px">
+                <button v-if="r.ticketNo" type="button" class="btn-link" @click="goTicket(r.ticketNo)">
+                  {{ r.ticketNo }}
+                </button>
+                <span v-else class="tip">未提交</span>
+              </td>
+              <td style="font-size: 12px">
+                {{ fmt(r.deadline) }}
+                <span class="tag" :class="slaCls(r.slaLevel)">
+                  {{ r.daysLeft == null ? '—' : r.daysLeft < 0 ? `超期${-r.daysLeft}天` : `剩${r.daysLeft}天` }}
+                </span>
+              </td>
+              <td><span class="tag" :class="statusMeta(r.status).cls">{{ r.statusLabel || statusMeta(r.status).label }}</span></td>
               <td class="cp-acts">
-                <button type="button" class="btn-link" @click="openDetail(t.id)">详情</button>
-                <button
-                  v-if="t.statusKey === 'pending'"
-                  type="button"
-                  class="btn-link ok"
-                  @click="approve(t)"
-                >同意</button>
-                <button
-                  v-if="t.statusKey === 'pending'"
-                  type="button"
-                  class="btn-link danger"
-                  @click="reject(t)"
-                >驳回</button>
-                <button
-                  v-if="t.statusKey === 'ready'"
-                  type="button"
-                  class="btn-link ok"
-                  @click="execute(t)"
-                >执行</button>
-                <button
-                  v-if="t.statusKey === 'archive'"
-                  type="button"
-                  class="btn-link danger"
-                  @click="destroy(t)"
-                >销毁</button>
+                <button type="button" class="btn-link" @click="show(r.id)">详情</button>
               </td>
             </tr>
             <tr v-if="!paged.length">
-              <td colspan="9" class="cp-empty">暂无工单</td>
+              <td colspan="9" class="cp-empty">暂无请求</td>
             </tr>
           </tbody>
         </table>
@@ -327,99 +441,313 @@ function destroy(t) {
       </div>
     </div>
 
+    <!-- 主体索引 -->
+    <div v-else class="card cp-list-card">
+      <div class="card-header cp-list-hd">
+        <div class="card-title">
+          主体索引
+          <span class="tip">· 主体在哪些载体、经什么列可定位；没有索引就删不干净</span>
+        </div>
+        <div class="cp-filters">
+          <span class="tag" :class="coverage?.gapCount ? 'tag-orange' : 'tag-green'">
+            高敏覆盖 {{ coverage?.coveragePct ?? '—' }}%
+          </span>
+          <button type="button" class="btn btn-sm btn-primary" @click="mapOpen = true">＋ 登记</button>
+        </div>
+      </div>
+      <div v-if="coverage?.gapTables?.length" class="cp-gap">
+        未登记的高敏资产：
+        <button
+          v-for="g in coverage.gapTables"
+          :key="g"
+          type="button"
+          class="tag tag-orange cp-table-tag"
+          @click="goLineage(g)"
+        >
+          {{ g }}
+        </button>
+      </div>
+      <div class="card-body" style="padding: 0">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>主体类型</th>
+              <th>载体</th>
+              <th>对象</th>
+              <th>定位</th>
+              <th>执行方式</th>
+              <th>范围模板</th>
+              <th>负责人</th>
+              <th>最近核验</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="m in subjectMaps" :key="m.id">
+              <td><code>{{ m.subjectType }}</code></td>
+              <td>{{ m.carrierLabel }}</td>
+              <td>
+                <button type="button" class="btn-link" @click="goLineage(m.objectFqn)">{{ m.objectFqn }}</button>
+              </td>
+              <td style="font-size: 11px">{{ m.idColumn || m.joinPath || '—' }}</td>
+              <td style="font-size: 11px"><code>{{ m.deleteMode }}</code></td>
+              <td style="font-size: 11px">{{ m.scopeTpl || '—' }}</td>
+              <td style="font-size: 11px">{{ m.owner || '—' }}</td>
+              <td style="font-size: 11px">{{ fmt(m.verifiedAt) }}</td>
+            </tr>
+            <tr v-if="!subjectMaps.length">
+              <td colspan="8" class="cp-empty">暂无主体索引</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
     <AppDrawer
       :open="detailOpen"
       storage-key="compliance-drawer"
-      :default-width="560"
-      @close="closeDetail"
+      :default-width="640"
+      @close="detailOpen = false"
     >
-      <div v-if="active" class="drawer-body">
+      <div v-if="detail" class="drawer-body">
         <div class="cp-drawer-hd">
           <div>
             <div class="cp-drawer-title">
-              {{ active.id }}
-              <span class="tag" :class="active.statusCls">{{ active.status }}</span>
+              {{ detail.reqNo }}
+              <span class="tag" :class="statusMeta(detail.status).cls">
+                {{ detail.statusLabel || statusMeta(detail.status).label }}
+              </span>
             </div>
-            <div class="cp-drawer-sub">{{ active.type }} · {{ active.subject }}</div>
+            <div class="cp-drawer-sub">
+              {{ detail.reqTypeLabel }} · <code class="cp-mask">{{ detail.subjectMasked }}</code>
+              <span class="tip"> · 明文仅在 Vault，库内只存 HMAC</span>
+            </div>
           </div>
-          <button type="button" class="btn btn-sm" @click="closeDetail">关闭</button>
+          <button type="button" class="btn btn-sm" @click="detailOpen = false">关闭</button>
         </div>
 
-        <div class="cp-meta">
-          <div><span>申请人</span><b>{{ active.applicant }}</b></div>
-          <div><span>创建时间</span><b>{{ active.createdAt }}</b></div>
-          <div><span>截止日期</span><b>{{ active.deadline }}</b></div>
-          <div><span>审批链</span><b>{{ active.approver }}</b></div>
-        </div>
-
-        <div class="cp-kv">
-          <div class="cp-kv-row"><span>法律依据</span><div>{{ active.law }}</div></div>
-          <div class="cp-kv-row"><span>删除范围</span><div>{{ active.scope }}</div></div>
-          <div class="cp-kv-row"><span>血缘影响</span><div>{{ active.impact }}</div></div>
-          <div class="cp-kv-row"><span>执行方式</span><div>{{ active.execMode }}</div></div>
-          <div v-if="active.executedAt" class="cp-kv-row"><span>执行时间</span><div>{{ active.executedAt }}</div></div>
-          <div v-if="active.destroyAfter" class="cp-kv-row"><span>销毁观察至</span><div>{{ active.destroyAfter }}</div></div>
-        </div>
-
-        <div v-if="active.tables?.length" class="cp-tables">
-          <div class="cp-sec-title">影响表</div>
-          <button
-            v-for="tb in active.tables"
-            :key="tb"
-            type="button"
-            class="tag tag-blue cp-table-tag"
-            @click="goLineage(tb)"
-          >
-            {{ tb }}
+        <div class="cp-tabs cp-drawer-tabs">
+          <button type="button" class="cp-tab" :class="{ active: drawerTab === 'overview' }" @click="drawerTab = 'overview'">概览</button>
+          <button type="button" class="cp-tab" :class="{ active: drawerTab === 'plan' }" @click="drawerTab = 'plan'">
+            计划 {{ plan.total ?? 0 }}
           </button>
+          <button type="button" class="cp-tab" :class="{ active: drawerTab === 'exec' }" @click="drawerTab = 'exec'">执行</button>
+          <button type="button" class="cp-tab" :class="{ active: drawerTab === 'evidence' }" @click="drawerTab = 'evidence'">证据</button>
+          <button type="button" class="cp-tab" :class="{ active: drawerTab === 'fallback' }" @click="drawerTab = 'fallback'">兜底</button>
         </div>
 
-        <div class="cp-sec-title">审批 / 执行时间线</div>
-        <div class="cp-timeline">
-          <div
-            v-for="(n, i) in active.timeline"
-            :key="i"
-            class="cp-tl-item"
-            :class="n.status"
-          >
-            <div class="cp-tl-dot" />
-            <div class="cp-tl-body">
-              <div class="cp-tl-name">
-                {{ n.name }}
-                <span v-if="n.time" class="cp-tl-time">{{ n.time }}</span>
-              </div>
-              <div v-if="n.opinion" class="cp-tl-op">{{ n.opinion }}</div>
+        <!-- 概览 -->
+        <div v-if="drawerTab === 'overview'">
+          <div class="cp-meta">
+            <div><span>申请人 / 来源</span><b>{{ detail.applicant || '—' }} · {{ detail.sourceSystem || '—' }}</b></div>
+            <div><span>来源单号</span><b>{{ detail.sourceRef || '—' }}</b></div>
+            <div><span>受理时间</span><b>{{ fmt(detail.createTime) }}</b></div>
+            <div>
+              <span>截止（SLA 15 工作日）</span>
+              <b>
+                {{ fmt(detail.deadline) }}
+                <span class="tag" :class="slaCls(detail.slaLevel)">
+                  {{ detail.daysLeft == null ? '—' : detail.daysLeft < 0 ? `超期${-detail.daysLeft}天` : `剩${detail.daysLeft}天` }}
+                </span>
+              </b>
             </div>
+          </div>
+
+          <div class="cp-kv">
+            <div class="cp-kv-row"><span>法律依据</span><div>{{ detail.legalBasis || '—' }}</div></div>
+            <div class="cp-kv-row"><span>删除范围</span><div>{{ detail.scopeLabel || '—' }}</div></div>
+            <div class="cp-kv-row">
+              <span>审批单</span>
+              <div>
+                <button v-if="detail.ticketNo" type="button" class="btn-link" @click="goTicket(detail.ticketNo)">
+                  {{ detail.ticketNo }}
+                </button>
+                <span v-else class="tip">未提交（申请中心 compliance_delete）</span>
+              </div>
+            </div>
+            <div class="cp-kv-row"><span>执行窗口</span><div>{{ fmt(detail.execWindow) }}</div></div>
+            <div class="cp-kv-row"><span>执行 / 验证</span><div>{{ fmt(detail.executedAt) }} · {{ fmt(detail.verifiedAt) }}</div></div>
+            <div v-if="detail.destroyAfter" class="cp-kv-row">
+              <span>备份销毁到期</span><div>{{ fmt(detail.destroyAfter) }}</div>
+            </div>
+            <div v-if="detail.holdReason" class="cp-kv-row">
+              <span>冻结原因</span><div class="cp-danger">{{ detail.holdReason }}</div>
+            </div>
+          </div>
+
+          <div class="cp-plan-chips">
+            <span class="tag tag-blue">计划 {{ plan.total ?? 0 }}</span>
+            <span class="tag tag-green">已删 {{ plan.done ?? 0 }}</span>
+            <span class="tag tag-orange">待处理 {{ plan.pending ?? 0 }}</span>
+            <span class="tag tag-orange">限制处理 {{ plan.restricted ?? 0 }}</span>
+            <span class="tag tag-gray">预估 {{ plan.rowsEst ?? 0 }} 行</span>
+          </div>
+
+          <div class="cp-drawer-acts">
+            <button v-if="canAssess" type="button" class="btn btn-sm" :disabled="actionBusy" @click="doAssess">🔍 重新评估</button>
+            <button type="button" class="btn btn-sm" :disabled="actionBusy" @click="doDryRun">🧮 试算</button>
+            <button v-if="canSubmit" type="button" class="btn btn-sm btn-primary" :disabled="actionBusy" @click="doSubmit">📮 提交审批</button>
+            <button v-if="canSchedule" type="button" class="btn btn-sm btn-primary" :disabled="actionBusy" @click="doSchedule">🕑 排期</button>
+            <button v-if="canVerify" type="button" class="btn btn-sm" :disabled="actionBusy" @click="doVerify">✅ 验证残留</button>
+          </div>
+
+          <div v-if="lastDryRun" class="cp-dryrun">
+            <div class="cp-sec-title">试算结果</div>
+            <div>命中 <b>{{ lastDryRun.rowsEstTotal }}</b> 行 / {{ lastDryRun.targets?.length ?? 0 }} 个载体</div>
+            <div class="cp-warn">{{ lastDryRun.snapshotNotice }}</div>
           </div>
         </div>
 
-        <div class="cp-drawer-acts">
-          <button
-            v-if="active.statusKey === 'pending'"
-            type="button"
-            class="btn btn-sm btn-primary"
-            @click="approve(active)"
-          >✓ 同意</button>
-          <button
-            v-if="active.statusKey === 'pending'"
-            type="button"
-            class="btn btn-sm"
-            style="color: var(--danger); border-color: var(--danger)"
-            @click="reject(active)"
-          >✕ 驳回</button>
-          <button
-            v-if="active.statusKey === 'ready'"
-            type="button"
-            class="btn btn-sm btn-primary"
-            @click="execute(active)"
-          >⚡ 执行删除</button>
-          <button
-            v-if="active.statusKey === 'archive'"
-            type="button"
-            class="btn btn-sm"
-            style="color: var(--danger); border-color: var(--danger)"
-            @click="destroy(active)"
-          >🔥 物理销毁</button>
+        <!-- 计划（载体矩阵） -->
+        <div v-else-if="drawerTab === 'plan'">
+          <table class="table cp-mini">
+            <thead>
+              <tr>
+                <th>载体</th>
+                <th>对象</th>
+                <th>方式</th>
+                <th>预估</th>
+                <th>状态</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="t in targets" :key="t.id">
+                <td>{{ t.carrierLabel }}</td>
+                <td>
+                  <button type="button" class="btn-link" @click="goLineage(t.objectFqn)">{{ t.objectFqn }}</button>
+                  <div v-if="t.scopeExpr" class="tip">{{ t.scopeExpr }}</div>
+                </td>
+                <td style="font-size: 11px">{{ t.modeLabel }}</td>
+                <td style="font-size: 11px">
+                  {{ t.rowsEst ?? 0 }}
+                  <span v-if="t.rowsVerified != null" class="tag tag-green">残留 {{ t.rowsVerified }}</span>
+                </td>
+                <td>
+                  <span class="tag" :class="targetCls(t.status)">{{ t.statusLabel }}</span>
+                  <div v-if="t.excludeReason" class="tip">{{ t.excludeReason }}</div>
+                </td>
+                <td class="cp-acts">
+                  <button
+                    v-if="!['done', 'excluded'].includes(t.status)"
+                    type="button"
+                    class="btn-link danger"
+                    @click="excludeId = excludeId === t.id ? '' : t.id"
+                  >排除</button>
+                  <button
+                    v-if="!['done', 'excluded', 'restricted'].includes(t.status)"
+                    type="button"
+                    class="btn-link"
+                    @click="doRestrict([t.id])"
+                  >限制</button>
+                  <div v-if="excludeId === t.id" class="cp-inline-form">
+                    <input v-model="excludeReason" class="input input-sm" placeholder="排除理由（必填）" />
+                    <button type="button" class="btn btn-sm" :disabled="actionBusy" @click="doExclude(t)">确认排除</button>
+                  </div>
+                </td>
+              </tr>
+              <tr v-if="!targets.length">
+                <td colspan="6" class="cp-empty">计划为空，请先评估</td>
+              </tr>
+            </tbody>
+          </table>
+          <div v-if="detail.gapTables?.length" class="cp-warn">
+            主体索引缺口：{{ detail.gapTables.join('、') }}
+          </div>
+        </div>
+
+        <!-- 执行 -->
+        <div v-else-if="drawerTab === 'exec'">
+          <div class="cp-exec-box">
+            <div class="cp-sec-title">执行（不可逆）</div>
+            <div class="cp-warn">
+              执行将按 源库 → 湖表 → CK → 回流 → 出湖 → 平台 → 备份 的顺序推进；
+              涉及的 Iceberg 表会被定向 <code>expire_snapshots(retain_last=1)</code>，短期失去回滚窗口。
+            </div>
+            <div class="cp-inline-form">
+              <input v-model="confirmNo" class="input input-sm" :placeholder="`回填 ${detail.reqNo} 确认`" />
+              <button
+                type="button"
+                class="btn btn-sm btn-primary"
+                :disabled="actionBusy || !canExecute"
+                @click="doExecute"
+              >⚡ 执行删除</button>
+            </div>
+          </div>
+
+          <div class="cp-sec-title">执行与状态流水</div>
+          <div class="cp-timeline">
+            <div v-for="(n, i) in timeline" :key="n.id || i" class="cp-tl-item" :class="n.status === 'success' ? 'done' : n.status === 'queued' ? 'pending' : 'current'">
+              <div class="cp-tl-dot" />
+              <div class="cp-tl-body">
+                <div class="cp-tl-name">
+                  <code>{{ n.step }}</code>
+                  <span class="cp-tl-time">{{ fmt(n.at) }} · {{ n.operator || '—' }}</span>
+                </div>
+                <div v-if="n.detail" class="cp-tl-op">{{ n.detail }}</div>
+                <button v-if="n.runId" type="button" class="btn-link" @click="goLifecycle">
+                  生命周期运行 {{ n.runId }}
+                </button>
+              </div>
+            </div>
+            <div v-if="!timeline.length" class="cp-empty">暂无流水</div>
+          </div>
+        </div>
+
+        <!-- 证据 -->
+        <div v-else-if="drawerTab === 'evidence'">
+          <div class="cp-drawer-acts">
+            <button type="button" class="btn btn-sm" :disabled="actionBusy" @click="refreshEvidence">📦 生成 / 刷新证据包</button>
+          </div>
+          <div v-if="evidence">
+            <div class="cp-kv-row"><span>摘要 sha256</span><div><code>{{ evidence.sha256 }}</code></div></div>
+            <div class="cp-kv-row"><span>归档路径</span><div><code>{{ evidence.objectPath }}</code></div></div>
+            <div class="cp-sec-title">完备性检查</div>
+            <div v-for="c in evidence.checklist" :key="c.name" class="cp-check">
+              <span :class="c.ok ? 'ok' : 'miss'">{{ c.ok ? '✓' : '✕' }}</span>
+              <b>{{ c.name }}</b>
+              <span class="tip">{{ c.detail }}</span>
+            </div>
+            <div class="cp-sec-title">证据条目</div>
+            <div v-for="(it, i) in evidence.package?.items || []" :key="i" class="cp-evi">
+              <span class="tag tag-blue">{{ it.kind }}</span>
+              <b>{{ it.title }}</b>
+              <div class="tip">{{ it.content }}</div>
+            </div>
+          </div>
+          <div v-else class="tip">点击上方按钮生成证据包快照。</div>
+        </div>
+
+        <!-- 兜底 -->
+        <div v-else>
+          <div class="cp-sec-title">限制处理（个保法 §47）</div>
+          <div class="tip">
+            删不掉或法定保存期未届满时：停止除存储与必要安全保护之外的处理 —— 撤 ACL + 强制脱敏 + 禁出湖 / 禁 API / 禁训练 + 到期复查。
+          </div>
+          <div class="cp-inline-form">
+            <input v-model="restrictReason" class="input input-sm" placeholder="依据，如 法定保存期未届满" />
+            <button type="button" class="btn btn-sm" :disabled="actionBusy" @click="doRestrict(null)">
+              🚫 剩余载体转限制处理
+            </button>
+          </div>
+
+          <div class="cp-sec-title">法务冻结</div>
+          <div class="cp-inline-form">
+            <input v-model="holdReason" class="input input-sm" placeholder="诉讼保全 / 监管调查 / 法定保存期" />
+            <button type="button" class="btn btn-sm" :disabled="actionBusy" @click="doHold">🔒 冻结</button>
+            <button type="button" class="btn btn-sm" :disabled="actionBusy" @click="doRelease">🔓 解除</button>
+          </div>
+
+          <div class="cp-sec-title">中止请求</div>
+          <div class="cp-inline-form">
+            <input v-model="abortReason" class="input input-sm" placeholder="中止原因（必填）" />
+            <button
+              type="button"
+              class="btn btn-sm"
+              style="color: var(--danger); border-color: var(--danger)"
+              :disabled="actionBusy"
+              @click="doAbort"
+            >✕ 中止</button>
+          </div>
         </div>
       </div>
     </AppDrawer>
@@ -428,10 +756,10 @@ function destroy(t) {
 
 <style scoped>
 .cp-kpi {
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(6, 1fr);
   margin-bottom: 16px;
 }
-@media (max-width: 1200px) {
+@media (max-width: 1400px) {
   .cp-kpi { grid-template-columns: repeat(3, 1fr); }
 }
 @media (max-width: 700px) {
@@ -439,12 +767,22 @@ function destroy(t) {
 }
 
 .tip {
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 400;
   color: var(--text-3);
 }
 
+.cp-degraded {
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  background: var(--warning-light);
+  color: var(--warning);
+  border-radius: 6px;
+  font-size: 12px;
+}
+
 .cp-flow { margin-bottom: 16px; }
+.cp-sla-chips { display: flex; gap: 6px; margin-left: auto; }
 .cp-stages {
   display: flex;
   flex-wrap: wrap;
@@ -483,6 +821,16 @@ function destroy(t) {
   font-size: 11px;
 }
 
+.cp-switch {
+  display: flex;
+  gap: 4px;
+  background: var(--bg-2);
+  padding: 3px;
+  border-radius: 8px;
+  margin-bottom: 12px;
+  width: fit-content;
+}
+
 .cp-list-card { margin-top: 0; }
 .cp-list-hd {
   flex-wrap: wrap;
@@ -504,6 +852,7 @@ function destroy(t) {
   padding: 3px;
   border-radius: 8px;
 }
+.cp-drawer-tabs { margin-bottom: 14px; }
 .cp-tab {
   border: none;
   background: transparent;
@@ -513,6 +862,9 @@ function destroy(t) {
   cursor: pointer;
   color: var(--text-2);
   font: inherit;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 .cp-tab.active {
   background: #fff;
@@ -521,15 +873,14 @@ function destroy(t) {
   box-shadow: var(--shadow-sm);
 }
 .cp-search { width: 200px; }
+.cp-mask { font-size: 11px; }
 
-.cp-impact {
-  max-width: 220px;
+.cp-gap {
+  padding: 8px 16px 0;
   font-size: 11px;
-  color: var(--text-2);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  color: var(--text-3);
 }
+
 .cp-acts {
   display: flex;
   flex-wrap: wrap;
@@ -552,7 +903,6 @@ function destroy(t) {
   font: inherit;
 }
 .btn-link:hover { text-decoration: underline; }
-.btn-link.ok { color: var(--success); }
 .btn-link.danger { color: var(--danger); }
 
 .cp-drawer-hd {
@@ -597,26 +947,80 @@ function destroy(t) {
 .cp-kv { margin-bottom: 14px; }
 .cp-kv-row {
   display: grid;
-  grid-template-columns: 88px 1fr;
+  grid-template-columns: 96px 1fr;
   gap: 8px;
   padding: 8px 0;
   border-bottom: 1px solid var(--border);
   font-size: 12px;
 }
 .cp-kv-row span { color: var(--text-3); }
-.cp-kv-row div { color: var(--text-1); line-height: 1.5; }
+.cp-kv-row div { color: var(--text-1); line-height: 1.5; word-break: break-all; }
+.cp-danger { color: var(--danger); }
+
+.cp-plan-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
 
 .cp-sec-title {
   font-size: 12px;
   font-weight: 650;
   margin: 12px 0 8px;
 }
-.cp-tables { margin-bottom: 8px; }
 .cp-table-tag {
   margin: 0 6px 6px 0;
   cursor: pointer;
   border: none;
   font: inherit;
+}
+
+.cp-mini :deep(td),
+.cp-mini :deep(th) { font-size: 12px; }
+
+.cp-inline-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 8px 0 12px;
+}
+.cp-inline-form .input { flex: 1; min-width: 180px; }
+
+.cp-exec-box {
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 14px;
+}
+.cp-warn {
+  font-size: 11px;
+  color: var(--warning);
+  background: var(--warning-light);
+  padding: 8px 10px;
+  border-radius: 6px;
+  margin: 8px 0;
+}
+.cp-dryrun { font-size: 12px; }
+
+.cp-check {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 12px;
+  padding: 4px 0;
+}
+.cp-check .ok { color: var(--success); }
+.cp-check .miss { color: var(--danger); }
+.cp-evi {
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
 }
 
 .cp-timeline {

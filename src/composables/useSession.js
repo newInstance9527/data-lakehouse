@@ -34,13 +34,15 @@ function isSuperAdminUser(user) {
   return normIdentity(user.account) === 'superadmin'
 }
 
-function mapUser(raw) {
+export function mapUser(raw) {
   if (!raw) return null
   const roles = Array.isArray(raw.roleCodeList)
     ? raw.roleCodeList
     : Array.isArray(raw.roles)
       ? raw.roles
       : []
+  const storedWs =
+    (typeof localStorage !== 'undefined' && localStorage.getItem('lh_current_ws')) || 'default'
   return {
     id: raw.id,
     name: raw.name || raw.nickname || raw.account || '用户',
@@ -51,7 +53,7 @@ function mapUser(raw) {
     roles,
     buttonCodeList: raw.buttonCodeList || [],
     permissionCodeList: raw.permissionCodeList || [],
-    ws: 'default',
+    ws: storedWs,
     raw,
   }
 }
@@ -104,6 +106,21 @@ export function useSession() {
   const user = computed(() => currentUser.value)
   const isLoggedIn = computed(() => Boolean(getToken() && currentUser.value))
   const isSuperAdmin = computed(() => isSuperAdminUser(currentUser.value))
+  /** 当前协作工作空间（软上下文，非 Catalog 隔离） */
+  const currentWs = computed(() => currentUser.value?.ws || 'default')
+
+  function setCurrentWs(ws) {
+    const next = String(ws || 'default').trim() || 'default'
+    try {
+      localStorage.setItem('lh_current_ws', next)
+    } catch {
+      /* ignore */
+    }
+    if (currentUser.value) {
+      currentUser.value = { ...currentUser.value, ws: next }
+    }
+    return next
+  }
 
   const allowedNavIds = computed(() => {
     if (isSuperAdmin.value) return null
@@ -349,6 +366,8 @@ export function useSession() {
 
   return {
     user,
+    currentWs,
+    setCurrentWs,
     isLoggedIn,
     isSuperAdmin,
     ready: readonly(ready),

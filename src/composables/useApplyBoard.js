@@ -37,13 +37,16 @@ export function mapServerTicket(t, sideHint) {
   const payload = parsePayload(t.payload)
   const isExport = t.ticketType === 'lake_export' || t.ticketType === 'export'
   const isOps = t.ticketType === 'resource_manage' || t.ticketType === 'manage'
+  const isApiPublish = t.ticketType === 'api_publish' || t.ticketType === 'publish_api'
   const type = isExport
     ? 'export'
     : isOps
       ? 'ops'
-      : t.ticketType === 'table_read'
-        ? 'perm'
-        : t.ticketType || 'perm'
+      : isApiPublish
+        ? 'publish'
+        : t.ticketType === 'table_read'
+          ? 'perm'
+          : t.ticketType || 'perm'
   const status = t.status || sideHint || 'pending'
   const side = status === 'approved' ? 'approved' : status === 'rejected' ? 'rejected' : 'pending'
   const tableLabel = payload.exportTable || payload.assetCode || t.title || t.ticketNo
@@ -146,6 +149,47 @@ export function mapServerTicket(t, sideHint) {
               { label: '✓ 提交', cls: 'done' },
               { label: '● 审批', cls: 'current' },
               { label: `写 ${privilege} grant`, cls: '' },
+            ],
+    }
+  }
+
+  if (type === 'publish') {
+    const path = payload.publicPath || payload.path || t.title || ticketNo
+    const method = String(payload.method || 'GET').toUpperCase()
+    return {
+      id,
+      serverId: t.id,
+      fromServer: true,
+      ticketNo,
+      type: 'publish',
+      side,
+      apiBindingId: payload.apiBindingId,
+      apiPath: path,
+      method,
+      purpose: purposeText,
+      expire: expireLabel,
+      applicant: t.applicant || '我',
+      titleHtml:
+        side === 'approved'
+          ? `<span class="tag tag-green">已通过</span> API 发布 ${method} ${path} · ${ticketNo}`
+          : `<span class="tag tag-purple">发布</span> API ${method} ${path}`,
+      statusTag: side === 'pending' ? '待 API Owner' : side === 'approved' ? '可发布' : '已驳回',
+      statusCls: side === 'approved' ? 'tag-green' : 'tag-orange',
+      time: t.createTime || nowLabel(),
+      desc:
+        purposeText ||
+        `api_publish · 绑定 ${payload.apiBindingId || '—'} · 单号 ${ticketNo}（填回工作台发布门禁）`,
+      timeline:
+        side === 'approved'
+          ? [
+              { label: '✓ 提交', cls: 'done' },
+              { label: '✓ API Owner', cls: 'done' },
+              { label: `✓ ${ticketNo}`, cls: 'done' },
+            ]
+          : [
+              { label: '✓ 提交', cls: 'done' },
+              { label: '● API Owner', cls: 'current' },
+              { label: '工作台发布', cls: '' },
             ],
     }
   }

@@ -1,58 +1,52 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
 import { useToast } from '@/composables/useToast'
+import { useSession } from '@/composables/useSession'
 import { pageGuideOf } from '@/data/pageGuides'
-import { formatSql } from '@/utils/sqlFormat'
+import DevelopSqlEditor from '@/components/develop/DevelopSqlEditor.vue'
+import { resolveEngineDialect } from '@/utils/engineSqlDialect'
+import { formatEngineSql } from '@/utils/sqlFormat'
 import {
-  DEV_ENGINES,
-  DEV_ENVS,
-  DEV_KPIS,
-  DEV_RELEASES,
-  DEV_TREE,
-  lintTagClass,
-  releaseTagClass,
-  statusTagClass,
-  udfsForEngine,
-} from '@/data/develop'
+  commitScript,
+  createRelease,
+  createScript,
+  fetchScriptContent,
+  fetchScriptKpis,
+  fetchScriptRuns,
+  fetchScriptRun,
+  fetchScriptTree,
+  fetchUdfs,
+  runScript,
+} from '@/api/compute'
+import { DEV_ENGINES, DEV_ENVS, lintTagClass, statusTagClass } from '@/data/develop'
 
+const route = useRoute()
 const router = useRouter()
 const { showToast } = useToast()
+const { currentWs } = useSession()
 const guide = pageGuideOf('develop')
 
-const tree = ref(
-  DEV_TREE.map((n) => ({
-    ...n,
-    open: n.type === 'folder' ? !!n.open : undefined,
-    engine: n.type === 'file' ? n.engine || 'spark' : undefined,
-  })),
-)
-
-const files = computed(() => tree.value.filter((n) => n.type === 'file'))
-const activeId = ref(files.value.find((f) => f.name === 'gmv_by_channel_7d.sql')?.id || files.value[0]?.id || '')
+const tree = ref([])
+const kpis = ref([])
+const udfs = ref([])
+const runs = ref([])
+const trialResult = ref(null)
+const resultTab = ref('table')
+const trialing = ref(false)
+const wsLabel = ref('default')
+const loadError = ref('')
+const activeId = ref('')
 const sqlText = ref('')
 const env = ref('TEST')
 const engine = ref('spark')
 const dirty = ref(false)
 
+const files = computed(() => tree.value.filter((n) => n.type === 'file'))
 const activeFile = computed(() => files.value.find((f) => f.id === activeId.value) || null)
 const engineLabel = computed(
   () => DEV_ENGINES.find((e) => e.value === engine.value)?.label || engine.value,
-)
-
-const visibleUdfs = computed(() => udfsForEngine(engine.value))
-
-watch(
-  activeFile,
-  (f) => {
-    if (!f) return
-    sqlText.value = f.sql || ''
-    env.value = f.env || 'TEST'
-    engine.value = f.engine || 'spark'
-    dirty.value = false
-  },
-  { immediate: true },
 )
 
 const treeNodes = computed(() => {
@@ -61,147 +55,266 @@ const treeNodes = computed(() => {
   return nodes.filter((n) => n.type === 'folder' || !closed.has(n.folder))
 })
 
+function applyLoaded(file) {
+  if (!file) return
+  const idx = tree.value.findIndex((n) => n.id === file.id)
+  if (idx >= 0) tree.value[idx] = { ...tree.value[idx], ...file, type: 'file' }
+  sqlText.value = file.sql || ''
+  env.value = file.env || 'TEST'
+  engine.value = file.engine || 'spark'
+  dirty.value = false
+}
+
+async function loadRuns(id) {
+  if (!id) {
+    runs.value = []
+    return
+  }
+  try {
+    runs.value = (await fetchScriptRuns(id)) || []
+  } catch {
+    runs.value = []
+  }
+}
+
+async function loadUdfs() {
+  try {
+    udfs.value = (await fetchUdfs(engine.value)) || []
+  } catch {
+    udfs.value = []
+  }
+}
+
+async function loadBoard() {
+  const ws = currentWs.value || 'default'
+  wsLabel.value = ws
+  try {
+    const [treeResp, kpiResp] = await Promise.all([fetchScriptTree(ws), fetchScriptKpis(ws)])
+    tree.value = (treeResp?.nodes || []).map((n) => ({
+      ...n,
+      open: n.type === 'folder' ? n.open !== false : undefined,
+    }))
+    kpis.value = kpiResp || []
+    wsLabel.value = treeResp?.ws || ws
+    loadError.value = ''
+    if (!files.value.some((f) => f.id === activeId.value)) {
+      activeId.value = files.value[0]?.id || ''
+    }
+    if (activeId.value) {
+      applyLoaded(await fetchScriptContent(activeId.value))
+      await loadRuns(activeId.value)
+    }
+    await loadUdfs()
+  } catch (e) {
+    loadError.value = e?.message || '开发脚本接口不可用'
+    showToast(loadError.value, 'warning')
+  }
+}
+
 function toggleFolder(node) {
   if (node.type !== 'folder') return
   node.open = !node.open
 }
 
-function selectFile(node) {
+async function selectFile(node) {
   if (node.type !== 'file') return
   if (dirty.value && !window.confirm('当前脚本有未保存修改，切换将丢弃，继续？')) return
   activeId.value = node.id
+  try {
+    applyLoaded(await fetchScriptContent(node.id))
+    await loadRuns(node.id)
+  } catch (e) {
+    showToast(e?.message || '读取脚本失败', 'warning')
+  }
 }
 
-function onSqlInput(e) {
-  sqlText.value = e.target.value
+function onSqlInput(value) {
+  sqlText.value = typeof value === 'string' ? value : value?.target?.value || ''
   dirty.value = true
 }
 
 function onFormat() {
-  sqlText.value = formatSql(sqlText.value)
+  sqlText.value = formatEngineSql(sqlText.value, resolveEngineDialect(engine.value))
   dirty.value = true
-  showToast('✅ 已格式化 SQL', 'success')
+  showToast(`已按 ${engineLabel.value} 格式化`, 'success')
 }
 
-function onSave() {
+async function onSave() {
   const f = activeFile.value
   if (!f) return
-  f.sql = sqlText.value
-  f.env = env.value
-  f.engine = engine.value
-  f.editedAt = '刚刚'
-  dirty.value = false
-  showToast(`💾 已自动保存 ${f.name}`, 'success')
-}
-
-function onTrialRun() {
-  const f = activeFile.value
-  if (f) {
-    f.env = env.value
-    f.engine = engine.value
-  }
-  const runId = `run-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${String(Date.now()).slice(-4)}`
-  showToast(
-    `▶ 已在 ${env.value} · ${engineLabel.value} 提交试跑 ${f?.name || ''} · ${runId}`,
-    'info',
-  )
-}
-
-function onSubmitPublish() {
-  const f = activeFile.value
-  if (f) {
-    f.env = env.value
-    f.engine = engine.value
-  }
-  showToast(
-    `🚀 已推到发布单：上版-${env.value}-${engine.value}-${f?.name || 'script'} ${f?.version || ''}`,
-    'success',
-  )
-  router.push({
-    path: '/publish',
-    query: {
-      script: f?.name || '',
+  try {
+    const saved = await commitScript({
+      id: f.id,
+      ws: currentWs.value,
+      sql: sqlText.value,
       engine: engine.value,
       env: env.value,
-    },
-  })
+    })
+    applyLoaded(saved)
+    if (saved.remoteWarning) showToast(saved.remoteWarning, 'warning')
+    showToast(`已提交 Git ${saved.version || ''} ${f.name}`, 'success')
+    kpis.value = (await fetchScriptKpis(currentWs.value)) || kpis.value
+    return true
+  } catch (e) {
+    showToast(e?.message || '保存失败', 'warning')
+    return false
+  }
 }
 
-function onNewScript() {
-  const id = `script_${Date.now()}`
-  const name = `untitled_${new Date().toISOString().slice(11, 19).replace(/:/g, '')}.sql`
-  const folder = tree.value.find((n) => n.type === 'folder' && n.open) || tree.value.find((n) => n.type === 'folder')
-  if (folder) folder.open = true
-  const file = {
-    id,
-    type: 'file',
-    folder: folder?.id || 'folder_trade',
-    name,
-    lang: 'SQL',
-    status: 'DRAFT',
-    badge: '',
-    version: 'v1',
-    author: '张明',
-    editedAt: '刚刚',
-    links: '—',
-    env: 'TEST',
-    engine: engine.value || 'spark',
-    lint: [{ label: '新建脚本 · 待检查', tone: 'warn' }],
-    sql: `-- ${name}\nSELECT 1;\n`,
+async function onTrialRun() {
+  const f = activeFile.value
+  if (!f || trialing.value) return
+  trialing.value = true
+  try {
+    const run = await runScript({
+      id: f.id,
+      ws: currentWs.value,
+      sql: sqlText.value,
+      engine: engine.value,
+      env: env.value,
+    })
+    dirty.value = false
+    applyLoaded(await fetchScriptContent(f.id))
+    await loadRuns(f.id)
+    showRunResult(run)
+    showToast(run.message || `试跑 ${run.runId}`, run.status === 'failed' ? 'warning' : 'info')
+  } catch (e) {
+    showToast(e?.message || '试跑失败', 'warning')
+  } finally {
+    trialing.value = false
   }
-  const idx = tree.value.findIndex((n) => n.id === folder?.id)
-  tree.value.splice(idx >= 0 ? idx + 1 : tree.value.length, 0, file)
-  activeId.value = id
-  showToast(`已新建脚本 ${name}`, 'success')
 }
+
+function showRunResult(run) {
+  trialResult.value = run || null
+  const cols = run?.columns || []
+  resultTab.value = cols.length ? 'table' : 'log'
+}
+
+async function openRun(run) {
+  if (!run?.runId) return
+  try {
+    const detail = await fetchScriptRun(run.runId)
+    showRunResult(detail)
+    const idx = runs.value.findIndex((item) => item.runId === detail.runId)
+    if (idx >= 0) {
+      runs.value[idx] = { ...runs.value[idx], ...detail, columns: undefined, rows: undefined, log: undefined }
+    }
+  } catch (e) {
+    showToast(e?.message || '读取试跑结果失败', 'warning')
+  }
+}
+
+function cellText(row, key) {
+  const value = row?.[key]
+  if (value == null || value === '') return '—'
+  if (typeof value === 'object') return JSON.stringify(value)
+  return String(value)
+}
+
+async function onSubmitPublish() {
+  const f = activeFile.value
+  if (!f) return
+  try {
+    if (dirty.value) {
+      const ok = await onSave()
+      if (!ok) return
+    }
+    const rel = await createRelease({
+      scriptId: f.id,
+      ws: currentWs.value,
+      engine: engine.value,
+      env: env.value,
+    })
+    showToast(`已生成发布单 ${rel.pkg} · ${rel.result}`, rel.status === 'REJECTED' ? 'warning' : 'success')
+    router.push({ path: '/publish', query: { id: rel.id } })
+  } catch (e) {
+    showToast(e?.message || '提交上版失败', 'warning')
+  }
+}
+
+async function onNewScript() {
+  const folderNode = tree.value.find((n) => n.type === 'folder' && n.open) || tree.value.find((n) => n.type === 'folder')
+  const name = `untitled_${new Date().toISOString().slice(11, 19).replace(/:/g, '')}.sql`
+  try {
+    const created = await createScript({
+      ws: currentWs.value,
+      folder: folderNode?.name || 'default',
+      name,
+      engine: engine.value,
+      env: 'TEST',
+      sql: `-- ${name}\nSELECT 1;\n`,
+    })
+    await loadBoard()
+    activeId.value = created.id
+    applyLoaded(created)
+    showToast(`已新建脚本 ${created.name}`, 'success')
+    return created
+  } catch (e) {
+    showToast(e?.message || '新建失败', 'warning')
+    return null
+  }
+}
+
+async function importSqlDraft(sql, suggestedName) {
+  const text = String(sql || '').trim()
+  if (!text) return
+  const raw = suggestedName
+    ? String(suggestedName)
+    : `from_query_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}.sql`
+  const name = raw.endsWith('.sql') ? raw : `${raw}.sql`
+  try {
+    const created = await createScript({
+      ws: currentWs.value,
+      folder: 'default',
+      name,
+      engine: engine.value,
+      env: 'TEST',
+      sql: text,
+    })
+    await loadBoard()
+    activeId.value = created.id
+    applyLoaded({ ...created, sql: text })
+    dirty.value = false
+    showToast(`已从即席导入 ${created.name}`, 'success')
+  } catch (e) {
+    showToast(e?.message || '导入失败', 'warning')
+  }
+}
+
+function applyImportDeepLink() {
+  const q = route.query || {}
+  const sql = typeof q.importSql === 'string' ? q.importSql : typeof q.sql === 'string' ? q.sql : ''
+  if (!sql) return
+  importSqlDraft(sql, typeof q.name === 'string' ? q.name : '')
+}
+
+const sqlEditorRef = ref(null)
 
 function insertUdf(u) {
   const snippet = u.snippet || u.name
-  const el = document.getElementById('devSqlArea')
-  if (el && typeof el.selectionStart === 'number') {
-    const start = el.selectionStart
-    const end = el.selectionEnd
-    const v = sqlText.value || ''
-    sqlText.value = `${v.slice(0, start)}${snippet}${v.slice(end)}`
-    dirty.value = true
-    requestAnimationFrame(() => {
-      el.focus()
-      const pos = start + snippet.length
-      el.selectionStart = el.selectionEnd = pos
-    })
-  } else {
-    sqlText.value = `${sqlText.value || ''}${snippet}`
-    dirty.value = true
-  }
+  sqlEditorRef.value?.insertText(snippet)
+  dirty.value = true
   showToast(`已插入 UDF：${u.name}`, 'success')
 }
 
 function showUdfDetail(u) {
-  showToast(`🔧 ${u.name} · ${u.engine} · ${u.ver} · ${u.uses}`, 'info')
+  showToast(`${u.name} · ${u.engine} · ${u.ver} · ${u.uses}`, 'info')
 }
 
-function onKeydown(e) {
-  if (e.key === 'Tab') {
-    e.preventDefault()
-    const el = e.target
-    const start = el.selectionStart
-    const end = el.selectionEnd
-    const v = sqlText.value || ''
-    sqlText.value = `${v.slice(0, start)}  ${v.slice(end)}`
-    dirty.value = true
-    requestAnimationFrame(() => {
-      el.selectionStart = el.selectionEnd = start + 2
-    })
-  }
-  if ((e.ctrlKey || e.metaKey) && e.key === 's') {
-    e.preventDefault()
-    onSave()
-  }
-  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-    e.preventDefault()
-    onTrialRun()
-  }
-}
+watch(engine, () => loadUdfs())
+watch(activeId, () => {
+  trialResult.value = null
+})
+watch(currentWs, () => loadBoard())
+watch(
+  () => `${route.query.importSql || ''}|${route.query.sql || ''}`,
+  () => applyImportDeepLink(),
+)
+onMounted(async () => {
+  await loadBoard()
+  applyImportDeepLink()
+})
 </script>
 
 <template>
@@ -213,12 +326,16 @@ function onKeydown(e) {
       :guide="guide"
     >
       <button class="btn btn-sm" @click="onSave">💾 自动保存</button>
-      <button class="btn btn-sm" @click="onTrialRun">▶ 试跑({{ engineLabel }} · {{ env }})</button>
+      <button class="btn btn-sm" :disabled="trialing" @click="onTrialRun">
+        {{ trialing ? '试跑中…' : `▶ 试跑(${engineLabel} · ${env})` }}
+      </button>
       <button class="btn btn-sm btn-primary" @click="onSubmitPublish">🚀 提交上版 →</button>
     </PageHeader>
 
+    <div v-if="loadError" class="banner-soft">{{ loadError }}。需要 Flyway V26 并重启后端。</div>
+
     <div class="kpi-grid dev-kpi">
-      <div v-for="(k, i) in DEV_KPIS" :key="i" class="kpi-card">
+      <div v-for="(k, i) in kpis" :key="i" class="kpi-card">
         <div class="kpi-label">{{ k.label }}</div>
         <div class="kpi-value">
           {{ k.value }}<span class="kpi-unit">{{ k.unit }}</span>
@@ -232,7 +349,7 @@ function onKeydown(e) {
       <aside class="card dev-tree-card">
         <div class="card-header">
           <div class="card-title">🗂️ 开发资源树</div>
-          <span class="dev-ws">ws_trade</span>
+          <span class="dev-ws">{{ wsLabel }}</span>
         </div>
         <div class="dev-tree">
           <button
@@ -298,13 +415,15 @@ function onKeydown(e) {
           </div>
         </div>
 
-        <textarea
-          id="devSqlArea"
-          class="dev-sql"
-          spellcheck="false"
-          :value="sqlText"
-          @input="onSqlInput"
-          @keydown="onKeydown"
+        <DevelopSqlEditor
+          ref="sqlEditorRef"
+          :model-value="sqlText"
+          :engine="engine"
+          :udfs="udfs"
+          @update:model-value="onSqlInput"
+          @save="onSave"
+          @run="onTrialRun"
+          @format="onFormat"
         />
 
         <div class="dev-code-head">
@@ -324,6 +443,55 @@ function onKeydown(e) {
             <span v-if="!activeFile?.lint?.length" class="muted">暂无检查项</span>
           </div>
         </div>
+
+        <div class="dev-result">
+          <div class="dev-result-bar">
+            <span class="dev-result-title">试跑结果</span>
+            <template v-if="trialResult">
+              <span class="tag" :class="trialResult.status === 'failed' ? 'tag-red' : trialResult.status === 'ok' ? 'tag-green' : 'tag-blue'">
+                {{ trialResult.status }}
+              </span>
+              <span class="muted">{{ trialResult.engine }} · {{ trialResult.env }}</span>
+              <span v-if="trialResult.rowCount != null" class="muted">{{ trialResult.rowCount }} 行</span>
+              <span v-if="trialResult.durMs != null" class="muted">{{ trialResult.durMs }} ms</span>
+              <span v-if="trialResult.truncated" class="tag tag-orange">已截断</span>
+            </template>
+            <span class="dev-result-tabs">
+              <button type="button" class="btn btn-sm" :class="{ 'btn-primary': resultTab === 'table' }" @click="resultTab = 'table'">结果表</button>
+              <button type="button" class="btn btn-sm" :class="{ 'btn-primary': resultTab === 'log' }" @click="resultTab = 'log'">日志</button>
+              <button
+                v-if="trialResult && (trialResult.status === 'running' || trialResult.status === 'submitted')"
+                type="button"
+                class="btn btn-sm"
+                @click="openRun(trialResult)"
+              >刷新</button>
+            </span>
+          </div>
+          <div v-if="!trialResult" class="dev-result-empty">试跑后在这里看结果表。Spark / Flink 的结果表是 Trino 抽样，调度日志在「日志」。</div>
+          <template v-else>
+            <div v-if="trialResult.previewNote" class="dev-result-note">{{ trialResult.previewNote }}</div>
+            <div v-if="trialResult.message && trialResult.status === 'failed'" class="dev-result-note is-fail">{{ trialResult.message }}</div>
+            <div v-if="resultTab === 'table'" class="dev-result-table-wrap">
+              <table v-if="(trialResult.columns || []).length" class="dev-result-table">
+                <thead>
+                  <tr>
+                    <th v-for="col in trialResult.columns" :key="col">{{ col }}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(row, i) in trialResult.rows || []" :key="i">
+                    <td v-for="col in trialResult.columns" :key="col">{{ cellText(row, col) }}</td>
+                  </tr>
+                  <tr v-if="!(trialResult.rows || []).length">
+                    <td :colspan="trialResult.columns.length" class="muted">查询完成，没有返回行</td>
+                  </tr>
+                </tbody>
+              </table>
+              <div v-else class="dev-result-empty">{{ trialResult.message || '这次试跑没有结果表' }}</div>
+            </div>
+            <pre v-else class="dev-result-log">{{ trialResult.log || trialResult.message || '暂无日志' }}</pre>
+          </template>
+        </div>
       </section>
 
       <!-- 右侧 UDF + 发布 -->
@@ -334,8 +502,8 @@ function onKeydown(e) {
             <span class="tag tag-gray">{{ engineLabel }}</span>
           </div>
           <div class="udf-grid">
-            <button
-              v-for="u in visibleUdfs"
+              <button
+              v-for="u in udfs"
               :key="u.name"
               type="button"
               class="udf-card"
@@ -350,13 +518,34 @@ function onKeydown(e) {
               </div>
               <div class="udf-uses">↗ {{ u.uses }}</div>
             </button>
-            <div v-if="!visibleUdfs.length" class="muted" style="padding: 12px; font-size: 12px">
+            <div v-if="!udfs.length" class="muted" style="padding: 12px; font-size: 12px">
               当前引擎暂无登记 UDF
             </div>
           </div>
         </div>
 
-      
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">最近试跑</div>
+          </div>
+          <div class="card-body" style="padding: 0">
+            <div v-if="!runs.length" class="muted" style="padding: 12px; font-size: 12px">还没有试跑记录</div>
+            <button
+              v-for="r in runs"
+              :key="r.id"
+              type="button"
+              :class="{
+                'dev-run': true,
+                active: trialResult && trialResult.runId === r.runId,
+              }"
+              @click="openRun(r)"
+            >
+              <span class="tag" :class="r.status === 'failed' ? 'tag-red' : r.status === 'ok' ? 'tag-green' : 'tag-blue'">{{ r.status }}</span>
+              <span>{{ r.env }} · {{ r.engine }}</span>
+              <span class="muted">{{ r.gitSha }}</span>
+            </button>
+          </div>
+        </div>
       </aside>
     </div>
   </div>
@@ -462,6 +651,22 @@ function onKeydown(e) {
   padding: 10px;
   border-top: 1px dashed var(--border);
 }
+.dev-run {
+  width: 100%;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 12px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.dev-run.active {
+  background: var(--primary-light, #e6f4ff);
+}
 
 .dev-editor-card {
   overflow: hidden;
@@ -501,22 +706,8 @@ function onKeydown(e) {
   color: var(--text-3);
   font-weight: 600;
 }
-.dev-sql {
-  display: block;
-  width: 100%;
-  min-height: 300px;
-  background: #0b1325;
-  color: #c7d5ec;
-  border: none;
-  border-radius: 0;
-  padding: 14px 16px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12.5px;
-  line-height: 1.7;
-  resize: vertical;
-  box-sizing: border-box;
-  outline: none;
-  tab-size: 2;
+.dev-editor-card :deep(.dev-sql-editor) {
+  border-top: 1px solid var(--border);
 }
 .dev-code-head {
   display: flex;
@@ -542,6 +733,79 @@ function onKeydown(e) {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+.dev-result {
+  border-top: 1px solid var(--border);
+  background: var(--bg-1, #fff);
+}
+.dev-result-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 14px;
+}
+.dev-result-title {
+  font-size: 12px;
+  font-weight: 600;
+}
+.dev-result-tabs {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 6px;
+}
+.dev-result-note {
+  margin: 0 14px 8px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+.dev-result-note.is-fail {
+  color: var(--danger, #c2410c);
+}
+.dev-result-empty {
+  padding: 12px 14px 16px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+.dev-result-table-wrap {
+  max-height: 280px;
+  overflow: auto;
+  border-top: 1px solid var(--border);
+}
+.dev-result-table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.dev-result-table th,
+.dev-result-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  white-space: nowrap;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dev-result-table th {
+  position: sticky;
+  top: 0;
+  background: var(--bg-2, #f6f7f9);
+  font-weight: 600;
+}
+.dev-result-log {
+  margin: 0;
+  padding: 10px 14px 14px;
+  max-height: 280px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  background: #0b1325;
+  color: #c7d5ec;
 }
 .muted {
   font-size: 12px;

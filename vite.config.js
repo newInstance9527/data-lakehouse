@@ -1,9 +1,18 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
+import monacoEditorPlugin from '@dvaji/vite-plugin-monaco-editor'
 import { fileURLToPath, URL } from 'node:url'
 
 export default defineConfig({
-  plugins: [vue()],
+  plugins: [
+    vue(),
+    monacoEditorPlugin({
+      languageWorkers: ['editorWorkerService'],
+      customDistPath(_root, buildOutDir) {
+        return `${buildOutDir}/monacoeditorwork`
+      },
+    }),
+  ],
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
@@ -24,6 +33,10 @@ export default defineConfig({
         changeOrigin: true,
       },
       '/sys': {
+        target: process.env.VITE_API_PROXY || 'http://127.0.0.1:8080',
+        changeOrigin: true,
+      },
+      '/api': {
         target: process.env.VITE_API_PROXY || 'http://127.0.0.1:8080',
         changeOrigin: true,
       },

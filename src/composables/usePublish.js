@@ -1,40 +1,75 @@
-import { computed, ref } from 'vue'
-import { PUBLISH_HISTORY, PUBLISH_GATES } from '@/data/publish'
+import { ref } from 'vue'
+import {
+  createRelease,
+  fetchReleases,
+  publishRelease,
+  rollbackRelease,
+} from '@/api/compute'
 
-const history = ref(PUBLISH_HISTORY.map((h) => ({ ...h })))
-const gates = ref(PUBLISH_GATES.map((g) => ({ ...g })))
-const focusPkg = ref('v23-dwd-order-clean')
+const items = ref([])
+const focusId = ref('')
+const loaded = ref(false)
 
 export function usePublish() {
-  const items = computed(() => history.value)
-  const gateList = computed(() => gates.value)
-  const focus = computed(() => focusPkg.value)
+  const gateList = ref([])
+  const focus = ref('')
 
-  function addRelease({ name, script, engine, env }) {
-    const pkg = name || `v${Date.now().toString().slice(-4)}-${(script || 'script').replace(/\.sql$/i, '')}`
-    const tag = `v${Date.now().toString().slice(-2)}.0`
-    const targetEnv = String(env || 'stg').toLowerCase() === 'prod' ? 'stg' : String(env || 'stg').toLowerCase()
-    const row = {
-      pkg,
-      tag,
-      env: targetEnv,
-      result: '门禁中',
-      time: new Date().toLocaleString('zh-CN', { hour12: false }).replace(/\//g, '-'),
-      script: script || '',
-      engine: engine || 'spark',
+  function applyFocus(row) {
+    if (!row) {
+      focus.value = ''
+      focusId.value = ''
+      gateList.value = []
+      return
     }
-    history.value = [row, ...history.value]
-    focusPkg.value = pkg
-    gates.value = [
-      { step: 1, name: 'Git 编译通过', detail: `${script || pkg} 编译排队`, status: 'run' },
-      { step: 2, name: '血缘解析入库', detail: '等待编译完成后解析', status: 'wait' },
-      { step: 3, name: '质量规则绑定', detail: '待绑定', status: 'wait' },
-      { step: 4, name: 'stg 环境跑通', detail: '待试跑', status: 'wait' },
-      { step: 5, name: '变更影响无阻断', detail: '待评估', status: 'wait' },
-      { step: 6, name: '生产发布', detail: '等待门禁通过后自动发布', status: 'wait' },
-    ]
+    focus.value = row.pkg
+    focusId.value = row.id
+    gateList.value = Array.isArray(row.gates) ? row.gates : []
+  }
+
+  async function refresh(ws) {
+    const list = await fetchReleases(ws)
+    items.value = Array.isArray(list) ? list : []
+    loaded.value = true
+    const current = items.value.find((r) => r.id === focusId.value) || items.value[0]
+    applyFocus(current)
+    return items.value
+  }
+
+  async function addRelease(body) {
+    const row = await createRelease(body)
+    items.value = [row, ...items.value.filter((r) => r.id !== row.id)]
+    applyFocus(row)
     return row
   }
 
-  return { items, gateList, focus, addRelease }
+  async function publish(id) {
+    const row = await publishRelease(id || focusId.value)
+    items.value = items.value.map((r) => (r.id === row.id ? row : r))
+    applyFocus(row)
+    return row
+  }
+
+  async function rollback(id) {
+    const row = await rollbackRelease(id || focusId.value)
+    items.value = items.value.map((r) => (r.id === row.id ? row : r))
+    applyFocus(row)
+    return row
+  }
+
+  function select(row) {
+    applyFocus(row)
+  }
+
+  return {
+    items,
+    gateList,
+    focus,
+    focusId,
+    loaded,
+    refresh,
+    addRelease,
+    publish,
+    rollback,
+    select,
+  }
 }

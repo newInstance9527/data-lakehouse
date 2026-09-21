@@ -1,119 +1,150 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
 import CreateFormModal from '@/components/common/CreateFormModal.vue'
 import { useToast } from '@/composables/useToast'
+import { useWorkspace } from '@/composables/useWorkspace'
 import { WORKSPACE_FORM } from '@/data/createForms'
 import { pageGuideOf } from '@/data/pageGuides'
-import {
-  WORKSPACES,
-  WS_KPIS,
-  WS_QUOTA,
-  membersOf,
-  quotaOf,
-  wsQuotaBarColor,
-  wsQuotaStatusMeta,
-} from '@/data/workspace'
 
 const router = useRouter()
 const { showToast } = useToast()
 const guide = pageGuideOf('workspace')
 
-const createOpen = ref(false)
-const list = ref(WORKSPACES.map((w) => ({ ...w })))
-const activeId = ref(list.value.find((w) => w.current)?.id || list.value[0]?.id)
+const {
+  spaces,
+  quotas,
+  kpis,
+  loading,
+  usingMock,
+  sharedCatalog,
+  wsQuotaBarColor,
+  wsQuotaStatusMeta,
+  ensureLoaded,
+  loadMembers,
+  switchCurrent,
+  createSpace,
+  dropMember,
+  membersOfWs,
+  quotaOfWs,
+} = useWorkspace()
 
+const createOpen = ref(false)
+const activeId = ref('')
+const members = ref([])
+
+const list = computed(() => spaces.value)
 const active = computed(() => list.value.find((w) => w.id === activeId.value) || list.value[0])
-const members = computed(() => membersOf(active.value?.id))
-const activeQuota = computed(() => quotaOf(active.value?.id))
+const activeQuota = computed(() => (active.value ? quotaOfWs(active.value.id) : null))
+
+watch(
+  list,
+  (rows) => {
+    if (!rows.length) return
+    if (!activeId.value || !rows.some((r) => r.id === activeId.value)) {
+      activeId.value = rows.find((r) => r.current)?.id || rows[0].id
+    }
+  },
+  { immediate: true },
+)
+
+watch(
+  activeId,
+  async (id) => {
+    if (!id) {
+      members.value = []
+      return
+    }
+    members.value = await loadMembers(id)
+  },
+  { immediate: true },
+)
+
+onMounted(async () => {
+  await ensureLoaded()
+  if (usingMock.value) {
+    showToast('工作空间 API 不可用，已使用演示数据（需 Flyway V22 + 后端）', 'warning')
+  }
+})
 
 function storagePct(w) {
+  if (!w?.storage?.quota) return 0
   return Math.round((w.storage.used / w.storage.quota) * 100)
 }
 function cuPct(w) {
+  if (!w?.cu?.quota) return 0
   return Math.round((w.cu.used / w.cu.quota) * 100)
 }
 
 function selectWs(w) {
   activeId.value = w.id
   if (!w.current) {
-    showToast(`已选中空间：${w.name}（未切换当前）`, 'info')
+    showToast(`已选中：${w.name}（未设为当前协作上下文）`, 'info')
   }
 }
 
-function switchCurrent(w) {
-  list.value.forEach((x) => {
-    x.current = x.id === w.id
-  })
-  activeId.value = w.id
-  showToast(`🔀 已切换工作空间：${w.name} · Catalog ${w.catalog}`, 'success')
+async function setAsCurrent(w) {
+  try {
+    await switchCurrent(w.id)
+    activeId.value = w.id
+    showToast(`已设为当前团队上下文：${w.name} · 软过滤「我的团队」`, 'success')
+  } catch (e) {
+    showToast(e?.message || '切换失败', 'error')
+  }
 }
 
-function switchCatalog() {
-  const target = list.value.find((w) => w.id === 'ws_finance') || list.value[0]
-  switchCurrent(target)
-  showToast(`已切换 Gravitino Catalog：${target.id}`, 'info')
+function goCatalog() {
+  router.push('/catalog')
+  showToast('打开资产目录 · 全局发现 · 可按团队筛选', 'info')
+}
+
+function goApply() {
+  router.push('/apply')
+  showToast('打开申请中心 · 读数/出湖须审批，入空间不自动授权', 'info')
 }
 
 function openCreate() {
   createOpen.value = true
 }
 
-function onCreate(payload) {
-  const id = `ws_${Date.now().toString(36)}`
-  const domain = payload.tpl === '自定义' ? '自定义' : payload.tpl
-  const quotas = {
-    '小(4C16G)': { storage: 2, cu: 400 },
-    '中(8C32G)': { storage: 4, cu: 800 },
-    '大(16C64G)': { storage: 8, cu: 2000 },
+async function onCreate(payload) {
+  try {
+    const item = await createSpace(payload)
+    createOpen.value = false
+    if (item?.id) activeId.value = item.id
+    showToast(`已创建归属空间：${payload.name}（未建 Catalog）`, 'success')
+  } catch (e) {
+    showToast(e?.message || '创建失败', 'error')
   }
-  const q = quotas[payload.res] || quotas['中(8C32G)']
-  const memberCount = payload.members
-    ? payload.members.split(/[,，]/).map((s) => s.trim()).filter(Boolean).length
-    : 1
-  const item = {
-    id,
-    name: payload.name,
-    icon: domain === '交易' ? '🛒' : domain === '用户' ? '👤' : domain === '商品' ? '📦' : '🗂️',
-    desc: `${domain}域新建空间 · ${payload.res}`,
-    members: memberCount,
-    tables: 0,
-    owner: '当前用户',
-    owners: '当前用户',
-    catalog: `iceberg_${id.replace('ws_', '')}`,
-    gravitino: `lakehouse.${id.replace('ws_', '')}`,
-    icebergDb: `iceberg.${id.replace('ws_', '')}`,
-    minio: `s3a://lakehouse/${id.replace('ws_', '')}/`,
-    createdAt: new Date().toISOString().slice(0, 10),
-    tags: [{ text: '新建', cls: 'tag-blue' }],
-    detail: `基于「${payload.tpl}」模板创建，规格 ${payload.res}。`,
-    current: false,
-    storage: { used: 0, quota: q.storage },
-    cu: { used: 0, quota: q.cu },
-    domain,
-    role: 'Owner',
-    rg: `rg_${id.replace('ws_', '')}`,
-  }
-  list.value.unshift(item)
-  activeId.value = id
-  showToast(`✅ 工作空间已创建：${payload.name}`, 'success')
 }
 
 function inviteMember() {
-  showToast('已打开邀请成员对话框（演示）', 'info')
+  showToast('邀请成员请调用 POST /lh/workspace/spaces/{code}/members（演示入口）', 'info')
 }
 
-function memberAction(row) {
+async function memberAction(row) {
   if (row.action === 'audit') {
     router.push('/apply')
+    showToast('跳转申请中心查看权限相关审批', 'info')
     return
   }
   if (row.action === 'rotate') {
-    showToast(`🔑 已触发凭证轮转 · ${row.name}`, 'success')
+    showToast(`作业 SA 凭证轮转请走安全模块 · ${row.name}`, 'info')
     return
   }
-  showToast(`已移除成员 · ${row.name}`, 'warning')
+  if (!active.value || usingMock.value) {
+    showToast(`已移除成员 · ${row.name}（演示）`, 'warning')
+    members.value = membersOfWs(active.value?.id).filter((m) => m.name !== row.name)
+    return
+  }
+  try {
+    await dropMember(active.value.id, row.id)
+    members.value = await loadMembers(active.value.id)
+    showToast(`已移除成员 · ${row.name}（不影响其已有 Grav grant）`, 'warning')
+  } catch (e) {
+    showToast(e?.message || '移除失败', 'error')
+  }
 }
 </script>
 
@@ -121,10 +152,11 @@ function memberAction(row) {
   <div class="ws-page">
     <PageHeader
       title="🗂️ 工作空间"
-      subtitle="数据域治理 · Catalog 隔离 · 资源与配额 · 成员与角色"
+      subtitle="组织归属 · 成本配额 · 协作上下文 · 共享资源池（非 Catalog 隔离）"
       :guide="guide"
     >
-      <button type="button" class="btn btn-sm" @click="switchCatalog">🔀 切换 Catalog</button>
+      <button type="button" class="btn btn-sm" @click="goCatalog">📚 资产目录</button>
+      <button type="button" class="btn btn-sm" @click="goApply">📝 申请中心</button>
       <button type="button" class="btn btn-sm btn-primary" @click="openCreate">＋ 新建空间</button>
     </PageHeader>
 
@@ -135,8 +167,10 @@ function memberAction(row) {
       @submit="onCreate"
     />
 
+    <div v-if="loading" class="ws-loading">加载工作空间…</div>
+
     <div class="kpi-grid ws-kpi">
-      <div v-for="(k, i) in WS_KPIS" :key="i" class="kpi-card">
+      <div v-for="(k, i) in kpis" :key="i" class="kpi-card">
         <div class="kpi-label">{{ k.label }}</div>
         <div class="kpi-value">
           {{ k.value }}<span v-if="k.unit" class="kpi-unit"> {{ k.unit }}</span>
@@ -145,11 +179,18 @@ function memberAction(row) {
       </div>
     </div>
 
+    <div class="ws-banner">
+      <span class="tag tag-blue">共享 Catalog</span>
+      <code>{{ sharedCatalog.gravitino }}</code>
+      <span class="muted">·</span>
+      <span class="muted">{{ sharedCatalog.note }}</span>
+      <span v-if="usingMock" class="tag tag-orange">演示数据</span>
+    </div>
+
     <div class="ws-layout">
-      <!-- 左侧空间列表 -->
       <div class="card ws-side">
         <div class="card-header">
-          <div class="card-title">📋 空间列表</div>
+          <div class="card-title">📋 团队空间</div>
           <span class="tag tag-blue">{{ list.length }}</span>
         </div>
         <div class="card-body ws-list">
@@ -160,7 +201,7 @@ function memberAction(row) {
             class="ws-list-item"
             :class="{ active: w.id === active?.id, current: w.current }"
             @click="selectWs(w)"
-            @dblclick="switchCurrent(w)"
+            @dblclick="setAsCurrent(w)"
           >
             <div class="wli-head">
               <span class="wli-name">{{ w.icon }} {{ w.name }}</span>
@@ -176,25 +217,25 @@ function memberAction(row) {
         </div>
       </div>
 
-      <!-- 中间详情 + 成员 -->
       <div class="ws-main" v-if="active">
         <div class="card">
           <div class="card-header">
-            <div class="card-title">🧾 空间详情 · {{ active.id }}（{{ active.domain }}域）</div>
+            <div class="card-title">🧾 归属详情 · {{ active.id }}（{{ active.domain }}）</div>
             <button
               v-if="!active.current"
               type="button"
               class="btn btn-sm btn-primary"
-              @click="switchCurrent(active)"
+              @click="setAsCurrent(active)"
             >
-              切换为当前
+              设为当前上下文
             </button>
           </div>
           <div class="card-body ws-detail">
             <div class="ws-detail-grid">
-              <div><span class="muted">Catalog：</span><code>{{ active.gravitino }}</code></div>
-              <div><span class="muted">Iceberg DB：</span><code>{{ active.icebergDb }}</code></div>
-              <div><span class="muted">MinIO Path：</span><code>{{ active.minio }}</code></div>
+              <div><span class="muted">成本中心：</span><code>{{ active.costCenter }}</code></div>
+              <div><span class="muted">Trino 资源组：</span><code>{{ active.rg }}</code></div>
+              <div><span class="muted">共享 Catalog：</span><code>{{ active.gravitino }}</code></div>
+              <div><span class="muted">常用 schema：</span><code>{{ active.preferredSchemas }}</code></div>
               <div><span class="muted">Owner：</span>{{ active.owners }}</div>
               <div><span class="muted">创建时间：</span>{{ active.createdAt }}</div>
               <div class="ws-tags">
@@ -202,7 +243,7 @@ function memberAction(row) {
                 <span v-for="(t, ti) in active.tags" :key="ti" class="tag" :class="t.cls">{{ t.text }}</span>
               </div>
             </div>
-            <div class="ws-detail-desc">📐 空间描述：{{ active.detail }}</div>
+            <div class="ws-detail-desc">{{ active.detail }}</div>
             <div class="ws-quota-mini">
               <div>
                 <div class="ws-quota-label">
@@ -228,7 +269,7 @@ function memberAction(row) {
 
         <div class="card ws-members-card">
           <div class="card-header">
-            <div class="card-title">🧑‍🤝‍🧑 成员与角色</div>
+            <div class="card-title">🧑‍🤝‍🧑 成员与协作角色</div>
             <button type="button" class="btn btn-sm" @click="inviteMember">＋ 邀请成员</button>
           </div>
           <div class="card-body" style="padding: 0">
@@ -237,7 +278,7 @@ function memberAction(row) {
                 <tr>
                   <th>成员</th>
                   <th>角色</th>
-                  <th>数据范围</th>
+                  <th>门户职责（≠ 引擎 ACL）</th>
                   <th>最近登录</th>
                   <th>操作</th>
                 </tr>
@@ -246,14 +287,14 @@ function memberAction(row) {
                 <tr v-if="!members.length">
                   <td colspan="5" style="text-align: center; color: var(--text-3); padding: 20px">暂无成员</td>
                 </tr>
-                <tr v-for="(m, mi) in members" :key="mi">
+                <tr v-for="(m, mi) in members" :key="m.id || mi">
                   <td>{{ m.name }}</td>
                   <td><span class="tag" :class="m.roleCls">{{ m.role }}</span></td>
                   <td style="font-size: 12px">{{ m.scope }}</td>
                   <td style="font-size: 12px; color: var(--text-3)">{{ m.last }}</td>
                   <td>
                     <button type="button" class="btn-link" @click="memberAction(m)">
-                      {{ m.action === 'audit' ? '权限审计' : m.action === 'rotate' ? '轮转凭证' : '移除' }}
+                      {{ m.action === 'audit' ? '去申请中心' : m.action === 'rotate' ? '轮转凭证' : '移除' }}
                     </button>
                   </td>
                 </tr>
@@ -263,14 +304,13 @@ function memberAction(row) {
         </div>
       </div>
 
-      <!-- 右侧配额 -->
       <div class="card ws-quota-side">
         <div class="card-header">
-          <div class="card-title">⚖️ 资源配额 <span class="tip">· {{ active?.rg || '—' }}</span></div>
+          <div class="card-title">⚖️ 成本与配额 <span class="tip">· {{ active?.rg || '—' }}</span></div>
         </div>
         <div class="card-body ws-quota-body">
           <div v-if="activeQuota" class="ws-quota-focus">
-            <div class="wqf-title">当前空间 {{ activeQuota.ws }}</div>
+            <div class="wqf-title">当前团队 {{ activeQuota.ws }}</div>
             <div class="wqf-row">
               <span>存储</span>
               <div class="wqf-bar-wrap">
@@ -298,8 +338,8 @@ function memberAction(row) {
             </div>
           </div>
 
-          <div class="wqf-all-title">全部空间配额</div>
-          <div v-for="q in WS_QUOTA" :key="q.ws" class="wqf-item" :class="{ active: q.ws === active?.id }">
+          <div class="wqf-all-title">全部团队配额</div>
+          <div v-for="q in quotas" :key="q.ws" class="wqf-item" :class="{ active: q.ws === active?.id }">
             <div class="wqf-item-head">
               <b>{{ q.ws }}</b>
               <span class="tag" :class="wsQuotaStatusMeta(q.status).tag" style="font-size: 10px">
@@ -322,9 +362,14 @@ function memberAction(row) {
 </template>
 
 <style scoped>
+.ws-loading {
+  font-size: 12px;
+  color: var(--text-3);
+  margin-bottom: 8px;
+}
 .ws-kpi {
   grid-template-columns: repeat(4, 1fr);
-  margin-bottom: 16px;
+  margin-bottom: 12px;
 }
 .kpi-delta {
   font-size: 11px;
@@ -336,6 +381,22 @@ function memberAction(row) {
 }
 .kpi-delta.warn {
   color: var(--warning);
+}
+
+.ws-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  margin-bottom: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-2);
+  font-size: 12px;
+}
+.ws-banner .muted {
+  color: var(--text-3);
 }
 
 .ws-layout {

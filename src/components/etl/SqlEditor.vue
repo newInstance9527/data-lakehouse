@@ -1,6 +1,7 @@
 <script setup>
 import { computed, nextTick, ref, watch } from 'vue'
-import { formatSql } from '@/utils/sqlFormat'
+import { formatGroovy, formatSql } from '@/utils/sqlFormat'
+import { resolveSqlDialect } from '@/utils/sqlDialect'
 import { useToast } from '@/composables/useToast'
 
 const props = defineProps({
@@ -15,12 +16,50 @@ const props = defineProps({
   /** 紧凑高度（弹窗内） */
   compact: { type: Boolean, default: false },
   hint: { type: String, default: '' },
+  /** sql | groovy */
+  language: { type: String, default: 'sql' },
+  /** 数据源方言 id 或类型码，见 sqlDialect.js */
+  dialect: { type: String, default: 'mysql' },
+  /** { caption, insert }[]，表名/列名等 */
+  suggests: { type: Array, default: () => [] },
 })
 const emit = defineEmits(['update:modelValue'])
 const { showToast } = useToast()
 
 const editing = ref(props.defaultEditing && !props.readonly)
 const taRef = ref(null)
+const hlRef = ref(null)
+const gutterEditRef = ref(null)
+const suggestOpen = ref(false)
+const suggestIndex = ref(0)
+const suggestHits = ref([])
+let suggestSpan = { start: 0, end: 0 }
+
+const SQL_SUGGESTS = [
+  { caption: 'SELECT', insert: 'SELECT' },
+  { caption: 'FROM', insert: 'FROM' },
+  { caption: 'WHERE', insert: 'WHERE' },
+  { caption: 'JOIN', insert: 'JOIN' },
+  { caption: 'LEFT JOIN', insert: 'LEFT JOIN' },
+  { caption: 'GROUP BY', insert: 'GROUP BY' },
+  { caption: 'ORDER BY', insert: 'ORDER BY' },
+  { caption: 'LIMIT', insert: 'LIMIT' },
+  { caption: 'AND', insert: 'AND' },
+  { caption: 'foreach', insert: '<foreach open="(" close=")" collection="" separator="," item="item" index="index">#{item}</foreach>' },
+  { caption: 'if', insert: '<if test="" ></if>' },
+  { caption: 'where', insert: '<where></where>' },
+  { caption: 'trim', insert: '<trim prefix="" suffix="" suffixesToOverride="" prefixesToOverride=""></trim>' },
+]
+const GROOVY_SUGGESTS = [
+  { caption: 'def', insert: 'def ' },
+  { caption: 'if', insert: 'if () {\n}' },
+  { caption: 'else', insert: 'else {\n}' },
+  { caption: 'return', insert: 'return ' },
+  { caption: 'each', insert: '.each { item ->\n}' },
+  { caption: 'import', insert: 'import ' },
+  { caption: 'class', insert: 'class ' },
+  { caption: 'try', insert: 'try {\n} catch (Exception e) {\n}' },
+]
 
 watch(
   () => props.readonly,
@@ -34,7 +73,32 @@ const lineNos = computed(() =>
   Array.from({ length: lineCount.value }, (_, i) => i + 1).join('\n'),
 )
 
-const highlighted = computed(() => highlightSql(props.modelValue || props.placeholder || ''))
+const boxHeight = computed(() => {
+  const r = props.compact ? Math.max(8, props.rows) : props.rows
+  return r * 20 + 24
+})
+
+const isGroovy = computed(() => props.language === 'groovy')
+
+const previewHtml = computed(() => {
+  const raw = String(props.modelValue || '')
+  if (!raw.trim()) return `<span class="tok-ph">${isGroovy.value ? '空脚本' : '空 SQL'}</span>`
+  return paint(raw)
+})
+
+const editHtml = computed(() => {
+  const raw = String(props.modelValue || '')
+  if (!raw) return ''
+  let html = paint(raw)
+  if (raw.endsWith('\n')) html += '\u200b'
+  return html
+})
+
+const sqlDialect = computed(() => resolveSqlDialect(props.dialect))
+
+function paint(raw) {
+  return isGroovy.value ? highlightGroovy(raw) : highlightSql(raw, sqlDialect.value)
+}
 
 function enterEdit() {
   if (props.readonly) return
@@ -49,9 +113,9 @@ function leaveEdit() {
 }
 
 function onFormat() {
-  const next = formatSql(props.modelValue)
+  const next = isGroovy.value ? formatGroovy(props.modelValue) : formatSql(props.modelValue)
   emit('update:modelValue', next)
-  showToast('已格式化 SQL', 'success')
+  showToast(isGroovy.value ? '已格式化 Groovy' : '已格式化 SQL', 'success')
 }
 
 function onCopy() {
@@ -68,6 +132,33 @@ function onCopy() {
 }
 
 function onKeydown(e) {
+  if (suggestOpen.value && suggestHits.value.length) {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      suggestIndex.value = (suggestIndex.value + 1) % suggestHits.value.length
+      return
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      suggestIndex.value = (suggestIndex.value - 1 + suggestHits.value.length) % suggestHits.value.length
+      return
+    }
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault()
+      applySuggest(suggestHits.value[suggestIndex.value])
+      return
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      suggestOpen.value = false
+      return
+    }
+  }
+  if ((e.ctrlKey || e.metaKey) && e.code === 'Space') {
+    e.preventDefault()
+    refreshSuggest(e.target.value, e.target.selectionStart, true)
+    return
+  }
   if (e.key === 'Tab') {
     e.preventDefault()
     const el = e.target
@@ -80,6 +171,11 @@ function onKeydown(e) {
       el.selectionStart = el.selectionEnd = start + 2
     })
   }
+  if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'F' || e.key === 'f')) {
+    e.preventDefault()
+    onFormat()
+    return
+  }
   if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
     e.preventDefault()
     leaveEdit()
@@ -91,7 +187,12 @@ function onKeydown(e) {
 }
 
 const KW =
-  'SELECT|FROM|WHERE|JOIN|LEFT|RIGHT|INNER|FULL|OUTER|ON|GROUP|ORDER|BY|HAVING|LIMIT|UNION|ALL|INSERT|INTO|VALUES|UPDATE|SET|DELETE|WITH|AS|AND|OR|CASE|WHEN|THEN|ELSE|END|DISTINCT|ASC|DESC|NOT|IN|IS|NULL|TRUE|FALSE|BETWEEN|LIKE|EXISTS|OVER|PARTITION'
+  'SELECT|FROM|WHERE|JOIN|LEFT|RIGHT|INNER|FULL|OUTER|CROSS|ON|GROUP|ORDER|BY|HAVING|LIMIT|OFFSET|UNION|ALL|INSERT|INTO|VALUES|UPDATE|SET|DELETE|WITH|AS|AND|OR|CASE|WHEN|THEN|ELSE|END|DISTINCT|ASC|DESC|NOT|IN|IS|NULL|TRUE|FALSE|BETWEEN|LIKE|EXISTS|OVER|PARTITION|FETCH|ONLY|USING|RECURSIVE'
+const FN =
+  'COUNT|SUM|AVG|MIN|MAX|IFNULL|COALESCE|NULLIF|CAST|CONVERT|CONCAT|SUBSTRING|SUBSTR|LENGTH|CHAR_LENGTH|TRIM|LTRIM|RTRIM|NOW|CURDATE|CURTIME|DATE_FORMAT|DATE_ADD|DATE_SUB|ROUND|FLOOR|CEIL|CEILING|ABS|UPPER|LOWER|NVL|NVL2|GROUP_CONCAT|ROW_NUMBER|RANK|DENSE_RANK|IF|GREATEST|LEAST|REPLACE|INSTR|POSITION|MOD|POWER|SQRT'
+const TYPES =
+  'INT|INTEGER|BIGINT|SMALLINT|TINYINT|VARCHAR|CHAR|NCHAR|NVARCHAR|TEXT|DATE|DATETIME|TIMESTAMP|TIME|DECIMAL|NUMERIC|FLOAT|DOUBLE|REAL|BOOLEAN|BOOL|BLOB|JSON|CLOB'
+const TAGS = 'foreach|if|where|trim|set|choose|when|otherwise|bind'
 
 function escapeHtml(s) {
   return String(s)
@@ -100,25 +201,171 @@ function escapeHtml(s) {
     .replace(/>/g, '&gt;')
 }
 
-function highlightSql(input) {
-  if (!input) return '<span class="tok-ph">空 SQL</span>'
-  let s = escapeHtml(input)
-  const bags = []
-  s = s.replace(/('([^']|'')*'|"([^"]|"")*")/g, (m) => {
-    bags.push(`<span class="tok-str">${m}</span>`)
-    return `\u0000${bags.length - 1}\u0000`
+function span(cls, text) {
+  return `<span class="${cls}">${escapeHtml(text)}</span>`
+}
+
+/** 从左到右匹配，未命中的字符原样输出，避免占位符把关键字变成序号 */
+function scanHighlight(input, rules) {
+  const src = String(input || '')
+  let i = 0
+  let out = ''
+  while (i < src.length) {
+    const rest = src.slice(i)
+    const prevWord = i > 0 && /[A-Za-z0-9_]/.test(src[i - 1])
+    let hit = null
+    for (const rule of rules) {
+      if (rule.word && prevWord) continue
+      rule.re.lastIndex = 0
+      const m = rule.re.exec(rest)
+      if (m && m.index === 0 && m[0]) {
+        hit = { rule, m }
+        break
+      }
+    }
+    if (!hit) {
+      out += escapeHtml(src[i])
+      i += 1
+      continue
+    }
+    out += hit.rule.render ? hit.rule.render(hit.m) : span(hit.rule.cls, hit.m[0])
+    i += hit.m[0].length
+  }
+  return out
+}
+
+function wordAlt(base, extra) {
+  return [...String(base || '').split('|'), ...(extra || [])].filter(Boolean).join('|')
+}
+
+function highlightSql(input, dialect) {
+  if (!input) return ''
+  const quote = dialect?.quote || 'none'
+  const stringRe = quote === 'double' || quote === 'bracket'
+    ? /^(?:N'(?:[^']|'')*'|'(?:[^']|'')*')/i
+    : /^(?:N'(?:[^']|'')*'|'(?:[^']|'')*'|"(?:[^"]|"")*")/i
+  const identRe = quote === 'double'
+    ? /^"(?:[^"]|"")*"/
+    : quote === 'bracket'
+      ? /^(?:\[[^\]]+\]|"(?:[^"]|"")*")/
+      : quote === 'backtick'
+        ? /^`[^`\n]+`/
+        : null
+  const kw = wordAlt(KW, dialect?.keywords)
+  const fn = wordAlt(FN, dialect?.functions)
+  const types = wordAlt(TYPES, dialect?.types)
+  const rules = [
+    { re: /^\/\*[\s\S]*?\*\//, cls: 'tok-cmt' },
+    { re: /^--[^\n]*/, cls: 'tok-cmt' },
+    { re: stringRe, cls: 'tok-str' },
+    { re: /^(?:#\{[^}\n]+\}|\{\{[^}\n]+\}\})/, cls: 'tok-param' },
+  ]
+  if (identRe) rules.push({ re: identRe, cls: 'tok-ident' })
+  rules.push(
+    {
+      re: new RegExp(`^</?(?:${TAGS})\\b`, 'i'),
+      render(m) {
+        const slash = m[0].startsWith('</') ? '/' : ''
+        const name = m[0].slice(slash ? 2 : 1)
+        return `${escapeHtml('<' + slash)}${span('tok-tag', name)}`
+      },
+    },
+    { re: new RegExp(`^(?:${fn})\\b(?=\\s*\\()`, 'i'), cls: 'tok-fn', word: true },
+    { re: new RegExp(`^(?:${types})\\b`, 'i'), cls: 'tok-type', word: true },
+    { re: new RegExp(`^(?:${kw})\\b`, 'i'), cls: 'tok-kw', word: true },
+    { re: /^\d+(?:\.\d+)?\b/, cls: 'tok-num', word: true },
+    { re: /^(?:<>|!=|<=|>=|\|\||::|:=)/, cls: 'tok-op' },
+    { re: /^[<>]/, cls: 'tok-op' },
+  )
+  return scanHighlight(input, rules)
+}
+
+const GKW =
+  'as|assert|break|case|catch|class|const|continue|def|default|do|else|enum|extends|finally|for|goto|if|implements|import|in|instanceof|interface|new|package|return|super|switch|this|throw|throws|trait|try|while|true|false|null|void|public|private|protected|static|final|abstract|synchronized|native|transient|volatile|yield|var'
+
+function highlightGroovy(input) {
+  if (!input) return ''
+  return scanHighlight(input, [
+    { re: /^\/\*[\s\S]*?\*\//, cls: 'tok-cmt' },
+    { re: /^\/\/[^\n]*/, cls: 'tok-cmt' },
+    { re: /^(?:'''[\s\S]*?'''|"""[\s\S]*?""")/, cls: 'tok-str' },
+    { re: /^(?:'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")/, cls: 'tok-str' },
+    { re: /^#\{[^}\n]+\}/, cls: 'tok-param' },
+    { re: /^@[A-Za-z_][\w.]*/, cls: 'tok-ann' },
+    { re: new RegExp(`^(?:${GKW})\\b`, 'i'), cls: 'tok-kw', word: true },
+    {
+      re: /^\.[a-z_][\w]*/,
+      render(m) {
+        return `.${span('tok-fn', m[0].slice(1))}`
+      },
+    },
+    { re: /^[A-Z][A-Za-z0-9_]*/, cls: 'tok-type', word: true },
+    { re: /^[a-zA-Z_][\w]*(?=\s*\()/, cls: 'tok-fn', word: true },
+    { re: /^\d+(?:\.\d+)?\b/, cls: 'tok-num', word: true },
+  ])
+}
+
+function onAreaInput(e) {
+  const value = e.target.value
+  emit('update:modelValue', value)
+  refreshSuggest(value, e.target.selectionStart, false)
+}
+
+function refreshSuggest(value, caret, force) {
+  const left = String(value || '').slice(0, caret ?? 0)
+  const m = left.match(/[A-Za-z_\u4e00-\u9fa5][\w.]*$/)
+  if (!m || (!force && m[0].length < 1)) {
+    suggestOpen.value = false
+    return
+  }
+  const q = m[0].toLowerCase()
+  const extra = (props.suggests || []).map((s) =>
+    typeof s === 'string' ? { caption: s, insert: s } : { caption: s.caption || s.insert, insert: s.insert || s.caption },
+  )
+  const dialectHits = isGroovy.value
+    ? []
+    : [
+        ...(sqlDialect.value.keywords || []).map((k) => ({ caption: k, insert: k })),
+        ...(sqlDialect.value.completes || []),
+      ]
+  const pool = [...(isGroovy.value ? GROOVY_SUGGESTS : SQL_SUGGESTS), ...dialectHits, ...extra]
+  const hits = pool
+    .filter((item) => item.caption && item.caption.toLowerCase().includes(q))
+    .slice(0, 8)
+  suggestSpan = { start: caret - m[0].length, end: caret }
+  suggestHits.value = hits
+  suggestIndex.value = 0
+  suggestOpen.value = hits.length > 0
+}
+
+function applySuggest(item) {
+  if (!item) return
+  const v = props.modelValue || ''
+  const next = `${v.slice(0, suggestSpan.start)}${item.insert}${v.slice(suggestSpan.end)}`
+  emit('update:modelValue', next)
+  suggestOpen.value = false
+  const caret = suggestSpan.start + item.insert.length
+  nextTick(() => {
+    const el = taRef.value
+    if (!el) return
+    el.focus()
+    el.selectionStart = el.selectionEnd = caret
   })
-  s = s.replace(/(\{\{[\w.]+\}\})/g, '<span class="tok-param">$1</span>')
-  s = s.replace(/(--[^\n]*)/g, '<span class="tok-cmt">$1</span>')
-  s = s.replace(new RegExp(`\\b(${KW})\\b`, 'gi'), (m) => `<span class="tok-kw">${m.toUpperCase()}</span>`)
-  s = s.replace(/\b(\d+(\.\d+)?)\b/g, '<span class="tok-num">$1</span>')
-  s = s.replace(/\u0000(\d+)\u0000/g, (_, i) => bags[Number(i)])
-  return s
+}
+
+function onEditScroll(e) {
+  const top = e.target.scrollTop
+  const left = e.target.scrollLeft
+  if (hlRef.value) {
+    hlRef.value.scrollTop = top
+    hlRef.value.scrollLeft = left
+  }
+  if (gutterEditRef.value) gutterEditRef.value.scrollTop = top
 }
 </script>
 
 <template>
-  <div class="sql-editor" :class="{ compact, editing, readonly }">
+  <div class="sql-editor" :class="{ compact, editing, readonly, 'lang-groovy': isGroovy }">
     <div class="sql-toolbar">
       <div class="sql-toolbar-left">
         <span class="sql-label">{{ label }}</span>
@@ -152,25 +399,38 @@ function highlightSql(input) {
       @keydown.enter.prevent="enterEdit"
     >
       <pre class="sql-gutter" aria-hidden="true">{{ lineNos }}</pre>
-      <pre class="sql-code" v-html="highlighted" />
+      <pre class="sql-code" v-html="previewHtml" />
     </div>
 
-    <!-- 编辑模式 -->
-    <div v-show="editing" class="sql-edit-wrap">
-      <pre class="sql-gutter" aria-hidden="true">{{ lineNos }}</pre>
-      <textarea
-        ref="taRef"
-        class="sql-area"
-        :rows="compact ? Math.max(6, rows) : rows"
-        :value="modelValue"
-        :placeholder="placeholder"
-        spellcheck="false"
-        @input="emit('update:modelValue', $event.target.value)"
-        @keydown="onKeydown"
-      />
+    <!-- 编辑模式：透明输入层叠在高亮层上，输入时即可看到分色 -->
+    <div v-show="editing" class="sql-edit-wrap" :style="{ height: `${boxHeight}px` }">
+      <pre ref="gutterEditRef" class="sql-gutter sql-gutter-edit" aria-hidden="true">{{ lineNos }}</pre>
+      <div class="sql-edit-pane">
+        <pre ref="hlRef" class="sql-hl" aria-hidden="true" v-html="editHtml" />
+        <textarea
+          ref="taRef"
+          class="sql-area"
+          :value="modelValue"
+          :placeholder="placeholder"
+          spellcheck="false"
+          @input="onAreaInput"
+          @keydown="onKeydown"
+          @scroll="onEditScroll"
+        />
+        <ul v-if="suggestOpen" class="sql-suggest">
+          <li
+            v-for="(item, i) in suggestHits"
+            :key="item.caption + i"
+            :class="{ on: i === suggestIndex }"
+            @mousedown.prevent="applySuggest(item)"
+          >
+            {{ item.caption }}
+          </li>
+        </ul>
+      </div>
     </div>
 
-    <div v-if="editing" class="sql-edit-tip">Tab 缩进 · Esc / Ctrl+Enter 完成编辑 · 支持 &#123;&#123;param&#125;&#125; 占位</div>
+    <div v-if="editing" class="sql-edit-tip">Tab 缩进 · Ctrl+Shift+F 格式化 · Esc / Ctrl+Enter 完成编辑 · 支持 &#123;&#123;param&#125;&#125; / #{param}</div>
   </div>
 </template>
 
@@ -237,8 +497,10 @@ function highlightSql(input) {
   background: #0f1a2e;
   min-height: 140px;
 }
-.compact .sql-view,
-.compact .sql-edit-wrap {
+.sql-edit-wrap {
+  min-height: 0;
+}
+.compact .sql-view {
   min-height: 120px;
 }
 .sql-view {
@@ -254,7 +516,7 @@ function highlightSql(input) {
   color: #4a5a78;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
-  line-height: 1.65;
+  line-height: 20px;
   text-align: right;
   user-select: none;
   border-right: 1px solid rgba(255, 255, 255, 0.06);
@@ -263,63 +525,161 @@ function highlightSql(input) {
 .sql-code {
   margin: 0;
   padding: 12px 14px;
-  color: #e6ebf5;
+  color: #d4d4d4;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
-  line-height: 1.65;
+  line-height: 20px;
   white-space: pre;
   overflow: auto;
   tab-size: 2;
 }
+.sql-gutter-edit {
+  height: 100%;
+  overflow: hidden;
+}
+.sql-edit-pane {
+  display: grid;
+  position: relative;
+  min-width: 0;
+  height: 100%;
+}
+.sql-hl,
 .sql-area {
-  display: block;
+  grid-area: 1 / 1;
   width: 100%;
-  min-height: 140px;
+  height: 100%;
   margin: 0;
   padding: 12px 14px;
-  background: transparent;
-  color: #e6ebf5;
   border: none;
-  outline: none;
-  resize: vertical;
+  box-sizing: border-box;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
-  line-height: 1.65;
+  line-height: 20px;
   tab-size: 2;
-  box-sizing: border-box;
   white-space: pre;
-  overflow-wrap: normal;
-  overflow-x: auto;
+  overflow: auto;
+  scrollbar-gutter: stable;
 }
-.compact .sql-area {
-  min-height: 120px;
+.sql-hl {
+  color: #d4d4d4;
+  pointer-events: none;
+  scrollbar-width: none;
+  z-index: 0;
+}
+.sql-hl::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+.sql-area {
+  display: block;
+  resize: none;
+  outline: none;
+  background: transparent;
+  color: transparent;
+  caret-color: #e6ebf5;
+  z-index: 1;
+}
+.sql-area::placeholder {
+  color: #6b7a99;
+}
+.sql-area::selection {
+  background: rgba(64, 150, 255, 0.35);
+  color: transparent;
+}
+.sql-suggest {
+  position: absolute;
+  left: 48px;
+  right: 16px;
+  bottom: 8px;
+  z-index: 3;
+  margin: 0;
+  padding: 4px 0;
+  list-style: none;
+  max-height: 180px;
+  overflow: auto;
+  background: #1e293b;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+.sql-suggest li {
+  padding: 4px 10px;
+  font-size: 12px;
+  color: #e6ebf5;
+  cursor: pointer;
+}
+.sql-suggest li.on,
+.sql-suggest li:hover {
+  background: rgba(79, 193, 255, 0.18);
+  color: #4fc1ff;
 }
 .sql-edit-tip {
   font-size: 11px;
   color: var(--text-3);
 }
 
-.sql-code :deep(.tok-kw) {
-  color: #7dcfff;
-  font-weight: 600;
+.sql-code :deep(.tok-kw),
+.sql-hl :deep(.tok-kw) {
+  color: #4fc1ff;
 }
-.sql-code :deep(.tok-str) {
-  color: #9ece6a;
+.sql-code :deep(.tok-fn),
+.sql-hl :deep(.tok-fn) {
+  color: #d16dff;
 }
-.sql-code :deep(.tok-num) {
-  color: #ff9e64;
+.sql-code :deep(.tok-type),
+.sql-hl :deep(.tok-type) {
+  color: #4ec9b0;
 }
-.sql-code :deep(.tok-cmt) {
-  color: #565f89;
-  font-style: italic;
+.sql-code :deep(.tok-str),
+.sql-hl :deep(.tok-str) {
+  color: #ce9178;
 }
-.sql-code :deep(.tok-param) {
-  color: #bb9af7;
-  background: rgba(187, 154, 247, 0.12);
-  border-radius: 3px;
-  padding: 0 2px;
+.sql-code :deep(.tok-num),
+.sql-hl :deep(.tok-num) {
+  color: #b5cea8;
+}
+.sql-code :deep(.tok-cmt),
+.sql-hl :deep(.tok-cmt) {
+  color: #6a9955;
+}
+.sql-code :deep(.tok-param),
+.sql-hl :deep(.tok-param) {
+  color: #dcdcaa;
+}
+.sql-code :deep(.tok-ident),
+.sql-hl :deep(.tok-ident) {
+  color: #e6c07b;
+}
+.sql-code :deep(.tok-tag),
+.sql-hl :deep(.tok-tag) {
+  color: #c586c0;
+}
+.sql-code :deep(.tok-op),
+.sql-hl :deep(.tok-op) {
+  color: #d4d4d4;
 }
 .sql-code :deep(.tok-ph) {
   color: #6b7a99;
+}
+.lang-groovy :deep(.tok-kw) {
+  color: #cc7832;
+}
+.lang-groovy :deep(.tok-fn) {
+  color: #ffc66d;
+}
+.lang-groovy :deep(.tok-str) {
+  color: #6a8759;
+}
+.lang-groovy :deep(.tok-num) {
+  color: #6897bb;
+}
+.lang-groovy :deep(.tok-cmt) {
+  color: #808080;
+}
+.lang-groovy :deep(.tok-type) {
+  color: #a9b7c6;
+}
+.lang-groovy :deep(.tok-ann) {
+  color: #bbb529;
 }
 </style>

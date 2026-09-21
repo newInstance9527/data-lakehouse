@@ -38,52 +38,98 @@ LIMIT 500;
   },
 ]
 
-/** Catalog 树：catalog → schema → table */
+/** Catalog 树：catalog → schema → table；columns 仅演示降级，线上走 columns 接口 */
 export const QUERY_CATALOG = [
   {
     id: 'iceberg',
     type: 'catalog',
     name: 'iceberg',
+    engine: 'Iceberg',
     open: true,
     children: [
       {
         id: 'ods_trade',
         type: 'schema',
         name: 'ods_trade',
+        layer: 'ODS',
         open: true,
         children: [
           {
             id: 's_order',
             type: 'table',
             name: 's_order',
+            layer: 'ODS',
             rows: '2.3亿',
             fqn: 'iceberg.ods_trade.s_order',
             sampleSql:
               "SELECT *\nFROM iceberg.ods_trade.s_order\nWHERE dt >= date_sub(current_date, 7)\nLIMIT 100;",
+            columns: [
+              { name: 'dt', type: 'date', partition: true, comment: '分区' },
+              { name: 'order_id', type: 'bigint' },
+              { name: 'buyer_mobile', type: 'varchar', masked: true, comment: '动态脱敏' },
+              { name: 'pay_amt', type: 'decimal(18,2)' },
+            ],
           },
-          { id: 's_order_item', type: 'table', name: 's_order_item', fqn: 'iceberg.ods_trade.s_order_item' },
-          { id: 's_payment', type: 'table', name: 's_payment', fqn: 'iceberg.ods_trade.s_payment' },
+          {
+            id: 's_order_item',
+            type: 'table',
+            name: 's_order_item',
+            layer: 'ODS',
+            fqn: 'iceberg.ods_trade.s_order_item',
+            columns: [
+              { name: 'dt', type: 'date', partition: true },
+              { name: 'order_id', type: 'bigint' },
+              { name: 'sku_id', type: 'bigint' },
+            ],
+          },
+          {
+            id: 's_payment',
+            type: 'table',
+            name: 's_payment',
+            layer: 'ODS',
+            fqn: 'iceberg.ods_trade.s_payment',
+            columns: [
+              { name: 'dt', type: 'date', partition: true },
+              { name: 'pay_id', type: 'bigint' },
+              { name: 'pay_amt', type: 'decimal(18,2)' },
+            ],
+          },
         ],
       },
       {
         id: 'dwd_trade',
         type: 'schema',
         name: 'dwd_trade',
+        layer: 'DWD',
         open: true,
         children: [
           {
             id: 'dwd_order_detail',
             type: 'table',
             name: 'dwd_order_detail',
+            layer: 'DWD',
             fqn: 'iceberg.dwd_trade.dwd_order_detail',
             active: true,
             sampleSql: DEFAULT_SQL,
+            columns: [
+              { name: 'dt', type: 'date', partition: true },
+              { name: 'order_channel', type: 'varchar' },
+              { name: 'order_id', type: 'bigint' },
+              { name: 'pay_amt', type: 'decimal(18,2)' },
+              { name: 'buyer_mobile', type: 'varchar', masked: true },
+            ],
           },
           {
             id: 'dwd_payment_detail',
             type: 'table',
             name: 'dwd_payment_detail',
+            layer: 'DWD',
             fqn: 'iceberg.dwd_trade.dwd_payment_detail',
+            columns: [
+              { name: 'dt', type: 'date', partition: true },
+              { name: 'pay_id', type: 'bigint' },
+              { name: 'channel', type: 'varchar' },
+            ],
           },
         ],
       },
@@ -91,29 +137,86 @@ export const QUERY_CATALOG = [
         id: 'dws_trade',
         type: 'schema',
         name: 'dws_trade',
+        layer: 'DWS',
         open: false,
         children: [
-          { id: 'dws_order_1d', type: 'table', name: 'dws_order_1d', fqn: 'iceberg.dws_trade.dws_order_1d' },
+          {
+            id: 'dws_order_1d',
+            type: 'table',
+            name: 'dws_order_1d',
+            layer: 'DWS',
+            fqn: 'iceberg.dws_trade.dws_order_1d',
+            columns: [
+              { name: 'dt', type: 'date', partition: true },
+              { name: 'order_channel', type: 'varchar' },
+              { name: 'gmv', type: 'decimal(18,2)' },
+            ],
+          },
         ],
       },
       {
         id: 'ads',
         type: 'schema',
         name: 'ads',
+        layer: 'ADS',
         open: false,
         children: [
-          { id: 'ads_gmv_board', type: 'table', name: 'ads_gmv_board', star: true, fqn: 'iceberg.ads.ads_gmv_board' },
-          { id: 'ads_user_profile', type: 'table', name: 'ads_user_profile', fqn: 'iceberg.ads.ads_user_profile' },
+          {
+            id: 'ads_gmv_board',
+            type: 'table',
+            name: 'ads_gmv_board',
+            layer: 'ADS',
+            star: true,
+            fqn: 'iceberg.ads.ads_gmv_board',
+            columns: [
+              { name: 'dt', type: 'date', partition: true },
+              { name: 'gmv', type: 'decimal(18,2)' },
+              { name: 'buyer_id', type: 'bigint' },
+            ],
+          },
+          {
+            id: 'ads_user_profile',
+            type: 'table',
+            name: 'ads_user_profile',
+            layer: 'ADS',
+            fqn: 'iceberg.ads.ads_user_profile',
+            columns: [
+              { name: 'user_id', type: 'bigint' },
+              { name: 'mobile', type: 'varchar', masked: true },
+            ],
+          },
         ],
       },
       {
         id: 'dim',
         type: 'schema',
         name: 'dim',
+        layer: 'DIM',
         open: false,
         children: [
-          { id: 'dim_user', type: 'table', name: 'dim_user', fqn: 'iceberg.dim.dim_user' },
-          { id: 'dim_sku', type: 'table', name: 'dim_sku', star: true, fqn: 'iceberg.dim.dim_sku' },
+          {
+            id: 'dim_user',
+            type: 'table',
+            name: 'dim_user',
+            layer: 'DIM',
+            fqn: 'iceberg.dim.dim_user',
+            columns: [
+              { name: 'user_id', type: 'bigint' },
+              { name: 'mobile', type: 'varchar', masked: true },
+            ],
+          },
+          {
+            id: 'dim_sku',
+            type: 'table',
+            name: 'dim_sku',
+            layer: 'DIM',
+            star: true,
+            fqn: 'iceberg.dim.dim_sku',
+            columns: [
+              { name: 'sku_id', type: 'bigint' },
+              { name: 'sku_name', type: 'varchar' },
+            ],
+          },
         ],
       },
     ],
@@ -121,26 +224,41 @@ export const QUERY_CATALOG = [
   {
     id: 'clickhouse',
     type: 'catalog',
-    name: 'clickhouse（作业SA写入，人只读）',
+    name: 'clickhouse',
+    engine: 'ClickHouse',
+    hint: '作业写入 · 人只读',
     open: true,
     children: [
       {
         id: 'ck_ads',
         type: 'schema',
         name: 'ads',
+        layer: 'ADS',
         open: true,
         children: [
           {
             id: 'ck_ads_gmv',
             type: 'table',
-            name: 'ads_gmv_board（Trino读·经脱敏）',
+            name: 'ads_gmv_board',
+            layer: 'ADS',
+            hint: '经脱敏',
             fqn: 'clickhouse.ads.ads_gmv_board',
+            columns: [
+              { name: 'dt', type: 'date' },
+              { name: 'gmv', type: 'decimal(18,2)' },
+            ],
           },
           {
             id: 'ck_dws_pv',
             type: 'table',
-            name: 'dws_pv_1min（实时）',
+            name: 'dws_pv_1min',
+            layer: 'DWS',
+            hint: '实时',
             fqn: 'clickhouse.ads.dws_pv_1min',
+            columns: [
+              { name: 'minute_ts', type: 'timestamp' },
+              { name: 'pv', type: 'bigint' },
+            ],
           },
         ],
       },
@@ -149,7 +267,9 @@ export const QUERY_CATALOG = [
   {
     id: 'mysql_poste_prod',
     type: 'catalog',
-    name: 'mysql_poste_prod（未授权）',
+    name: 'mysql_poste_prod',
+    engine: 'MySQL',
+    hint: '未授权',
     locked: true,
     open: false,
     children: [],
@@ -251,14 +371,14 @@ export function buildDemoResultRows() {
   for (let i = 0; i < 6; i++) {
     const d = `2026-09-${String(2 - i).padStart(2, '0')}`
     CHANNELS.forEach((ch) => {
-      const gmv = (Math.random() * 200 + 120).toFixed(2)
+      const gmv = Math.round((Math.random() * 200 + 120) * 100) / 100
       const cnt = Math.floor(Math.random() * 8000 + 1500)
       rows.push({
         dt: d,
         order_channel: ch.name,
         channelTag: ch.tag,
-        order_cnt: cnt.toLocaleString(),
-        gmv: `¥ ${Number(gmv * 10000).toLocaleString()}`,
+        order_cnt: cnt,
+        gmv,
         buyer_mobile: `138****${Math.floor(Math.random() * 9000) + 1000}`,
       })
     })

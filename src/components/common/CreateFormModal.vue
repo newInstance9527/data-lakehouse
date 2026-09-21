@@ -1,5 +1,5 @@
 <script setup>
-import { computed, reactive, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { useToast } from '@/composables/useToast'
 import SearchSelect from '@/components/common/SearchSelect.vue'
 import MultiSearchSelect from '@/components/common/MultiSearchSelect.vue'
@@ -20,6 +20,8 @@ const { showToast } = useToast()
 
 const form = reactive({})
 const presetPick = reactive({})
+/** 异步 optionsLoad 完成后递增，驱动 resolveOptions 重算 */
+const optionsTick = ref(0)
 
 function optionValue(o) {
   return typeof o === 'object' && o !== null ? o.value : o
@@ -72,6 +74,7 @@ function isHidden(f) {
 }
 
 function resolveOptions(f) {
+  void optionsTick.value
   if (typeof f.optionsResolver === 'function') {
     return f.optionsResolver(form) || []
   }
@@ -80,6 +83,27 @@ function resolveOptions(f) {
     return f.optionsBy[dep] || f.options || []
   }
   return f.options || []
+}
+
+async function runOptionsLoad(f) {
+  if (typeof f.optionsLoad !== 'function') return
+  try {
+    await f.optionsLoad(form)
+  } catch (e) {
+    console.warn('[CreateFormModal] optionsLoad failed', f.key, e)
+  } finally {
+    optionsTick.value += 1
+  }
+}
+
+async function refreshAsyncOptions() {
+  for (const f of props.fields) {
+    if (isHidden(f)) continue
+    if (typeof f.optionsLoad !== 'function') continue
+    // 级联字段：依赖值未定时跳过
+    if (f.optionsByKey && isEmptyValue(form[f.optionsByKey])) continue
+    await runOptionsLoad(f)
+  }
 }
 
 function syncDimToAtomOptions() {
@@ -241,15 +265,30 @@ function resetForm() {
 
 watch(
   () => props.open,
-  (v) => {
-    if (v) resetForm()
+  async (v) => {
+    if (v) {
+      resetForm()
+      await refreshAsyncOptions()
+      // 异步选项到位后再校正级联默认值
+      props.fields.forEach((f) => {
+        if ((f.type === 'select' || f.type === 'search-select') && f.optionsByKey) {
+          const opts = resolveOptions(f)
+          if (!opts.some((o) => optionValue(o) === form[f.key])) {
+            form[f.key] = defaultForSelect(f)
+          }
+        }
+      })
+    }
   },
 )
 
 watch(
   () => props.initialValues,
-  () => {
-    if (props.open) resetForm()
+  async () => {
+    if (props.open) {
+      resetForm()
+      await refreshAsyncOptions()
+    }
   },
 )
 
@@ -267,11 +306,20 @@ watch(
 /** 表变化 → 刷新字段下拉，并重填表达式中的 {field} */
 watch(
   () => form.table,
-  () => {
+  async () => {
     if (!props.open) return
+    const fieldLoaders = props.fields.filter(
+      (f) => f.optionsByKey === 'table' && typeof f.optionsLoad === 'function',
+    )
+    for (const f of fieldLoaders) {
+      await runOptionsLoad(f)
+    }
     props.fields.forEach((f) => {
-      if (f.type === 'select' && f.optionsByKey === 'table') {
-        form[f.key] = defaultForSelect(f)
+      if ((f.type === 'select' || f.type === 'search-select') && f.optionsByKey === 'table') {
+        const opts = resolveOptions(f)
+        if (!opts.some((o) => optionValue(o) === form[f.key])) {
+          form[f.key] = defaultForSelect(f)
+        }
       }
       if (f.type === 'preset-text') reapplyCurrentPreset(f)
     })
@@ -309,13 +357,19 @@ watch(
 /** 指标类型切换 → 刷新级联默认值与单位提示 */
 watch(
   () => form.kind,
-  (kind) => {
+  async (kind) => {
     if (!props.open || !kind) return
     if (kind === '原子') {
+      await refreshAsyncOptions()
       const tableDef = props.fields.find((f) => f.key === 'table')
       const fieldDef = props.fields.find((f) => f.key === 'field')
       if (tableDef && !form.table) form.table = defaultForSelect(tableDef)
-      if (fieldDef) form.field = defaultForSelect(fieldDef)
+      if (fieldDef) {
+        const opts = resolveOptions(fieldDef)
+        if (!opts.some((o) => optionValue(o) === form.field)) {
+          form.field = defaultForSelect(fieldDef)
+        }
+      }
       if (!form.unit || form.unit === '元' || form.unit === '元/单' || form.unit === '%') form.unit = '个'
     } else if (kind === '衍生') {
       if (!form.atomRef) {

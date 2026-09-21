@@ -1,0 +1,572 @@
+/**
+ * 生命周期主台 + 存储趋势（对接 /lh/lifecycle）
+ */
+import { computed, ref } from 'vue'
+import {
+  fetchLcJobsLatest,
+  fetchLcOverview,
+  fetchLcPolicies,
+  fetchLcStorageTrend,
+  fetchLcTopStorage,
+  runLcJobsNow,
+  scanLcOrphan,
+  syncLcRun,
+  triggerLcCompact,
+  triggerLcExpire,
+  upsertLcPolicy,
+} from '@/api/lifecycle'
+import {
+  LC_COMPACTION,
+  LC_JOBS,
+  LC_KPIS,
+  LC_ORPHAN,
+  LC_SNAPSHOT_POLICIES,
+  LC_STAGES,
+  LC_STORAGE,
+  lcJobStatusMeta,
+} from '@/data/lifecycle'
+import { LC_COMPLIANCE_PREVIEW } from '@/data/compliance'
+import {
+  ST_ADVICE,
+  ST_ANOMALIES,
+  ST_CAPACITY,
+  ST_DAILY,
+  ST_KPIS,
+  ST_LAYERS,
+  ST_TOP_GROWTH,
+} from '@/data/storageTrend'
+
+const loading = ref(false)
+const loaded = ref(false)
+const lastError = ref(null)
+const actionBusy = ref(false)
+
+const overview = ref(null)
+const jobsLatest = ref(null)
+const policies = ref([])
+const topStorage = ref([])
+const orphanRows = ref([...LC_ORPHAN])
+const lastOrphanScan = ref(null)
+const storageTrend = ref(null)
+
+let loadPromise = null
+
+const LAYER_COLOR = {
+  ODS: '#4d8dff',
+  DWD: '#3dd68c',
+  DWS: '#a78bfa',
+  ADS: '#e6b450',
+  OTHER: '#94a3b8',
+  'DIM / 其它': '#94a3b8',
+}
+
+function n(v, d = 0) {
+  const x = Number(v)
+  return Number.isFinite(x) ? x : d
+}
+
+/** 可读容量 */
+export function humanSizeSimple(bytes) {
+  const b = n(bytes)
+  if (b <= 0) return '0 B'
+  if (b >= 1024 ** 4) return `${(b / 1024 ** 4).toFixed(1)} TB`
+  if (b >= 1024 ** 3) return `${Math.round(b / 1024 ** 3)} GB`
+  if (b >= 1024 ** 2) return `${Math.round(b / 1024 ** 2)} MB`
+  return `${Math.round(b / 1024)} KB`
+}
+
+function avgSizeLabel(bytes) {
+  const b = n(bytes)
+  if (b <= 0) return '—'
+  if (b >= 1024 ** 3) return `${(b / 1024 ** 3).toFixed(0)}GB`
+  return `${Math.round(b / 1024 ** 2)}MB`
+}
+
+function growthLabel(pct) {
+  if (pct == null || pct === '') return '—'
+  const x = n(pct)
+  const sign = x > 0 ? '+' : ''
+  return `${sign}${x.toFixed(1)}%`
+}
+
+function levelCls(level) {
+  if (level === 'L1') return 'tag-red'
+  if (level === 'L2') return 'tag-orange'
+  return 'tag-blue'
+}
+
+function applySeedBoard() {
+  overview.value = null
+  jobsLatest.value = {
+    steps: LC_JOBS.map((j) => ({
+      step: j.step,
+      name: j.name,
+      desc: j.desc,
+      detail: j.detail,
+      durationSec: null,
+      duration: j.duration,
+      status: j.status,
+    })),
+    status: 'success',
+  }
+  policies.value = LC_SNAPSHOT_POLICIES.map((p) => ({
+    tableFqn: p.table,
+    keepCount: p.keepCount,
+    keepDays: p.keepDays,
+    minSnapshots: p.minSnapshots,
+    daysTag: p.daysTag,
+    compactLevel: 'L2',
+  }))
+  topStorage.value = LC_STORAGE.map((r) => ({
+    tableFqn: r.table,
+    layer: r.layer,
+    sizeBytes: 0,
+    sizeLabel: r.size,
+    fileCount: r.files,
+    policyLabel: r.policy,
+    status: r.status,
+    growth7dPct: null,
+  }))
+  orphanRows.value = [...LC_ORPHAN]
+  storageTrend.value = null
+}
+
+export function useLifecycle() {
+  const liveKpis = computed(() => {
+    const ov = overview.value
+    if (!ov) return LC_KPIS
+    const hot = ov.hotWarmCold || {}
+    return [
+      {
+        icon: '💾',
+        color: 'blue',
+        value: String(ov.totalStorageTb ?? '—'),
+        unit: 'TB',
+        label: '总存储',
+        trend: `热 ${hot.hotTb ?? '—'} / 温 ${hot.warmTb ?? '—'} / 冷 ${hot.coldTb ?? '—'}`,
+      },
+      {
+        icon: '🧹',
+        color: 'green',
+        value: String(ov.monthCleanedGb ?? '—'),
+        unit: 'GB',
+        label: '本月清理',
+        trend: '快照 + 孤儿 + 归档',
+      },
+      {
+        icon: '📦',
+        color: 'purple',
+        value: String(ov.compactSuccessCount ?? 0),
+        unit: '次',
+        label: '本月合并成功',
+        trend: ov.warnTableCount ? `${ov.warnTableCount} 表告警` : '达标',
+      },
+      {
+        icon: '🗄️',
+        color: 'orange',
+        value: String(ov.archiveCandidatePartitions ?? '—'),
+        unit: '分区',
+        label: '归档候选',
+        trend: 'ODS 分区过期',
+      },
+      {
+        icon: '⚠️',
+        color: 'red',
+        value: String(ov.compliancePending ?? 0),
+        unit: '项',
+        label: '合规删除待审',
+        trend: '见合规工单',
+        trendDown: n(ov.compliancePending) > 0,
+      },
+    ]
+  })
+
+  const jobSteps = computed(() => {
+    const steps = jobsLatest.value?.steps
+    if (!steps?.length) {
+      return LC_JOBS.map((j) => ({
+        step: j.step,
+        name: j.name,
+        desc: j.desc,
+        detail: j.detail,
+        duration: j.duration,
+        status: j.status,
+      }))
+    }
+    return steps.map((s) => ({
+      step: s.step,
+      name: s.name,
+      desc: s.desc || s.name,
+      detail: s.detail || '',
+      duration:
+        s.duration ||
+        (s.durationSec != null ? `${Math.round(s.durationSec / 60)} min` : '—'),
+      status: s.status || 'success',
+    }))
+  })
+
+  // topStorage 现由 storage/tables 委托，字段含三口径
+  const storageRows = computed(() => {
+    if (!topStorage.value.length) return LC_STORAGE
+    return topStorage.value.map((r) => ({
+      table: r.fqtn || r.tableFqn,
+      layer: r.layer || '—',
+      size: r.sizeLabel || humanSizeSimple(r.activeBytes ?? r.totalBytes ?? r.sizeBytes),
+      files: r.fileCount ?? '—',
+      policy: r.policyLabel || '—',
+      status: r.anomaly ? 'warn' : r.status || 'ok',
+      growth: growthLabel(r.growthPct ?? r.growth7dPct),
+    }))
+  })
+
+  const snapshotPolicies = computed(() => {
+    if (!policies.value.length) return LC_SNAPSHOT_POLICIES
+    return policies.value.map((p) => ({
+      table: p.tableFqn,
+      keepCount: p.keepCount,
+      keepDays: p.keepDays,
+      minSnapshots: p.minSnapshots,
+      daysTag: n(p.keepDays) <= 3 ? 'tag-red' : '',
+      compactLevel: p.compactLevel,
+      orphanOlderDays: p.orphanOlderDays,
+    }))
+  })
+
+  const compactionRows = computed(() => {
+    if (!policies.value.length && !topStorage.value.length) return LC_COMPACTION
+    const byTable = new Map(topStorage.value.map((s) => [s.tableFqn, s]))
+    const rows = policies.value.length
+      ? policies.value
+      : LC_COMPACTION.map((c) => ({ tableFqn: c.table, compactLevel: c.level }))
+    return rows.map((p) => {
+      const st = byTable.get(p.tableFqn) || byTable.get(String(p.tableFqn).split('.').pop())
+      const level = p.compactLevel || 'L2'
+      const files = st?.fileCount ?? 0
+      const avg = st?.avgFileBytes ?? 0
+      const ok = !(files > 50 || (avg > 0 && avg < 32 * 1024 * 1024))
+      const sla = level === 'L1' ? '15min' : level === 'L2' ? '1h' : '日批'
+      return {
+        table: p.tableFqn,
+        level,
+        levelCls: levelCls(level),
+        files: files || '—',
+        avgSize: avg ? avgSizeLabel(avg) : '—',
+        sla,
+        ok,
+      }
+    })
+  })
+
+  const stages = computed(() => LC_STAGES)
+  const compliancePreview = computed(() => LC_COMPLIANCE_PREVIEW)
+
+  const trendKpis = computed(() => {
+    const tr = storageTrend.value
+    if (!tr) return ST_KPIS
+    // 新契约：series(layer) + daily(totalBytes/activeBytes)；兼容旧 layers
+    const series = tr.series?.length ? tr.series : tr.layers || []
+    const find = (name) =>
+      series.find((l) => String(l.layer || l.key || '').toUpperCase() === name)
+    const ods = find('ODS')
+    const dwd = find('DWD')
+    const dws = find('DWS')
+    const ads = find('ADS')
+    const totalBytes = tr.daily?.length
+      ? tr.daily[tr.daily.length - 1]?.totalBytes ?? tr.totalBytes
+      : tr.totalBytes
+    const rangeLabel = tr.range || `${tr.days || 30}d`
+    const sizeOf = (row) => row?.activeBytes ?? row?.sizeBytes ?? row?.totalBytes
+    return [
+      {
+        icon: '💾',
+        color: 'blue',
+        value: humanSizeSimple(totalBytes).replace(/ TB| GB| MB/, ''),
+        unit: humanSizeSimple(totalBytes).includes('TB') ? 'TB' : 'GB',
+        label: `${rangeLabel} 物理口径`,
+        trend: `总存储 ${humanSizeSimple(totalBytes)}`,
+      },
+      {
+        icon: '🔥',
+        color: 'orange',
+        value: ods ? humanSizeSimple(sizeOf(ods)).replace(/ TB| GB/, '') : '—',
+        unit: ods && n(sizeOf(ods)) >= 1024 ** 4 ? 'TB' : 'GB',
+        label: 'ODS 层',
+        trend: '入湖主路径',
+      },
+      {
+        icon: '💧',
+        color: 'green',
+        value: dwd ? humanSizeSimple(sizeOf(dwd)).replace(/ TB| GB/, '') : '—',
+        unit: dwd && n(sizeOf(dwd)) >= 1024 ** 4 ? 'TB' : 'GB',
+        label: 'DWD 层',
+        trend: '明细主力',
+      },
+      {
+        icon: '📦',
+        color: 'purple',
+        value: dws ? String(Math.round(n(sizeOf(dws)) / 1024 ** 3)) : '—',
+        unit: 'GB',
+        label: 'DWS 层',
+        trend: '汇总',
+      },
+      {
+        icon: '📊',
+        color: 'red',
+        value: ads ? String(Math.round(n(sizeOf(ads)) / 1024 ** 3)) : '—',
+        unit: 'GB',
+        label: 'ADS 层',
+        trend: '看板 / CK',
+        trendDown: true,
+      },
+    ]
+  })
+
+  const trendLayers = computed(() => {
+    const series = storageTrend.value?.series?.length
+      ? storageTrend.value.series
+      : storageTrend.value?.layers
+    if (!series?.length) return ST_LAYERS
+    return series.map((l) => ({
+      layer: l.layer || l.key,
+      size: humanSizeSimple(l.activeBytes ?? l.sizeBytes ?? l.totalBytes),
+      growth: l.growthPct != null ? growthLabel(l.growthPct) : '—',
+      pct: Math.max(1, Math.round(n(l.pct))),
+      color: LAYER_COLOR[l.layer || l.key] || LAYER_COLOR.OTHER,
+      note: '',
+    }))
+  })
+
+  const trendDaily = computed(() => {
+    const daily = storageTrend.value?.daily
+    if (!daily?.length) return ST_DAILY
+    return daily.map((d) => {
+      if (d.day || d.date) {
+        return {
+          day: d.day || String(d.date).slice(5),
+          total: Number((n(d.totalBytes) / 1024 ** 4).toFixed(2)),
+          growth: '',
+        }
+      }
+      const now = Date.now()
+      const day = new Date(now + n(d.offsetDays) * 86400000)
+      const mm = String(day.getMonth() + 1).padStart(2, '0')
+      const dd = String(day.getDate()).padStart(2, '0')
+      return {
+        day: `${mm}-${dd}`,
+        total: Number((n(d.totalBytes) / 1024 ** 4).toFixed(2)),
+        growth: '',
+      }
+    })
+  })
+
+  const trendAnomalies = computed(() => {
+    // 新契约 anomalies 已迁到 /storage/tables?filter=anomaly；兼容旧字段
+    const list = storageTrend.value?.anomalies
+    if (!list?.length) return ST_ANOMALIES
+    return list.map((a) => {
+      const advice =
+        a.advice === 'expire' || a.suggestedAction === 'expire'
+          ? 'expire'
+          : a.advice === 'compact' || a.suggestedAction === 'compact'
+            ? 'compact'
+            : 'catalog'
+      const growth = a.growthPct ?? a.growth7dPct
+      return {
+        table: a.fqtn || a.tableFqn,
+        layer: a.layer || '—',
+        size: humanSizeSimple(a.activeBytes ?? a.sizeBytes),
+        growth: growthLabel(growth),
+        reason:
+          advice === 'compact'
+            ? '小文件/文件数超阈'
+            : advice === 'expire'
+              ? '增速偏高 · 建议快照治理'
+              : '关注增长',
+        status: n(growth) >= 5 || a.anomaly ? 'warn' : 'ok',
+        action: advice,
+        actionLabel: advice === 'compact' ? '去合并' : advice === 'expire' ? '去过期' : '看资产',
+      }
+    })
+  })
+
+  const trendAdvice = computed(() => {
+    const anomalies = trendAnomalies.value.filter((a) => a.status === 'warn').slice(0, 3)
+    if (!anomalies.length) return ST_ADVICE
+    return anomalies.map((a, i) => ({
+      pri: i === 0 ? 'P1' : 'P2',
+      priCls: i === 0 ? 'tag-red' : 'tag-orange',
+      title: `${a.table} · ${a.actionLabel}`,
+      detail: `${a.growth} · ${a.reason}`,
+      act: a.action,
+      actLabel: a.actionLabel,
+      table: a.table,
+    }))
+  })
+
+  const trendTopGrowth = computed(() => {
+    const list = storageTrend.value?.anomalies
+    if (!list?.length) return ST_TOP_GROWTH
+    return list.slice(0, 3).map((a) => ({
+      table: a.fqtn || a.tableFqn,
+      growth: growthLabel(a.growthPct ?? a.growth7dPct),
+      tip: (a.suggestedAction || a.advice) === 'compact'
+        ? '建议合并'
+        : (a.suggestedAction || a.advice) === 'expire'
+          ? '建议过期'
+          : '关注',
+      danger: n(a.growthPct ?? a.growth7dPct) >= 8,
+    }))
+  })
+
+  function ensureLoaded() {
+    if (loaded.value || loading.value || loadPromise) return loadPromise
+    loadPromise = loadBoard()
+      .catch(() => {})
+      .finally(() => {
+        loadPromise = null
+      })
+    return loadPromise
+  }
+
+  async function loadBoard(ws) {
+    loading.value = true
+    lastError.value = null
+    try {
+      const [ov, jobs, top, pols, trend] = await Promise.all([
+        fetchLcOverview(ws),
+        fetchLcJobsLatest(ws),
+        fetchLcTopStorage(ws, 20),
+        fetchLcPolicies(ws),
+        fetchLcStorageTrend(ws, '30d').catch(() => null),
+      ])
+      overview.value = ov
+      jobsLatest.value = jobs
+      topStorage.value = (top || []).map((r) => ({
+        ...r,
+        tableFqn: r.fqtn || r.tableFqn,
+        sizeLabel: humanSizeSimple(r.activeBytes ?? r.totalBytes ?? r.sizeBytes),
+        growth7dPct: r.growthPct ?? r.growth7dPct,
+      }))
+      policies.value = pols || []
+      storageTrend.value = trend
+      loaded.value = true
+      return { overview: ov, jobs, top, policies: pols, trend }
+    } catch (e) {
+      lastError.value = e
+      console.error('[lifecycle] load failed', e)
+      applySeedBoard()
+      loaded.value = true
+      throw e
+    } finally {
+      loading.value = false
+    }
+  }
+
+  async function loadTrend(ws, rangeOrDays = '30d') {
+    storageTrend.value = await fetchLcStorageTrend(ws, rangeOrDays)
+    return storageTrend.value
+  }
+
+  async function runNow(ws) {
+    actionBusy.value = true
+    try {
+      const run = await runLcJobsNow({ ws })
+      await loadBoard(ws)
+      return run
+    } finally {
+      actionBusy.value = false
+    }
+  }
+
+  async function compactTable(tableFqn, ws) {
+    actionBusy.value = true
+    try {
+      return await triggerLcCompact({ tableFqn, ws })
+    } finally {
+      actionBusy.value = false
+    }
+  }
+
+  async function expireTable(tableFqn, ws) {
+    actionBusy.value = true
+    try {
+      return await triggerLcExpire({ tableFqn, ws })
+    } finally {
+      actionBusy.value = false
+    }
+  }
+
+  async function syncRun(runId) {
+    return syncLcRun(runId)
+  }
+
+  async function orphanScan(ws, bucket) {
+    actionBusy.value = true
+    try {
+      const res = await scanLcOrphan({ ws, bucket, dryRun: true })
+      lastOrphanScan.value = res
+      orphanRows.value = (res.buckets || []).map((b) => ({
+        bucket: b.bucket,
+        files: `${b.candidateCount} 个`,
+        space: humanSizeSimple(b.bytes),
+        window: b.windowOk ? '+72h ✓' : '等待中',
+        status: b.status || (b.windowOk ? '已扫描' : '+48h'),
+        statusCls: b.windowOk ? 'tag-green' : 'tag-orange',
+      }))
+      return res
+    } finally {
+      actionBusy.value = false
+    }
+  }
+
+  async function savePolicy(payload) {
+    actionBusy.value = true
+    try {
+      const saved = await upsertLcPolicy(payload)
+      const idx = policies.value.findIndex((p) => p.tableFqn === saved.tableFqn)
+      if (idx >= 0) policies.value[idx] = saved
+      else policies.value.push(saved)
+      return saved
+    } finally {
+      actionBusy.value = false
+    }
+  }
+
+  return {
+    loading,
+    loaded,
+    lastError,
+    actionBusy,
+    overview,
+    jobsLatest,
+    policies,
+    topStorage,
+    orphanRows,
+    lastOrphanScan,
+    storageTrend,
+    liveKpis,
+    jobSteps,
+    storageRows,
+    snapshotPolicies,
+    compactionRows,
+    stages,
+    compliancePreview,
+    trendKpis,
+    trendLayers,
+    trendDaily,
+    trendAnomalies,
+    trendAdvice,
+    trendTopGrowth,
+    capacity: ST_CAPACITY,
+    ensureLoaded,
+    loadBoard,
+    loadTrend,
+    runNow,
+    compactTable,
+    expireTable,
+    orphanScan,
+    savePolicy,
+    syncRun,
+    lcJobStatusMeta,
+  }
+}

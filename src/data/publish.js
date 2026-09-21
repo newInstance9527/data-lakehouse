@@ -14,7 +14,7 @@ export const PUBLISH_ENV_STAGES = [
     icon: '🔧',
     name: 'dev 开发',
     prefix: 'dev_*',
-    lines: ['42 作业 · 脱敏抽样 / 造数', '开发 SA 可写'],
+    lines: ['Catalog 前缀 dev_*', '开发试跑可写'],
     tone: 'primary',
   },
   {
@@ -22,7 +22,7 @@ export const PUBLISH_ENV_STAGES = [
     icon: '🧪',
     name: 'stg 测试',
     prefix: 'stg_*',
-    lines: ['6 作业待发布 · 近生产抽样脱敏', '发布流水线可写'],
+    lines: ['Catalog 前缀 stg_*', '发布流水线可写'],
     tone: 'warning',
   },
   {
@@ -30,7 +30,7 @@ export const PUBLISH_ENV_STAGES = [
     icon: '📦',
     name: 'prod 生产',
     prefix: 'ods_ / dwd_ / ...',
-    lines: ['186 作业 · 生产数据', '仅 CI 发布可写'],
+    lines: ['生产 Catalog', '仅发布单投影可写'],
     tone: 'success',
   },
 ]
@@ -61,7 +61,7 @@ export const PUBLISH_LOG_SNIPPETS = [
 ]
 
 export function gateIcon(status) {
-  return { pass: '✓', fail: '✗', wait: '○', run: '↻' }[status] || '○'
+  return { pass: '✓', fail: '✗', wait: '○', run: '↻', skip: '–' }[status] || '○'
 }
 
 export function historyResultMeta(result) {
@@ -70,6 +70,7 @@ export function historyResultMeta(result) {
       成功: { cls: 'tag-green', label: '✓ 成功' },
       回滚: { cls: 'tag-orange', label: '↺ 回滚' },
       门禁中: { cls: 'tag-blue', label: '⏳ 门禁中' },
+      未通过: { cls: 'tag-red', label: '✗ 未通过' },
     }[result] || { cls: 'tag-gray', label: result }
   )
 }

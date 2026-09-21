@@ -1,14 +1,13 @@
 <script setup>
-import { ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
 import { useToast } from '@/composables/useToast'
 import { usePublish } from '@/composables/usePublish'
+import { useSession } from '@/composables/useSession'
 import { pageGuideOf } from '@/data/pageGuides'
 import {
   PUBLISH_ENV_STAGES,
-  PUBLISH_KPIS,
-  PUBLISH_LOG_SNIPPETS,
   gateIcon,
   historyResultMeta,
 } from '@/data/publish'
@@ -16,62 +15,78 @@ import {
 const route = useRoute()
 const router = useRouter()
 const { showToast } = useToast()
+const { currentWs } = useSession()
 const guide = pageGuideOf('publish')
-const { items, gateList, focus, addRelease } = usePublish()
+const { items, gateList, focus, focusId, refresh, publish, rollback, select } = usePublish()
+const loadError = ref('')
 
-const creating = ref(false)
-const form = ref({ name: '', script: '', engine: 'spark', env: 'stg' })
+const kpis = computed(() => {
+  const list = items.value
+  const review = list.filter((r) => r.status === 'IN_REVIEW').length
+  const published = list.filter((r) => r.status === 'PUBLISHED').length
+  const rolled = list.filter((r) => r.status === 'ROLLED_BACK').length
+  const rejected = list.filter((r) => r.status === 'REJECTED').length
+  return [
+    { icon: '🧪', color: 'orange', value: String(review), unit: '单', label: '门禁中', trend: '静态检查 + 试跑' },
+    { icon: '📦', color: 'green', value: String(published), unit: '单', label: '已发布', trend: 'Git tag + 调度投影' },
+    { icon: '🔄', color: 'purple', value: String(rolled), unit: '单', label: '已回滚', trend: '指向更早 tag' },
+    { icon: '✗', color: 'red', value: String(rejected), unit: '单', label: '未通过', trend: '不能标已发布' },
+    { icon: '🚫', color: 'red', value: '0', unit: '次', label: '裸改生产', trend: '已禁用' },
+  ]
+})
 
-function openCreate() {
-  creating.value = true
-  form.value = { name: '', script: '', engine: 'spark', env: 'stg' }
-}
+const focusStatus = computed(() => items.value.find((r) => r.id === focusId.value)?.status || '')
 
-function submitCreate() {
-  const name = form.value.name.trim()
-  if (!name) {
-    showToast('请填写发布包名称', 'warning')
-    return
+async function load() {
+  try {
+    await refresh(currentWs.value || 'default')
+    loadError.value = ''
+    const id = typeof route.query.id === 'string' ? route.query.id : ''
+    if (id) {
+      const row = items.value.find((r) => r.id === id)
+      if (row) select(row)
+    }
+  } catch (e) {
+    loadError.value = e?.message || '发布单接口不可用'
+    showToast(loadError.value, 'warning')
   }
-  const row = addRelease({ ...form.value, name })
-  creating.value = false
-  showToast(`已创建发布 ${row.pkg} → ${row.env}`, 'success')
-}
-
-function showHistoryModal() {
-  const lines = PUBLISH_LOG_SNIPPETS.map((s) => `• ${s}`).join('\n')
-  showToast(`📜 近期发布：\n${lines}`, 'info')
 }
 
 function goDevelop() {
   router.push('/develop')
 }
 
-function ingestFromDevelop() {
-  const q = route.query || {}
-  if (!q.script && !q.from) return
-  const script = String(q.script || q.from || '')
-  const engine = String(q.engine || 'spark')
-  const env = String(q.env || 'stg').toLowerCase()
-  const name = `v23-${script.replace(/\.sql$/i, '') || 'script'}`
-  const exists = items.value.find((r) => r.pkg.includes(script.replace(/\.sql$/i, '')) && r.result === '门禁中')
-  if (exists) return
-  addRelease({
-    name,
-    script: script || 'untitled.sql',
-    engine,
-    env: env === 'prod' ? 'stg' : env,
-  })
-  showToast(`已从数据开发接入发布单 ${name}`, 'success')
+async function onPublish() {
+  if (!focusId.value) return
+  try {
+    const row = await publish(focusId.value)
+    showToast(`已发布 ${row.pkg} · ${row.tag}`, 'success')
+  } catch (e) {
+    showToast(e?.message || '发布失败', 'warning')
+  }
 }
 
+async function onRollback() {
+  if (!focusId.value) return
+  if (!window.confirm('回滚会按上一 Git tag 重新投影调度，不会改调度器里的 SQL。继续？')) return
+  try {
+    const row = await rollback(focusId.value)
+    showToast(`已回滚到 ${row.rolledToTag || row.tag}`, 'success')
+  } catch (e) {
+    showToast(e?.message || '回滚失败', 'warning')
+  }
+}
+
+onMounted(load)
+watch(currentWs, load)
 watch(
-  () => `${route.query.script || ''}|${route.query.engine || ''}|${route.query.env || ''}`,
+  () => route.query.id,
   () => {
-    if (!route.query.script && !route.query.from) return
-    ingestFromDevelop()
+    const id = typeof route.query.id === 'string' ? route.query.id : ''
+    if (!id) return
+    const row = items.value.find((r) => r.id === id)
+    if (row) select(row)
   },
-  { immediate: true },
 )
 </script>
 
@@ -83,53 +98,22 @@ watch(
       :guide-title="guide.title"
       :guide="guide"
     >
-      <button class="btn btn-sm" @click="openCreate">＋ 新建发布</button>
-      <button class="btn btn-sm" @click="showHistoryModal">📜 发布记录</button>
+      <button class="btn btn-sm" @click="goDevelop">＋ 从脚本提交</button>
+      <button class="btn btn-sm" :disabled="!focusId || focusStatus === 'PUBLISHED'" @click="onPublish">发布</button>
+      <button class="btn btn-sm" :disabled="!focusId" @click="onRollback">回滚上一 tag</button>
       <button class="btn btn-sm btn-primary" @click="goDevelop">🔗 数据开发</button>
     </PageHeader>
 
+    <div v-if="loadError" class="banner-soft">{{ loadError }}</div>
+
     <div class="kpi-grid pub-kpi">
-      <div v-for="(k, i) in PUBLISH_KPIS" :key="i" class="kpi-card" :class="k.color">
+      <div v-for="(k, i) in kpis" :key="i" class="kpi-card" :class="k.color">
         <div class="kpi-icon" :class="k.color">{{ k.icon }}</div>
         <div class="kpi-value">
           {{ k.value }}<span class="kpi-unit">{{ k.unit }}</span>
         </div>
         <div class="kpi-label">{{ k.label }}</div>
         <div class="kpi-trend up">{{ k.trend }}</div>
-      </div>
-    </div>
-
-    <div v-if="creating" class="card" style="margin-bottom: 16px">
-      <div class="card-header">
-        <div class="card-title">新建发布</div>
-        <button class="btn btn-sm" @click="creating = false">取消</button>
-      </div>
-      <div class="card-body pub-form">
-        <label>
-          <span>发布包</span>
-          <input v-model="form.name" class="input" placeholder="例如 v24-dwd-order-clean" />
-        </label>
-        <label>
-          <span>脚本</span>
-          <input v-model="form.script" class="input" placeholder="dwd_order_detail_clean.sql" />
-        </label>
-        <label>
-          <span>引擎</span>
-          <select v-model="form.engine" class="select">
-            <option value="spark">Spark SQL</option>
-            <option value="flink">Flink SQL</option>
-            <option value="trino">Trino（校验）</option>
-          </select>
-        </label>
-        <label>
-          <span>目标环境</span>
-          <select v-model="form.env" class="select">
-            <option value="dev">dev</option>
-            <option value="stg">stg</option>
-            <option disabled value="prod">prod（须门禁通过）</option>
-          </select>
-        </label>
-        <button class="btn btn-sm btn-primary" @click="submitCreate">创建</button>
       </div>
     </div>
 
@@ -164,7 +148,9 @@ watch(
           <div class="card-title">
             🚦 发布门禁 · <code>{{ focus }}</code>
           </div>
-          <span class="tag tag-orange">门禁检查中</span>
+          <span class="tag" :class="focusStatus === 'PUBLISHED' ? 'tag-green' : focusStatus === 'REJECTED' ? 'tag-red' : 'tag-orange'">
+            {{ focusStatus || '无发布单' }}
+          </span>
         </div>
         <div class="card-body" style="padding: 0">
           <div
@@ -198,7 +184,12 @@ watch(
               </tr>
             </thead>
             <tbody>
-              <tr v-for="(h, i) in items" :key="i">
+              <tr
+                v-for="h in items"
+                :key="h.id"
+                :class="{ active: h.id === focusId }"
+                @click="select(h)"
+              >
                 <td><code class="pkg">{{ h.pkg }}</code></td>
                 <td><code>{{ h.tag }}</code></td>
                 <td><span class="tag tag-blue">{{ h.env }}</span></td>
@@ -208,6 +199,9 @@ watch(
                   </span>
                 </td>
                 <td class="time">{{ h.time }}</td>
+              </tr>
+              <tr v-if="!items.length">
+                <td colspan="5" class="time">还没有发布单。在数据开发里保存并试跑后点「提交上版」。</td>
               </tr>
             </tbody>
           </table>

@@ -2,6 +2,19 @@
 
 import { SCHEMA_COLS } from '@/data/assets'
 
+/** 表单选项默认读此提供者（useMetrics 接入后指向远端目录） */
+let metricCatalogProvider = null
+
+export function setMetricCatalogProvider(fn) {
+  metricCatalogProvider = typeof fn === 'function' ? fn : null
+}
+
+export function getMetricCatalogForForms() {
+  const live = metricCatalogProvider?.()
+  if (Array.isArray(live) && live.length) return live
+  return METRIC_CATALOG
+}
+
 export const METRIC_KPIS = [
   {
     icon: '📊',
@@ -343,9 +356,9 @@ export function metricDomainKey(label) {
 }
 
 /** 供表单下拉：已启用的原子指标 */
-export function metricAtomOptions(list = METRIC_CATALOG) {
+export function metricAtomOptions(list = getMetricCatalogForForms()) {
   return list
-    .filter((r) => r.type === '原子' && r.status !== 'deprecated')
+    .filter((r) => (r.type === '原子' || r.kind === '原子') && r.status !== 'deprecated')
     .map((r) => ({
       value: r.id,
       label: `${r.id} · ${r.name}`,
@@ -356,15 +369,19 @@ export function metricAtomOptions(list = METRIC_CATALOG) {
 }
 
 /** 供表单多选：衍生 + 原子（排除废弃） */
-export function metricDeriveAtomOptions(list = METRIC_CATALOG) {
+export function metricDeriveAtomOptions(list = getMetricCatalogForForms()) {
   return list
-    .filter((r) => (r.type === '衍生' || r.type === '原子') && r.status !== 'deprecated')
+    .filter(
+      (r) =>
+        (r.type === '衍生' || r.type === '原子' || r.kind === '衍生' || r.kind === '原子') &&
+        r.status !== 'deprecated',
+    )
     .map((r) => ({
       value: r.id,
       label: `${r.id} · ${r.name}`,
-      sub: `${r.type} · ${r.statusLabel || r.status} · ${r.caliber}`,
+      sub: `${r.type || r.kind} · ${r.statusLabel || r.status} · ${r.caliber}`,
       name: r.name,
-      type: r.type,
+      type: r.type || r.kind,
       caliber: r.caliber,
     }))
 }
@@ -527,7 +544,7 @@ export function dimOptionsFromTable(tableKey) {
 }
 
 /** 衍生：依赖原子指标 → 其绑定表可作统计粒度的字段 */
-export function metricDimOptionsForAtom(atomId, list = METRIC_CATALOG) {
+export function metricDimOptionsForAtom(atomId, list = getMetricCatalogForForms()) {
   const row = list.find((r) => r.id === atomId && (r.type === '原子' || r.kind === '原子'))
     || list.find((r) => r.id === atomId)
   if (!row) return []
@@ -555,7 +572,7 @@ const QUALIFIER_PRESETS_BY_TABLE = {
 }
 
 /** 衍生：业务限定选项（随原子绑定表） */
-export function metricQualifierOptionsForAtom(atomId, list = METRIC_CATALOG) {
+export function metricQualifierOptionsForAtom(atomId, list = getMetricCatalogForForms()) {
   const row = list.find((r) => r.id === atomId) || null
   const tableKey = resolveMetricTableKey(row)
   const key = TABLE_KEY_ALIASES[tableKey] || tableKey
@@ -573,7 +590,7 @@ export function formatMetricQualifier(keys) {
 }
 
 /** 复合：多依赖指标可选粒度的交集 */
-export function metricDimOptionsForRefs(refs, list = METRIC_CATALOG) {
+export function metricDimOptionsForRefs(refs, list = getMetricCatalogForForms()) {
   const ids = refsToArray(refs)
   if (!ids.length) return []
   const optionSets = ids.map((id) => metricDimOptionsForAtom(id, list))
@@ -903,20 +920,21 @@ export function metricToFormPayload(row) {
     name: row.name,
     domain: row.domainLabel || ({ trade: '交易', user: '用户', goods: '商品' }[row.domain] || '交易'),
     unit: row.unit || '个',
-    table: row.table || (row.bind?.includes('.') ? row.bind.split('.').slice(0, -1).join('.') : 'dwd_trade.dwd_order_detail'),
-    field: row.field || (row.bind?.includes('.') ? row.bind.split('.').pop() : 'order_id'),
+    table: row.table || '',
+    field: row.field || '',
     agg: row.agg || 'COUNT',
-    atomRef: refsToArray(row.atomRef || (row.type === '衍生' ? row.bind : '')).slice(0, 1)[0] || 'A-0012',
-    deriveRef: refsToArray(row.deriveRef || (row.type === '复合' ? row.bind : 'M-0001,A-0012')),
+    gravAssetId: row.gravAssetId || '',
+    atomRef: refsToArray(row.atomRef || (row.type === '衍生' ? row.bind : '')).slice(0, 1)[0] || '',
+    deriveRef: refsToArray(row.deriveRef || (row.type === '复合' ? row.bind : '')),
     formula: row.formula || '',
     qualifier: row.qualifierKeys?.length
       ? [...row.qualifierKeys]
       : refsToArray(row.qualifier).filter((x) => x && x !== '无限定'),
     dim: row.dimKeys?.length
       ? [...row.dimKeys]
-      : defaultMetricDimKeys(metricDimOptionsForAtom(row.atomRef || (row.type === '衍生' ? row.bind : 'A-0012'))),
+      : defaultMetricDimKeys(metricDimOptionsForAtom(row.atomRef || (row.type === '衍生' ? row.bind : ''))),
     time: row.time || '近1天',
     caliber: row.caliber || '',
-    owner: row.owner || '李明',
+    owner: row.owner || '',
   }
 }

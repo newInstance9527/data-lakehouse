@@ -1,0 +1,1 @@
+function e(e,t){return String(e||``).trim()||String(t||``).trim()}function t(t,n){return e(t,n).split(`(`)[0].trim()}export{e as n,t};

@@ -1,0 +1,1 @@
+import{l as e}from"./index-DvKp-XzU.js";var t=`/lh/apply`;function n(n){return e.post(`${t}/tickets`,n)}function r(n){return e.get(`${t}/tickets`,n)}function i(n){return e.get(`${t}/tickets/pending`,n)}function a(n,r){return e.post(`${t}/tickets/approve`,{id:n,remark:r})}function o(n,r){return e.post(`${t}/tickets/reject`,{id:n,remark:r})}export{o as a,i,n,r,a as t};

@@ -24,7 +24,6 @@ import {
   API_LIST,
   APISIX_ROUTES,
   DS_KPIS,
-  SUB_LIST,
   defaultSqlrestEmbed,
 } from '@/data/dataservice'
 
@@ -33,7 +32,10 @@ const loading = ref(false)
 const degraded = ref(false)
 const apis = ref(API_LIST.map((a) => ({ ...a })))
 const routes = ref(APISIX_ROUTES.map((r) => ({ ...r })))
-const subs = ref(SUB_LIST.map((s) => ({ ...s })))
+/** SQLREST 客户端；空列表表示接口无数据，不回退演示数据 */
+const subs = ref([])
+/** 门户订阅 Key（/lh/dataapi/keys）；空则详情里不展示演示订阅方 */
+const apiKeys = ref([])
 const kpis = ref(DS_KPIS.map((k) => ({ ...k })))
 const callRank = ref(API_CALL_RANK.map((r) => ({ ...r })))
 const workbench = ref(null)
@@ -88,6 +90,23 @@ function mapTrendToRank(wb) {
   return API_CALL_RANK.map((r) => ({ ...r }))
 }
 
+function mapSqlrestClients(wb) {
+  const raw = wb?.clients?.data
+  if (!Array.isArray(raw)) return []
+  return raw.map((c) => {
+    const expired = c.isExpired === true
+    const forever = c.expireDuration === 'FOR_EVER' || c.expireAt === -1 || c.expireAt === '-1'
+    return {
+      id: c.id,
+      name: c.name || '—',
+      appKey: c.appKey || '—',
+      description: c.description || '—',
+      status: expired ? '已过期' : forever ? '长期有效' : (c.expireAtStr || '有效'),
+      cls: expired ? 'tag-orange' : 'tag-green',
+    }
+  })
+}
+
 export function useDataservice() {
   async function ensureLoaded(force = false) {
     if (loaded.value && !force) return
@@ -123,11 +142,14 @@ export function useDataservice() {
           note: r.id || '',
         }))
       }
-      if (Array.isArray(keyList) && keyList.length) subs.value = keyList
+      apiKeys.value = Array.isArray(keyList) ? keyList : []
       if (wb) {
         workbench.value = wb
         callRank.value = mapTrendToRank(wb)
+        subs.value = mapSqlrestClients(wb)
         if (wb.embed) embed.value = { ...defaultSqlrestEmbed(), ...wb.embed }
+      } else {
+        subs.value = []
       }
       if (emb) embed.value = { ...defaultSqlrestEmbed(), ...(embed.value || {}), ...emb }
       // 后端未返回时仍保留部署台账默认地址，避免「未配置」
@@ -160,6 +182,9 @@ export function useDataservice() {
       portalDsId: form.datasourceId || form.portalDsId,
       dsId: form.datasourceId || form.portalDsId,
       engine: form.engine || 'SQL',
+      namingStrategy: form.namingStrategy,
+      formatMap: form.formatMap,
+      contextList: form.contextList,
     })
   }
 
@@ -188,7 +213,18 @@ export function useDataservice() {
       responses: form.responses,
       responseFormat: form.responseFormat,
       responseShape: form.responseShape,
-      description: form.desc || form.name,
+      description: form.desc || form.description || form.name,
+      open: form.open,
+      namingStrategy: form.namingStrategy,
+      formatMap: form.formatMap,
+      cacheKeyType: form.cacheKeyType,
+      cacheKeyExpr: form.cacheKeyExpr,
+      cacheExpireSeconds: form.cacheExpireSeconds,
+      flowStatus: form.flowStatus,
+      flowGrade: form.flowGrade,
+      flowCount: form.flowCount,
+      contextList: form.contextList,
+      contentType: form.contentType,
     })
     const binding = buildRes?.binding
     if (!binding?.id) throw new Error(buildRes?.sqlrest?.message || '构建失败（SQLREST API）')
@@ -238,6 +274,7 @@ export function useDataservice() {
     apis,
     routes,
     subs,
+    apiKeys,
     kpis,
     callRank,
     workbench,

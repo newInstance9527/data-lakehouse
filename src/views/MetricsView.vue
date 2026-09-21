@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
 import CreateFormModal from '@/components/common/CreateFormModal.vue'
@@ -7,26 +7,36 @@ import AppDrawer from '@/components/common/AppDrawer.vue'
 import ListPager from '@/components/common/ListPager.vue'
 import { useToast } from '@/composables/useToast'
 import { usePager } from '@/composables/usePager'
+import { useMetrics } from '@/composables/useMetrics'
+import { enrichMetricBindPayload, warmMetricBindAssets } from '@/data/metricBindAssets'
 import { METRIC_CREATE_FORM } from '@/data/createForms'
 import { pageGuideOf } from '@/data/pageGuides'
 import {
-  METRIC_CATALOG,
   METRIC_DOMAIN_TABS,
-  METRIC_KPIS,
   METRIC_LIFECYCLE_STAGES,
   METRIC_STATUS_TABS,
-  applyMetricEdit,
-  buildMetricFromForm,
   formatMetricCalcDisplay,
   metricActions,
   metricToFormPayload,
-  transitionMetric,
 } from '@/data/metrics'
 
 const route = useRoute()
 const router = useRouter()
 const { showToast } = useToast()
 const guide = pageGuideOf('metrics')
+
+const {
+  catalog,
+  liveKpis,
+  loading,
+  lastError,
+  loadAll,
+  reloadDetail,
+  addMetric,
+  saveMetric,
+  runTransition,
+  runTrial,
+} = useMetrics()
 
 const domainTab = ref('all')
 const typeTab = ref('all')
@@ -36,7 +46,10 @@ const editOpen = ref(false)
 const detailOpen = ref(false)
 const editingId = ref('')
 const activeId = ref('')
-const catalog = ref(METRIC_CATALOG.map((r) => ({ ...r, history: [...(r.history || [])] })))
+const saving = ref(false)
+const trialBusy = ref(false)
+const trialResult = ref(null)
+const trialDt = ref('')
 
 const TYPE_TABS = [
   { id: 'all', label: '全部类型' },
@@ -62,7 +75,7 @@ watch(
   (q) => {
     const id = typeof q === 'string' ? q.trim() : ''
     if (!id) return
-    const hit = catalog.value.find((r) => r.id === id || r.name.includes(id))
+    const hit = catalog.value.find((r) => r.id === id || r.name?.includes(id))
     if (hit) openDetail(hit.id)
   },
   { immediate: true },
@@ -80,77 +93,103 @@ const editForm = computed(() => ({
 
 const editInitial = computed(() => (editing.value ? metricToFormPayload(editing.value) : null))
 
-const liveKpis = computed(() => {
-  const all = catalog.value
-  const atom = all.filter((r) => r.type === '原子').length
-  const derive = all.filter((r) => r.type === '衍生').length
-  const composite = all.filter((r) => r.type === '复合').length
-  const enabled = all.filter((r) => r.status === 'active').length
-  const base = METRIC_KPIS.map((k) => ({ ...k }))
-  if (base[0]) base[0].value = String(all.length)
-  if (base[1]) base[1].value = String(atom)
-  if (base[2]) base[2].value = String(derive)
-  if (base[3]) base[3].value = String(composite)
-  if (base[4]) base[4].value = String(enabled)
-  return base
+onMounted(async () => {
+  try {
+    await Promise.all([loadAll(), warmMetricBindAssets().catch(() => {})])
+    const q = typeof route.query.q === 'string' ? route.query.q.trim() : ''
+    if (q) {
+      const hit = catalog.value.find((r) => r.id === q || r.name?.includes(q))
+      if (hit) openDetail(hit.id)
+    }
+  } catch (e) {
+    showToast(e?.message || '加载指标目录失败', 'error')
+  }
 })
-
-function patchRow(id, next) {
-  const idx = catalog.value.findIndex((r) => r.id === id)
-  if (idx < 0 || !next) return
-  catalog.value.splice(idx, 1, next)
-  if (activeId.value === id) activeId.value = id
-}
 
 function newMetric() {
   createOpen.value = true
+  warmMetricBindAssets().catch(() => {})
 }
 
-function onCreateMetric(payload) {
-  let row
+async function onCreateMetric(payload) {
+  saving.value = true
   try {
-    row = buildMetricFromForm(payload, catalog.value)
+    const row = await addMetric(enrichMetricBindPayload(payload))
+    resetPage()
+    showToast(`✅ 已保存草稿 ${row.id} ${row.name} · 可提交评审`, 'success')
+    createOpen.value = false
+    openDetail(row.id)
   } catch (e) {
-    showToast(e?.message || '公式无法解析', 'warning')
-    return
+    showToast(e?.message || '保存失败', 'warning')
+  } finally {
+    saving.value = false
   }
-  catalog.value = [row, ...catalog.value]
-  resetPage()
-  showToast(`✅ 已保存草稿 ${row.id} ${row.name} · 可提交评审`, 'success')
-  openDetail(row.id)
 }
 
-function openDetail(id) {
+async function openDetail(id) {
   activeId.value = id
   detailOpen.value = true
+  trialResult.value = null
+  try {
+    await reloadDetail(id)
+  } catch {
+    /* 列表数据仍可用 */
+  }
 }
 
 function closeDetail() {
   detailOpen.value = false
+  trialResult.value = null
+}
+
+async function doTrial() {
+  const row = active.value
+  if (!row) return
+  trialBusy.value = true
+  trialResult.value = null
+  try {
+    const params = {}
+    if (trialDt.value?.trim()) params.dt = trialDt.value.trim()
+    const res = await runTrial(row.id, { params, maxRows: 200 })
+    trialResult.value = res
+    if (res?.executed) {
+      showToast(`试跑完成 · ${res.rowCount ?? 0} 行 · ${res.durMs ?? 0}ms`, 'success')
+    } else if (res?.blocked || res?.status === 'blocked') {
+      showToast(res.message || res.statusLabel || '试跑被阻断', 'warning')
+    } else {
+      showToast(res?.message || '试跑未执行（检查 Trino）', 'warning')
+    }
+  } catch (e) {
+    trialResult.value = { executed: false, message: e?.message || String(e), rows: [], columns: [] }
+    showToast(e?.message || '试跑失败', 'warning')
+  } finally {
+    trialBusy.value = false
+  }
 }
 
 function openEdit(row) {
-  if (row.status !== 'draft') {
-    showToast('仅草稿可直接编辑；已启用请使用「变更」', 'warning')
+  if (row.status !== 'draft' && row.status !== 'review') {
+    showToast('仅草稿/评审中可直接编辑；已启用请使用「变更」', 'warning')
     return
   }
   editingId.value = row.id
   editOpen.value = true
+  warmMetricBindAssets(row.table).catch(() => {})
 }
 
-function onEditMetric(payload) {
+async function onEditMetric(payload) {
   const row = editing.value
   if (!row) return
-  let patched
+  saving.value = true
   try {
-    patched = applyMetricEdit(row, payload)
+    await saveMetric(row.id, enrichMetricBindPayload(payload))
+    editOpen.value = false
+    showToast(`💾 已更新 ${row.id}`, 'success')
   } catch (e) {
-    showToast(e?.message || '公式无法解析', 'warning')
-    return
+    showToast(e?.message || '保存失败', 'warning')
+  } finally {
+    saving.value = false
   }
-  patchRow(row.id, patched)
-  editOpen.value = false
-  showToast(`💾 已更新草稿 ${row.id}`, 'success')
 }
 
 function goApplyMetric(row, kind = 'query') {
@@ -163,7 +202,7 @@ function goApplyCreate() {
   router.push({ path: '/apply', query: { type: 'metric', kind: 'create' } })
 }
 
-function runAction(row, action) {
+async function runAction(row, action) {
   if (action === 'detail') {
     openDetail(row.id)
     return
@@ -180,35 +219,34 @@ function runAction(row, action) {
     goApplyMetric(row, 'change')
     return
   }
+  let note = ''
   if (action === 'change') {
-    const note = window.prompt('变更说明（新口径摘要）', row.caliber)
-    if (note === null) return
-    const next = transitionMetric(row, 'change')
-    if (!next) return
-    next.pendingCaliber = note.trim() || row.caliber
-    patchRow(row.id, next)
-    showToast(`📝 ${row.id} 已进入新版本评审（Owner 快捷变更）`, 'info')
-    openDetail(row.id)
-    return
+    const input = window.prompt('变更说明（新口径摘要）', row.caliber)
+    if (input === null) return
+    note = input.trim() || row.caliber
   }
-  const next = transitionMetric(row, action)
-  if (!next) {
-    showToast('当前状态不允许该操作', 'warning')
-    return
+  saving.value = true
+  try {
+    const next = await runTransition(row.id, action, note)
+    const tips = {
+      submit: `已提交评审 ${row.id}`,
+      approve: `已启用 ${row.id} · 可被报表/API 引用`,
+      reject: `已退回草稿 ${row.id}`,
+      change: `📝 ${row.id} 已进入新版本评审`,
+      approveVersion: `新版本 ${next?.ver || ''} 已启用 ${row.id}`,
+      cancelChange: `已取消变更 ${row.id}`,
+      deprecate: `已废弃 ${row.id} · 禁止新引用`,
+    }
+    showToast(
+      tips[action] || `状态已更新 ${row.id}`,
+      action === 'deprecate' || action === 'reject' ? 'warning' : 'success',
+    )
+    if (detailOpen.value) openDetail(row.id)
+  } catch (e) {
+    showToast(e?.message || '操作失败', 'warning')
+  } finally {
+    saving.value = false
   }
-  patchRow(row.id, next)
-  const tips = {
-    submit: `已提交评审 ${row.id}`,
-    approve: `已启用 ${row.id} · 可被报表/API 引用`,
-    reject: `已退回草稿 ${row.id}`,
-    approveVersion: `新版本 ${next.ver} 已启用 ${row.id}`,
-    cancelChange: `已取消变更 ${row.id} · 保持 ${row.ver}`,
-    deprecate: `已废弃 ${row.id} · 禁止新引用`,
-  }
-  showToast(
-    tips[action] || `状态已更新 ${row.id}`,
-    action === 'deprecate' || action === 'reject' ? 'warning' : 'success',
-  )
 }
 
 function actionLabel(a) {
@@ -254,21 +292,40 @@ function stageState(row, stageId) {
   if (i === cur) return 'current'
   return ''
 }
+
+async function refresh() {
+  try {
+    await loadAll()
+    showToast('已刷新指标目录', 'success')
+  } catch (e) {
+    showToast(e?.message || '刷新失败', 'warning')
+  }
+}
 </script>
 
 <template>
   <div class="met-page">
     <PageHeader
       title="指标中心"
-      subtitle="原子 / 衍生 / 复合 · 草稿→评审→启用→变更→废弃 · 查询权限走申请中心"
+      subtitle="原子 / 衍生 / 复合 · 草稿→评审→启用→变更→废弃 · 数据来自 /lh/metric"
       :guide="guide"
     >
+      <button type="button" class="btn btn-sm" :disabled="loading || saving" @click="refresh">
+        ↻ 刷新
+      </button>
       <button type="button" class="btn btn-sm" @click="goApplyCreate">📋 申请新建</button>
       <button type="button" class="btn btn-sm" @click="goApplyMetric(null, 'query')">
         🔑 申请权限
       </button>
-      <button type="button" class="btn btn-sm btn-primary" @click="newMetric">＋ 新建指标</button>
+      <button type="button" class="btn btn-sm btn-primary" :disabled="saving" @click="newMetric">
+        ＋ 新建指标
+      </button>
     </PageHeader>
+
+    <p v-if="lastError && !catalog.length" class="met-banner warn">
+      加载失败：{{ lastError.message || lastError }} · 请确认后端已迁移 V16 且已登录
+    </p>
+    <p v-else-if="loading && !catalog.length" class="met-banner">正在加载指标目录…</p>
 
     <CreateFormModal
       :open="createOpen"
@@ -311,7 +368,10 @@ function stageState(row, stageId) {
 
     <div class="card met-flow">
       <div class="card-header">
-        <div class="card-title">生命周期 <span class="tip">· 草稿 → 评审中 → 已启用 → 新版本评审 → 已启用 · 已启用 → 已废弃</span></div>
+        <div class="card-title">
+          生命周期
+          <span class="tip">· 草稿 → 评审中 → 已启用 → 新版本评审 → 已启用 · 已启用 → 已废弃</span>
+        </div>
       </div>
       <div class="card-body met-stages">
         <div v-for="(s, i) in METRIC_LIFECYCLE_STAGES" :key="s.id" class="met-stage">
@@ -393,6 +453,7 @@ function stageState(row, stageId) {
                   type="button"
                   class="btn-link"
                   :class="actionClass(a)"
+                  :disabled="saving"
                   @click="runAction(row, a)"
                 >
                   {{ actionLabel(a) }}
@@ -400,7 +461,7 @@ function stageState(row, stageId) {
               </td>
             </tr>
             <tr v-if="!paged.length">
-              <td colspan="10" class="met-empty">暂无指标</td>
+              <td colspan="10" class="met-empty">{{ loading ? '加载中…' : '暂无指标' }}</td>
             </tr>
           </tbody>
         </table>
@@ -472,14 +533,15 @@ function stageState(row, stageId) {
           </div>
           <div v-if="active.dim" class="met-kv-row">
             <span>统计粒度</span>
-            <div>
-              {{ active.dim }}
-              <span v-if="active.dimCustom" class="tag tag-orange" style="margin-left: 6px">自定义·待评审</span>
-            </div>
+            <div>{{ active.dim }}</div>
           </div>
           <div v-if="active.time" class="met-kv-row"><span>统计周期</span><div>{{ active.time }}</div></div>
           <div class="met-kv-row"><span>单位</span><div>{{ active.unit || '—' }}</div></div>
           <div class="met-kv-row"><span>最新值</span><div>{{ active.latest }} · {{ active.vol }}</div></div>
+          <div v-if="active.compiledSql" class="met-kv-row">
+            <span>编译 SQL</span>
+            <div><pre class="met-sql">{{ active.compiledSql }}</pre></div>
+          </div>
         </div>
 
         <div class="met-sec-title">状态流转记录</div>
@@ -499,13 +561,26 @@ function stageState(row, stageId) {
               <div v-if="h.note" class="met-tl-note">{{ h.note }}</div>
             </div>
           </div>
+          <div v-if="!active.history?.length" class="tip" style="padding: 8px 0">暂无流转记录</div>
         </div>
 
         <div class="met-drawer-acts">
           <button
-            v-if="active.status === 'active'"
             type="button"
             class="btn btn-sm btn-primary"
+            :disabled="trialBusy || saving"
+            @click="doTrial"
+          >
+            {{ trialBusy ? '试跑中…' : '▶ 试跑 Trino' }}
+          </button>
+          <label class="met-trial-dt tip">
+            dt
+            <input v-model="trialDt" type="date" class="met-dt-input" />
+          </label>
+          <button
+            v-if="active.status === 'active'"
+            type="button"
+            class="btn btn-sm"
             @click="goApplyMetric(active, 'query')"
           >
             🔑 申请查询权限
@@ -525,9 +600,8 @@ function stageState(row, stageId) {
             :key="a"
             type="button"
             class="btn btn-sm"
-            :class="{
-              'btn-primary': actionClass(a) === 'ok',
-            }"
+            :class="{ 'btn-primary': actionClass(a) === 'ok' }"
+            :disabled="saving"
             :style="
               actionClass(a) === 'danger'
                 ? { color: 'var(--danger)', borderColor: 'var(--danger)' }
@@ -538,264 +612,131 @@ function stageState(row, stageId) {
             {{ actionLabel(a) }}
           </button>
         </div>
-        <p v-if="active.status === 'active'" class="met-apply-hint tip">
-          「申请查询权限 / 申请口径变更」走申请中心工单；「Owner变更」为指标 Owner 在中心内快捷发起新版本评审。
+        <p class="met-apply-hint tip">
+          试跑走 Trino（编译 SQL + 参数绑定）；「申请查询权限 / 口径变更」走申请中心。
         </p>
+
+        <div v-if="trialResult" class="met-trial-box">
+          <div class="met-sec-title">试跑结果</div>
+          <div class="met-trial-meta tip">
+            <span :class="trialResult.executed ? 'ok' : 'warn'">
+              {{ trialResult.statusLabel || (trialResult.executed ? '已执行' : '未执行') }}
+            </span>
+            · {{ trialResult.rowCount ?? 0 }} 行
+            · {{ trialResult.durMs ?? '—' }} ms
+            <template v-if="trialResult.queryId"> · {{ trialResult.queryId }}</template>
+          </div>
+          <p v-if="trialResult.message" class="met-trial-msg">{{ trialResult.message }}</p>
+          <pre v-if="trialResult.sqlText" class="met-sql">{{ trialResult.sqlText }}</pre>
+          <div v-if="trialResult.columns?.length" class="met-trial-table-wrap">
+            <table class="table met-trial-table">
+              <thead>
+                <tr>
+                  <th v-for="c in trialResult.columns" :key="c">{{ c }}</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="(r, i) in trialResult.rows || []" :key="i">
+                  <td v-for="c in trialResult.columns" :key="c">{{ r[c] ?? '—' }}</td>
+                </tr>
+                <tr v-if="!(trialResult.rows || []).length">
+                  <td :colspan="trialResult.columns.length" class="met-empty">无行</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
       </div>
     </AppDrawer>
   </div>
 </template>
 
 <style scoped>
-.met-domain-tabs {
-  display: flex;
-  gap: 6px;
-  margin-bottom: 12px;
-  flex-wrap: wrap;
+.met-domain-tabs{flex-wrap:wrap;gap:6px;margin-bottom:12px;display:flex}
+.met-domain-tab{border:1px solid var(--border);cursor:pointer;color:var(--text-2);font-size:12px;font:inherit;background:#fff;border-radius:6px;padding:6px 14px}
+.met-domain-tab.active{border-color:var(--primary);background:var(--primary-light);color:var(--primary);font-weight:600}
+.met-kpi{grid-template-columns:repeat(5,1fr);margin-bottom:16px}
+@media (width<=1100px){.met-kpi{grid-template-columns:repeat(3,1fr)}
 }
-.met-domain-tab {
-  padding: 6px 14px;
-  font-size: 12px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: #fff;
-  cursor: pointer;
-  color: var(--text-2);
-  font: inherit;
-}
-.met-domain-tab.active {
-  border-color: var(--primary);
-  background: var(--primary-light);
-  color: var(--primary);
-  font-weight: 600;
-}
-.met-kpi {
-  grid-template-columns: repeat(5, 1fr);
-  margin-bottom: 16px;
-}
-@media (max-width: 1100px) {
-  .met-kpi { grid-template-columns: repeat(3, 1fr); }
-}
-
-.met-flow { margin-bottom: 16px; }
-.met-stages {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-}
-.met-stage {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--text-2);
-}
-.met-stage-idx {
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: var(--primary-light);
-  color: var(--primary);
-  font-size: 10px;
-  font-weight: 700;
-  display: grid;
-  place-items: center;
-}
-.met-stage-arrow { color: var(--text-4); }
-
-.met-catalog { margin-top: 0; }
+.met-flow{margin-bottom:16px}
+.met-stages{flex-wrap:wrap;align-items:center;gap:8px;display:flex}
+.met-stage{color:var(--text-2);align-items:center;gap:6px;font-size:12px;display:inline-flex}
+.met-stage-idx{background:var(--primary-light);width:18px;height:18px;color:var(--primary);border-radius:50%;place-items:center;font-size:10px;font-weight:700;display:grid}
+.met-stage-arrow{color:var(--text-4)}
+.met-catalog{margin-top:0}
 .met-catalog-hd {
+  display: flex;
   flex-wrap: wrap;
-  gap: 10px;
   align-items: center;
+  gap: 10px;
 }
-.met-filters {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-left: auto;
-}
-.met-type-tabs {
-  display: flex;
-  gap: 4px;
+.met-filters{flex-wrap:wrap;gap:8px;margin-left:auto;display:flex}
+.met-type-tabs{background:var(--bg-2);border-radius:8px;flex-wrap:wrap;gap:4px;padding:3px;display:flex}
+.met-type-tab{cursor:pointer;color:var(--text-2);font-size:12px;font:inherit;background:0 0;border:none;border-radius:6px;padding:4px 10px}
+.met-type-tab.active{color:var(--text-1);box-shadow:var(--shadow-sm);background:#fff;font-weight:600}
+.met-table{font-size:12px}
+.met-row.warn{background:var(--warning-light)}
+.met-row.deprecated{opacity:.72}
+.met-row:hover{background:var(--bg-2)}
+.met-id{font-family:monospace;font-size:11px}
+.met-name{font-weight:600}
+.met-caliber{color:var(--text-2);max-width:200px;font-size:12px}
+.met-latest{font-weight:700}
+.met-acts{white-space:nowrap;flex-wrap:wrap;gap:6px;display:flex}
+.met-empty{text-align:center;color:var(--text-3);padding:24px!important}
+.tip{color:var(--text-3);font-size:12px;font-weight:400}
+.btn-link{color:var(--primary);cursor:pointer;font-size:12px;font:inherit;background:0 0;border:none;padding:0}
+.btn-link:hover{text-decoration:underline}
+.btn-link.ok{color:var(--success)}
+.btn-link.danger{color:var(--danger)}
+.met-drawer-hd{justify-content:space-between;gap:12px;margin-bottom:14px;display:flex}
+.met-drawer-title{flex-wrap:wrap;align-items:center;gap:6px;font-size:16px;font-weight:700;display:flex}
+.met-drawer-sub{color:var(--text-3);margin-top:4px;font-size:12px}
+.met-stage-bar{flex-wrap:wrap;gap:6px;margin-bottom:14px;display:flex}
+.met-stage-chip{background:var(--bg-2);color:var(--text-3);border-radius:99px;padding:3px 8px;font-size:11px}
+.met-stage-chip.done{background:var(--success-light);color:var(--success)}
+.met-stage-chip.current{background:var(--primary-light);color:var(--primary);font-weight:650}
+.met-kv{margin-bottom:12px}
+.met-kv-row{border-bottom:1px solid var(--border);grid-template-columns:88px 1fr;gap:8px;padding:8px 0;font-size:12px;display:grid}
+.met-kv-row span{color:var(--text-3)}
+.met-kv-row .pending{color:var(--warning);font-weight:600}
+.met-sec-title{margin:12px 0 8px;font-size:12px;font-weight:650}
+.met-timeline{padding-left:4px}
+.met-tl-item{gap:10px;padding-bottom:12px;display:flex;position:relative}
+.met-tl-item:not(:last-child):before{content:"";background:var(--border);width:1px;position:absolute;top:14px;bottom:0;left:5px}
+.met-tl-dot{border:2px solid var(--border-dark);z-index:1;background:#fff;border-radius:50%;flex-shrink:0;width:11px;height:11px;margin-top:2px}
+.met-tl-item.current .met-tl-dot{background:var(--primary);border-color:var(--primary)}
+.met-tl-name{font-size:12px;font-weight:600}
+.met-tl-time{color:var(--text-3);margin-left:6px;font-size:11px;font-weight:400}
+.met-tl-note{color:var(--text-3);margin-top:2px;font-size:11px}
+.met-drawer-acts{border-top:1px solid var(--border);flex-wrap:wrap;gap:8px;margin-top:16px;padding-top:12px;display:flex}
+.met-apply-hint{color:var(--text-3);margin-top:10px;font-size:11px;line-height:1.5}
+
+
+.met-banner {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--text-2);
   background: var(--bg-2);
-  padding: 3px;
   border-radius: 8px;
-  flex-wrap: wrap;
+  border: 1px solid var(--border);
 }
-.met-type-tab {
-  border: none;
-  background: transparent;
-  padding: 4px 10px;
-  font-size: 12px;
-  border-radius: 6px;
-  cursor: pointer;
-  color: var(--text-2);
-  font: inherit;
+.met-banner.warn {
+  color: #ad6800;
+  background: #fff7e6;
+  border-color: #ffd591;
 }
-.met-type-tab.active {
-  background: #fff;
-  color: var(--text-1);
-  font-weight: 600;
-  box-shadow: var(--shadow-sm);
-}
-.met-table { font-size: 12px; }
-.met-row.warn { background: var(--warning-light); }
-.met-row.deprecated { opacity: 0.72; }
-.met-row:hover { background: var(--bg-2); }
-.met-id { font-family: monospace; font-size: 11px; }
-.met-name { font-weight: 600; }
-.met-caliber {
-  font-size: 12px;
-  color: var(--text-2);
-  max-width: 200px;
-}
-.met-latest { font-weight: 700; }
-.met-acts {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  white-space: nowrap;
-}
-.met-empty {
-  text-align: center;
-  color: var(--text-3);
-  padding: 24px !important;
-}
-.tip {
-  font-size: 12px;
-  font-weight: 400;
-  color: var(--text-3);
-}
-
-.btn-link {
-  border: none;
-  background: none;
-  color: var(--primary);
-  cursor: pointer;
-  font-size: 12px;
-  padding: 0;
-  font: inherit;
-}
-.btn-link:hover { text-decoration: underline; }
-.btn-link.ok { color: var(--success); }
-.btn-link.danger { color: var(--danger); }
-
-.met-drawer-hd {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 14px;
-}
-.met-drawer-title {
-  font-size: 16px;
-  font-weight: 700;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  align-items: center;
-}
-.met-drawer-sub {
-  font-size: 12px;
-  color: var(--text-3);
-  margin-top: 4px;
-}
-
-.met-stage-bar {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 14px;
-}
-.met-stage-chip {
+.met-sql {
+  margin: 0;
+  padding: 8px;
+  max-height: 180px;
+  overflow: auto;
   font-size: 11px;
-  padding: 3px 8px;
-  border-radius: 99px;
+  line-height: 1.45;
   background: var(--bg-2);
-  color: var(--text-3);
-}
-.met-stage-chip.done {
-  background: var(--success-light);
-  color: var(--success);
-}
-.met-stage-chip.current {
-  background: var(--primary-light);
-  color: var(--primary);
-  font-weight: 650;
-}
-
-.met-kv { margin-bottom: 12px; }
-.met-kv-row {
-  display: grid;
-  grid-template-columns: 88px 1fr;
-  gap: 8px;
-  padding: 8px 0;
-  border-bottom: 1px solid var(--border);
-  font-size: 12px;
-}
-.met-kv-row span { color: var(--text-3); }
-.met-kv-row .pending { color: var(--warning); font-weight: 600; }
-
-.met-sec-title {
-  font-size: 12px;
-  font-weight: 650;
-  margin: 12px 0 8px;
-}
-.met-timeline { padding-left: 4px; }
-.met-tl-item {
-  display: flex;
-  gap: 10px;
-  position: relative;
-  padding-bottom: 12px;
-}
-.met-tl-item:not(:last-child)::before {
-  content: '';
-  position: absolute;
-  left: 5px;
-  top: 14px;
-  bottom: 0;
-  width: 1px;
-  background: var(--border);
-}
-.met-tl-dot {
-  width: 11px;
-  height: 11px;
-  border-radius: 50%;
-  border: 2px solid var(--border-dark);
-  background: #fff;
-  margin-top: 2px;
-  flex-shrink: 0;
-  z-index: 1;
-}
-.met-tl-item.current .met-tl-dot {
-  background: var(--primary);
-  border-color: var(--primary);
-}
-.met-tl-name { font-size: 12px; font-weight: 600; }
-.met-tl-time {
-  font-weight: 400;
-  color: var(--text-3);
-  margin-left: 6px;
-  font-size: 11px;
-}
-.met-tl-note {
-  font-size: 11px;
-  color: var(--text-3);
-  margin-top: 2px;
-}
-.met-drawer-acts {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 16px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border);
-}
-.met-apply-hint {
-  margin-top: 10px;
-  font-size: 11px;
-  line-height: 1.5;
-  color: var(--text-3);
+  border-radius: 6px;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 </style>

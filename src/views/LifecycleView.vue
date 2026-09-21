@@ -1,26 +1,106 @@
 <script setup>
-import { useRouter } from 'vue-router'
+import { onMounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
 import { useToast } from '@/composables/useToast'
+import { useLifecycle } from '@/composables/useLifecycle'
 import { pageGuideOf } from '@/data/pageGuides'
-import {
-  LC_COMPACTION,
-  LC_JOBS,
-  LC_KPIS,
-  LC_ORPHAN,
-  LC_SNAPSHOT_POLICIES,
-  LC_STAGES,
-  LC_STORAGE,
-  lcJobStatusMeta,
-} from '@/data/lifecycle'
-import { LC_COMPLIANCE_PREVIEW, complianceTypeCls } from '@/data/compliance'
+import { complianceTypeCls } from '@/data/compliance'
 
 const router = useRouter()
+const route = useRoute()
 const { showToast } = useToast()
 const guide = pageGuideOf('lifecycle')
 
-function runLifecycleNow() {
-  showToast('▶ 生命周期日作业已提交 · 全表扫描 · 预计 25min', 'success')
+const {
+  loading,
+  actionBusy,
+  lastError,
+  liveKpis,
+  jobSteps,
+  storageRows,
+  snapshotPolicies,
+  compactionRows,
+  stages,
+  compliancePreview,
+  orphanRows,
+  jobsLatest,
+  loadBoard,
+  runNow,
+  compactTable,
+  expireTable,
+  orphanScan,
+  savePolicy,
+  syncRun,
+  lcJobStatusMeta,
+} = useLifecycle()
+
+const policyFormOpen = ref(false)
+const policyForm = ref({
+  tableFqn: '',
+  keepCount: 20,
+  keepDays: 7,
+  minSnapshots: 5,
+  compactLevel: 'L2',
+  orphanOlderDays: 7,
+  orphanSafetyHours: 72,
+  layer: 'DWD',
+})
+
+const pendingDeepLink = ref(null)
+
+onMounted(async () => {
+  try {
+    await loadBoard()
+  } catch (e) {
+    showToast(`生命周期接口暂不可用，已用本地演示数据：${e.message || e}`, 'warning')
+  }
+  // 存储趋势深链：?table=&action=&from=storage-trend&adviceId=
+  const q = route.query || {}
+  if (q.from === 'storage-trend' && q.table && (q.action === 'compact' || q.action === 'expire')) {
+    pendingDeepLink.value = {
+      table: String(q.table),
+      action: String(q.action),
+      adviceId: q.adviceId ? String(q.adviceId) : '',
+    }
+  }
+})
+
+async function confirmDeepLink() {
+  const p = pendingDeepLink.value
+  if (!p) return
+  pendingDeepLink.value = null
+  if (p.action === 'compact') await onRunCompaction(p.table)
+  else if (p.action === 'expire') await onExpireSnapshot(p.table)
+  router.replace({ path: '/lifecycle', query: {} })
+}
+
+function dismissDeepLink() {
+  pendingDeepLink.value = null
+  router.replace({ path: '/lifecycle', query: {} })
+}
+
+async function runLifecycleNow() {
+  try {
+    const run = await runNow()
+    const mid = run.dsTaskId || run.runId || ''
+    showToast(
+      `▶ 日作业已提交 DS · status=${run.status} · ${mid}${run.errorMsg ? ' · ' + run.errorMsg : ''}`,
+      run.status === 'failed' ? 'warning' : 'success',
+    )
+    if (run.runId && run.status === 'running') {
+      setTimeout(async () => {
+        try {
+          const s = await syncRun(run.runId)
+          showToast(`↻ DS 状态同步 · ${s.status} · ${s.dsTaskId || ''}`, 'info')
+        } catch {
+          /* ignore */
+        }
+      }, 8000)
+    }
+  } catch (e) {
+    showToast(`提交失败：${e.message || e}`, 'error')
+  }
 }
 
 function showStorageTrend() {
@@ -35,20 +115,73 @@ function goCompliance() {
   router.push('/compliance')
 }
 
-function expireSnapshot(table) {
-  showToast(`快照过期任务已触发 · ${table}`, 'success')
+async function onExpireSnapshot(table) {
+  try {
+    const run = await expireTable(table)
+    showToast(
+      `快照过期已提交 DS · ${table} · ${run.status} · ${run.dsTaskId || run.runId}`,
+      run.status === 'failed' ? 'warning' : 'success',
+    )
+  } catch (e) {
+    showToast(`过期失败：${e.message || e}`, 'error')
+  }
 }
 
-function runCompaction(table) {
-  showToast(`⚡ 小文件合并作业已提交 · ${table}`, 'success')
+async function onRunCompaction(table) {
+  try {
+    const run = await compactTable(table)
+    showToast(
+      `⚡ 合并已提交 DS · ${table} · ${run.status} · ${run.dsTaskId || run.runId}`,
+      run.status === 'failed' ? 'warning' : 'success',
+    )
+  } catch (e) {
+    showToast(`合并失败：${e.message || e}`, 'error')
+  }
 }
 
-function scanOrphans() {
-  showToast('🔍 孤儿文件扫描已启动 · 标记未被 snapshot 引用的文件', 'info')
+async function onScanOrphans() {
+  try {
+    const res = await orphanScan()
+    showToast(
+      `🔍 孤儿 dry-run 已提交 DS · ${res.processInstanceId || res.dsTaskId || res.runId}${res.degraded ? '（降级）' : ''}`,
+      res.degraded ? 'warning' : 'info',
+    )
+  } catch (e) {
+    showToast(`扫描失败：${e.message || e}`, 'error')
+  }
 }
 
 function goCatalog(table) {
   router.push({ path: '/catalog', query: { q: table } })
+}
+
+function openPolicyForm() {
+  policyForm.value = {
+    tableFqn: '',
+    keepCount: 20,
+    keepDays: 7,
+    minSnapshots: 5,
+    compactLevel: 'L2',
+    orphanOlderDays: 7,
+    orphanSafetyHours: 72,
+    layer: 'DWD',
+  }
+  policyFormOpen.value = true
+}
+
+async function submitPolicy() {
+  const tableFqn = policyForm.value.tableFqn.trim()
+  if (!tableFqn) {
+    showToast('请填写表 FQN', 'warning')
+    return
+  }
+  try {
+    await savePolicy({ ...policyForm.value, tableFqn })
+    policyFormOpen.value = false
+    showToast(`已保存策略 · ${tableFqn}`, 'success')
+  } catch (e) {
+    showToast(`保存失败：${e.message || e}`, 'error')
+  }
 }
 </script>
 
@@ -59,12 +192,30 @@ function goCatalog(table) {
       subtitle="冷热分层 · 快照过期 · 小文件合并 · 孤儿清理 · 分区过期 · 归档恢复 · 合规删除"
       :guide="guide"
     >
-      <button class="btn btn-sm" type="button" @click="runLifecycleNow">▶ 立即执行</button>
+      <button class="btn btn-sm" type="button" :disabled="actionBusy || loading" @click="runLifecycleNow">
+        ▶ 立即执行
+      </button>
       <button class="btn btn-sm btn-primary" type="button" @click="openComplianceDelete">🗑️ 合规删除</button>
     </PageHeader>
 
+    <div v-if="pendingDeepLink" class="lc-banner deep">
+      来自存储趋势：对
+      <code>{{ pendingDeepLink.table }}</code>
+      执行
+      <b>{{ pendingDeepLink.action === 'compact' ? '小文件合并' : '快照过期' }}</b>
+      ？将提交 DS 工单并留痕。
+      <button type="button" class="btn btn-sm btn-primary" :disabled="actionBusy" @click="confirmDeepLink">
+        确认执行
+      </button>
+      <button type="button" class="btn btn-sm" @click="dismissDeepLink">取消</button>
+    </div>
+
+    <p v-if="lastError && !loading" class="lc-banner">
+      接口异常时已回退本地演示数据；接通后端后刷新即可。
+    </p>
+
     <div class="kpi-grid lc-kpi">
-      <div v-for="(k, i) in LC_KPIS" :key="i" class="kpi-card" :class="k.color">
+      <div v-for="(k, i) in liveKpis" :key="i" class="kpi-card" :class="k.color">
         <div class="kpi-icon" :class="k.color">{{ k.icon }}</div>
         <div class="kpi-value">
           {{ k.value }}<span class="kpi-unit">{{ k.unit }}</span>
@@ -80,7 +231,7 @@ function goCatalog(table) {
       </div>
       <div class="card-body lc-stages-wrap">
         <div class="lifecycle-stage">
-          <div v-for="s in LC_STAGES" :key="s.id" class="ls-col" :class="s.id">
+          <div v-for="s in stages" :key="s.id" class="ls-col" :class="s.id">
             <div class="ls-icon">{{ s.icon }}</div>
             <div class="ls-title">{{ s.title }}</div>
             <div class="ls-engine">{{ s.engine }}</div>
@@ -96,11 +247,13 @@ function goCatalog(table) {
       <div class="card">
         <div class="card-header">
           <div class="card-title">⚙️ 生命周期日作业 <span class="tip">· 每日 02:00 · DS 编排</span></div>
-          <span class="tag tag-green">上次成功</span>
+          <span class="tag" :class="jobsLatest?.status === 'success' ? 'tag-green' : 'tag-blue'">
+            {{ jobsLatest?.status === 'success' ? '上次成功' : jobsLatest?.status || '—' }}
+          </span>
         </div>
         <div class="card-body lc-jobs">
           <div
-            v-for="j in LC_JOBS"
+            v-for="j in jobSteps"
             :key="j.step"
             class="lifecycle-job"
             :class="lcJobStatusMeta(j.status).cls"
@@ -135,7 +288,7 @@ function goCatalog(table) {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="row in LC_STORAGE" :key="row.table">
+              <tr v-for="row in storageRows" :key="row.table">
                 <td>
                   <button type="button" class="btn-link" @click="goCatalog(row.table)">{{ row.table }}</button>
                 </td>
@@ -172,7 +325,7 @@ function goCatalog(table) {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="t in LC_COMPLIANCE_PREVIEW" :key="t.id">
+            <tr v-for="t in compliancePreview" :key="t.id">
               <td>
                 <button type="button" class="btn-link" @click="goCompliance">
                   <code>{{ t.id }}</code>
@@ -192,11 +345,56 @@ function goCatalog(table) {
       </div>
     </div>
 
+    <div v-if="policyFormOpen" class="card">
+      <div class="card-header">
+        <div class="card-title">＋ 新建 / 更新快照策略</div>
+        <button type="button" class="btn btn-sm" @click="policyFormOpen = false">取消</button>
+      </div>
+      <div class="card-body lc-policy-form">
+        <label>
+          <span>表 FQN</span>
+          <input v-model="policyForm.tableFqn" class="input" placeholder="ods_trade.s_order" />
+        </label>
+        <label>
+          <span>保留快照数</span>
+          <input v-model.number="policyForm.keepCount" class="input" type="number" min="1" />
+        </label>
+        <label>
+          <span>保留天数</span>
+          <input v-model.number="policyForm.keepDays" class="input" type="number" min="1" />
+        </label>
+        <label>
+          <span>最小快照</span>
+          <input v-model.number="policyForm.minSnapshots" class="input" type="number" min="1" />
+        </label>
+        <label>
+          <span>合并等级</span>
+          <select v-model="policyForm.compactLevel" class="select">
+            <option value="L1">L1</option>
+            <option value="L2">L2</option>
+            <option value="L3">L3</option>
+          </select>
+        </label>
+        <label>
+          <span>分层</span>
+          <select v-model="policyForm.layer" class="select">
+            <option value="ODS">ODS</option>
+            <option value="DWD">DWD</option>
+            <option value="DWS">DWS</option>
+            <option value="ADS">ADS</option>
+          </select>
+        </label>
+        <button type="button" class="btn btn-sm btn-primary" :disabled="actionBusy" @click="submitPolicy">
+          保存
+        </button>
+      </div>
+    </div>
+
     <div class="grid grid-2">
       <div class="card">
         <div class="card-header">
           <div class="card-title">📸 快照过期策略 · §32.1 <span class="tip">· 每表可配</span></div>
-          <button type="button" class="btn btn-sm" @click="() => showToast('＋ 新建快照策略（演示）', 'info')">＋ 新建策略</button>
+          <button type="button" class="btn btn-sm" @click="openPolicyForm">＋ 新建策略</button>
         </div>
         <div class="card-body" style="padding: 0">
           <table class="table">
@@ -210,7 +408,7 @@ function goCatalog(table) {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="p in LC_SNAPSHOT_POLICIES" :key="p.table">
+              <tr v-for="p in snapshotPolicies" :key="p.table">
                 <td><code>{{ p.table }}</code></td>
                 <td>{{ p.keepCount }}</td>
                 <td>
@@ -219,7 +417,14 @@ function goCatalog(table) {
                 </td>
                 <td>{{ p.minSnapshots }}</td>
                 <td>
-                  <button type="button" class="btn-link btn-sm" @click="expireSnapshot(p.table)">立即过期</button>
+                  <button
+                    type="button"
+                    class="btn-link btn-sm"
+                    :disabled="actionBusy"
+                    @click="onExpireSnapshot(p.table)"
+                  >
+                    立即过期
+                  </button>
                 </td>
               </tr>
             </tbody>
@@ -231,7 +436,7 @@ function goCatalog(table) {
       <div class="card">
         <div class="card-header">
           <div class="card-title">🧹 小文件合并 · §32.2 <span class="tip">· compaction SLA</span></div>
-          <span class="tag tag-orange">2 表超阈值</span>
+          <span class="tag tag-orange">{{ compactionRows.filter((c) => !c.ok).length }} 表超阈值</span>
         </div>
         <div class="card-body" style="padding: 0">
           <table class="table">
@@ -246,7 +451,7 @@ function goCatalog(table) {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="c in LC_COMPACTION" :key="c.table">
+              <tr v-for="c in compactionRows" :key="c.table">
                 <td><code>{{ c.table }}</code></td>
                 <td><span class="tag" :class="c.levelCls">{{ c.level }}</span></td>
                 <td>
@@ -259,8 +464,11 @@ function goCatalog(table) {
                     v-if="!c.ok"
                     type="button"
                     class="btn btn-sm btn-primary lc-compact-btn"
-                    @click="runCompaction(c.table)"
-                  >⚡ 合并</button>
+                    :disabled="actionBusy"
+                    @click="onRunCompaction(c.table)"
+                  >
+                    ⚡ 合并
+                  </button>
                   <span v-else class="tag tag-green">✓ 达标</span>
                 </td>
               </tr>
@@ -274,12 +482,14 @@ function goCatalog(table) {
     <div class="card">
       <div class="card-header">
         <div class="card-title">🗑️ 孤儿文件清理 · §32.3 <span class="tip">· 快照过期 +72h 后物理删</span></div>
-        <button type="button" class="btn btn-sm" @click="scanOrphans">🔍 扫描孤儿</button>
+        <button type="button" class="btn btn-sm" :disabled="actionBusy" @click="onScanOrphans">
+          🔍 扫描孤儿
+        </button>
       </div>
       <div class="card-body lc-orphan">
         <div class="lc-orphan-tags">
-          <span class="tag tag-green">最近清理 09-03 03:15</span>
-          <span class="tag tag-blue">回收 64GB</span>
+          <span class="tag tag-green">dry-run 默认开启</span>
+          <span class="tag tag-blue">older_than ≥ 7 天</span>
         </div>
         <table class="table lc-orphan-table">
           <thead>
@@ -292,7 +502,7 @@ function goCatalog(table) {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="o in LC_ORPHAN" :key="o.bucket">
+            <tr v-for="o in orphanRows" :key="o.bucket">
               <td>{{ o.bucket }}</td>
               <td>{{ o.files }}</td>
               <td>{{ o.space }}</td>
@@ -323,6 +533,24 @@ function goCatalog(table) {
   font-size: 12px;
   font-weight: 400;
   color: var(--text-3);
+}
+
+.lc-banner {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--warning);
+  background: var(--warning-light, #fff7e6);
+  border-radius: 6px;
+}
+.lc-banner.deep {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-1);
+  background: #e6f4ff;
+  border: 1px solid #91caff;
 }
 
 .lc-grid-top { margin-top: 16px; }
@@ -411,5 +639,23 @@ function goCatalog(table) {
   border-radius: 6px;
   color: var(--danger);
   font-size: 11px;
+}
+
+.lc-policy-form {
+  display: grid;
+  grid-template-columns: 1.4fr repeat(4, 0.7fr) 0.7fr auto;
+  gap: 10px;
+  align-items: end;
+}
+.lc-policy-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-3);
+  font-weight: 600;
+}
+@media (max-width: 1100px) {
+  .lc-policy-form { grid-template-columns: 1fr 1fr; }
 }
 </style>

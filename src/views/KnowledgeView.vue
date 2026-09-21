@@ -1,11 +1,12 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
 import ListPager from '@/components/common/ListPager.vue'
 import KnowledgeCreateDrawer from '@/components/knowledge/KnowledgeCreateDrawer.vue'
 import { useToast } from '@/composables/useToast'
 import { usePager } from '@/composables/usePager'
+import { useKnowledge } from '@/composables/useKnowledge'
 import { pageGuideOf } from '@/data/pageGuides'
 import {
   KB_CATS,
@@ -19,11 +20,14 @@ import {
 const router = useRouter()
 const { showToast } = useToast()
 const guide = pageGuideOf('knowledge')
+const api = useKnowledge()
 
 const activeCat = ref('all')
 const search = ref('')
 const createOpen = ref(false)
+const useDemo = ref(true)
 const items = ref(KB_ITEMS.map((k) => ({ ...k })))
+const kpiCards = ref(KB_KPIS.map((k) => ({ ...k })))
 
 const cats = computed(() => {
   const counts = { all: items.value.length }
@@ -40,7 +44,7 @@ const filteredItems = computed(() => {
     const textOk =
       !f ||
       k.title.toLowerCase().includes(f) ||
-      k.desc.toLowerCase().includes(f)
+      (k.desc || '').toLowerCase().includes(f)
     return catOk && textOk
   })
 })
@@ -48,6 +52,29 @@ const filteredItems = computed(() => {
 const { page, pageSize, total, totalPages, paged, pageNums, goPage, resetPage } = usePager(filteredItems)
 
 watch([activeCat, search], () => resetPage())
+
+onMounted(async () => {
+  try {
+    await api.loadAll()
+    if (api.items.value?.length) {
+      items.value = api.items.value.map((k) => ({ ...k }))
+      useDemo.value = false
+    }
+    if (api.overview.value) {
+      const ov = api.overview.value
+      kpiCards.value = [
+        { icon: '📖', color: 'blue', value: String(ov.total ?? items.value.length), unit: '篇', label: '知识条目', trend: '已接 API', trendUp: true },
+        { icon: '🏷️', color: 'purple', value: String(ov.termCount ?? 0), unit: '条', label: '业务术语', trend: '已关联资产', trendUp: true },
+        { icon: '📘', color: 'green', value: String(ov.manualCount ?? 0), unit: '部', label: '平台手册', trend: '', trendUp: true },
+        { icon: '❓', color: 'orange', value: String(ov.faqCount ?? 0), unit: '条', label: 'FAQ', trend: '', trendUp: true },
+        { icon: '🔗', color: 'red', value: String(ov.citeTotal ?? 0), unit: '', label: 'AI 引用次数', trend: '累计', trendUp: true },
+      ]
+    }
+    resetPage()
+  } catch {
+    /* keep demo */
+  }
+})
 
 function setCat(id) {
   activeCat.value = id
@@ -61,32 +88,36 @@ function strategyLabel(value) {
   return KB_CHUNK_STRATEGIES.find((s) => s.value === value)?.label || value
 }
 
-function onCreateEntry(payload) {
-  const resolved = resolveKbCat(payload.cat)
-  const chunks = payload.chunks || 1
-  const sourceBit =
-    payload.source === 'upload'
-      ? `文档 ${payload.fileName}`
-      : '手动录入'
-  const relBit = payload.rel ? ` · 关联 ${payload.rel}` : ''
-  items.value.unshift({
-    cat: resolved.cat,
-    icon: resolved.icon || '📖',
-    title: payload.title,
-    desc: payload.body,
-    source: payload.source,
-    chunks,
-    embedModel: payload.embedModel,
-    meta: `${sourceBit} · ${chunks} 分片 · ${strategyLabel(payload.strategy)} · 已向量化（演示）${relBit}`,
-    link: '',
-    to: '',
-  })
-  createOpen.value = false
-  resetPage()
-  showToast(
-    `✅ 已入库：${payload.title} · ${chunks} 分片 · ${payload.embedModel}（演示）`,
-    'success',
-  )
+async function onCreateEntry(payload) {
+  try {
+    if (!useDemo.value) {
+      const n = await api.addEntry(payload)
+      items.value.unshift(n)
+    } else {
+      const resolved = resolveKbCat(payload.cat)
+      const chunks = payload.chunks || 1
+      const sourceBit =
+        payload.source === 'upload' ? `文档 ${payload.fileName}` : '手动录入'
+      const relBit = payload.rel ? ` · 关联 ${payload.rel}` : ''
+      items.value.unshift({
+        cat: resolved.cat,
+        icon: resolved.icon || '📖',
+        title: payload.title,
+        desc: payload.body,
+        source: payload.source,
+        chunks,
+        embedModel: payload.embedModel,
+        meta: `${sourceBit} · ${chunks} 分片 · ${strategyLabel(payload.strategy)} · 已向量化（演示）${relBit}`,
+        link: '',
+        to: '',
+      })
+    }
+    createOpen.value = false
+    resetPage()
+    showToast(`✅ 已入库：${payload.title}`, 'success')
+  } catch (e) {
+    showToast(e?.message || '入库失败', 'error')
+  }
 }
 
 function goAi() {
@@ -126,7 +157,7 @@ function goLink(to, e) {
     />
 
     <div class="kpi-grid kb-kpi">
-      <div v-for="(k, i) in KB_KPIS" :key="i" class="kpi-card" :class="k.color">
+      <div v-for="(k, i) in kpiCards" :key="i" class="kpi-card" :class="k.color">
         <div class="kpi-icon" :class="k.color">{{ k.icon }}</div>
         <div class="kpi-value">
           {{ k.value }}<span class="kpi-unit">{{ k.unit }}</span>

@@ -106,6 +106,11 @@ export function fetchEtlRunNodeLog(runId, nodeKey, { skipLineNum = 0, limit = 10
   return http.get(`${E}/dags/runs/node-log`, { runId, nodeKey, skipLineNum, limit })
 }
 
+/** 试跑成功后预览 sink 目标表样本；limit 默认 20，上限 50 */
+export function fetchEtlRunResultPreview(runId, nodeKey, { limit = 20 } = {}) {
+  return http.get(`${E}/dags/runs/resultPreview`, { runId, nodeKey, limit })
+}
+
 export function resolveEtlEngine(payload) {
   return http.post(`${E}/engine/resolve`, {
     nodeType: payload.nodeType || payload.type,

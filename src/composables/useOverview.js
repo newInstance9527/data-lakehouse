@@ -1,6 +1,6 @@
 /**
  * 总览仪表盘：复用各模块 page/kpi/overview 接口做轻量聚合。
- * 无后端能力的模块（数据服务调用量、指标中心）标记 unavailable，由视图隐藏或「暂无」。
+ * 无后端能力的模块（数据服务调用量）标记 unavailable，由视图隐藏或「暂无」。
  */
 import { computed, ref, watch } from 'vue'
 import { pageMyTickets, pagePendingTickets } from '@/api/apply'
@@ -8,6 +8,7 @@ import { fetchAssetPage, sensitivityToLevel } from '@/api/catalog'
 import { fetchDatasourceKpi, fetchDatasourcePage } from '@/api/datasource'
 import { fetchEtlDags, fetchEtlRuns } from '@/api/etl'
 import { fetchLineageFields } from '@/api/lineage'
+import { fetchMetricOverview } from '@/api/metric'
 import { fetchQualityGold, fetchQualityOverview, fetchQualityTrend } from '@/api/quality'
 import { fetchStdNamings, fetchStdOverview } from '@/api/standard'
 import { layerMeta } from '@/data/assetMeta'
@@ -97,6 +98,13 @@ export function useOverview() {
     tasks: 0,
   })
   const applyStats = ref({ pending: 0, mine: 0 })
+  const metricStats = ref({
+    total: 0,
+    atom: 0,
+    derive: 0,
+    composite: 0,
+    active: 0,
+  })
 
   /** 无真实后端/统计能力的区块 */
   const availability = computed(() => ({
@@ -108,8 +116,7 @@ export function useOverview() {
     lineage: true,
     standard: true,
     apply: true,
-    /** 指标中心仍为前端演示目录，无治理 API */
-    metrics: false,
+    metrics: true,
     /** 数据服务 API 列表/调用量无后端 */
     serviceCalls: false,
     apiPublish: false,
@@ -134,6 +141,7 @@ export function useOverview() {
         fetchLineageFields({}, { current: 1, size: 500 }),
         pagePendingTickets({ current: 1, size: 1 }),
         pageMyTickets({ current: 1, size: 1 }),
+        fetchMetricOverview(),
       ])
 
       const val = (i) => (results[i].status === 'fulfilled' ? results[i].value : null)
@@ -328,6 +336,18 @@ export function useOverview() {
         mine: pageTotal(minePage),
       }
 
+      // 指标
+      const metOv = val(13)
+      if (metOv) {
+        metricStats.value = {
+          total: Number(metOv.total ?? 0),
+          atom: Number(metOv.atomCount ?? 0),
+          derive: Number(metOv.deriveCount ?? 0),
+          composite: Number(metOv.compositeCount ?? 0),
+          active: Number(metOv.activeCount ?? 0),
+        }
+      }
+
       loaded.value = true
     } catch (e) {
       lastError.value = e
@@ -359,6 +379,7 @@ export function useOverview() {
     stdStats,
     lineageStats,
     applyStats,
+    metricStats,
     availability,
     loadAll,
     refresh,

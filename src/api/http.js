@@ -74,4 +74,5 @@ export const http = {
   get: (path, params, opts) => request('GET', path, { params, ...opts }),
   post: (path, body, opts) => request('POST', path, { body, ...opts }),
   put: (path, body, opts) => request('PUT', path, { body, ...opts }),
+  delete: (path, params, opts) => request('DELETE', path, { params, ...opts }),
 }

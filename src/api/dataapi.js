@@ -31,8 +31,8 @@ export function trialDataapi(payload) {
   return http.post(`${BASE}/trial`, payload)
 }
 
-export function publishDataapi(id, ws) {
-  return http.post(`${BASE}/publish`, { id, ws })
+export function publishDataapi(id, ws, publishTicketNo) {
+  return http.post(`${BASE}/publish`, { id, ws, publishTicketNo })
 }
 
 export function retireDataapi(id, ws) {
@@ -67,6 +67,18 @@ export function registerDataapi(payload) {
   return http.post(`${BASE}/register`, payload)
 }
 
+export function parseDataapiParams(payload) {
+  return http.post(`${BASE}/parseParams`, payload)
+}
+
+export function fetchSqlrestOptions() {
+  return http.get(`${BASE}/sqlrest/options`)
+}
+
+export function gatewayProbe(payload) {
+  return http.post(`${BASE}/gatewayProbe`, payload)
+}
+
 export function fetchListForSqlrest() {
   return http.get(`${DS}/listForSqlrest`)
 }
@@ -74,3 +86,12 @@ export function fetchListForSqlrest() {
 export function projectToSqlrest(ids = []) {
   return http.post(`${DS}/projectToSqlrest`, ids.map((id) => ({ id })))
 }
+
+/** 元数据浏览：优先平台 /lh/datasource/meta/*（见 datasource.js） */
+export {
+  fetchMetaSchemas,
+  fetchMetaTables,
+  fetchMetaViews,
+  fetchMetaColumns,
+} from './datasource.js'
+

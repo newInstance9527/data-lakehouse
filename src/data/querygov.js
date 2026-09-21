@@ -66,7 +66,7 @@ export const TRINO_QUEUES = [
     priority: '中',
     concurrent: 5,
     qps: '280/d',
-    scanLimit: '≤ 100 GB',
+    scanLimit: '≤ 10 GB（硬顶 50GB）',
     desc: '即席查询 / 分析师',
   },
   {
@@ -193,7 +193,7 @@ export const QG_RULES = [
   },
   {
     rule: 'adhoc 扫描字节超限',
-    threshold: '> 100 GB',
+    threshold: '> 10 GB（硬顶 50GB）',
     action: '拒绝',
     actionTag: 'tag-red',
     notify: '用户',

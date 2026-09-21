@@ -24,6 +24,7 @@ const {
   stdStats,
   lineageStats,
   applyStats,
+  metricStats,
   availability,
   refresh: reloadOverview,
 } = useOverview()
@@ -695,11 +696,11 @@ const rangeLabel = computed(() => {
         </template>
       </section>
 
-      <section class="ov-card ov-card-muted">
+      <section class="ov-card" :class="{ 'ov-card-muted': !availability.metrics && !availability.serviceCalls }">
         <header class="ov-hd">
           <div>
             <h3>数据服务 / 指标</h3>
-            <p>尚未接入治理统计</p>
+            <p>{{ availability.metrics ? '指标来自 /lh/metric' : '尚未接入治理统计' }}</p>
           </div>
         </header>
         <div class="ov-na-grid">
@@ -713,14 +714,23 @@ const rangeLabel = computed(() => {
             <span>暂无</span>
             <small>无后端 API 生命周期统计</small>
           </div>
-          <div class="ov-na">
+          <div class="ov-na" :class="{ clickable: availability.metrics }" @click="availability.metrics && go('/metrics')">
             <b>指标构成</b>
-            <span>暂无</span>
-            <small>指标中心仍为本地演示目录</small>
+            <template v-if="availability.metrics">
+              <span>{{ metricStats.total }}</span>
+              <small>
+                原子 {{ metricStats.atom }} · 衍生 {{ metricStats.derive }} · 复合 {{ metricStats.composite }} ·
+                已启用 {{ metricStats.active }}
+              </small>
+            </template>
+            <template v-else>
+              <span>暂无</span>
+              <small>指标中心未接入</small>
+            </template>
           </div>
         </div>
-        <p v-if="!availability.metrics" class="ov-na-hint">
-          相关页面可继续浏览演示流程；总览不再展示假数字。
+        <p v-if="!availability.serviceCalls" class="ov-na-hint">
+          数据服务调用量仍待接入；指标目录已可在「指标中心」查看与维护。
         </p>
       </section>
     </div>

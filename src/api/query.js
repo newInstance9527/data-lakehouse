@@ -1,0 +1,181 @@
+/**
+ * 即席查询 API（对齐 /lh/compute/query，兼容 /lh/query）
+ */
+import { http } from './http.js'
+import { getToken } from './token.js'
+
+const Q = '/lh/compute/query'
+const BASE = import.meta.env.VITE_API_BASE || ''
+
+/** adhoc 默认扫描上限 10 GiB；硬顶 50 GiB（与后端 CpQueryScanGuard 一致） */
+export const ADHOC_SCAN_LIMIT_BYTES = 10 * 1024 * 1024 * 1024
+export const HARD_SCAN_LIMIT_BYTES = 50 * 1024 * 1024 * 1024
+
+export function execQuery(payload) {
+  return http.post(`${Q}/exec`, payload)
+}
+
+/**
+ * SSE 执行：事件 started / progress / done / error
+ * @returns {Promise<object>} done 载荷
+ */
+export async function execQueryStream(payload, { onStarted, onProgress, signal } = {}) {
+  const headers = {
+    'Content-Type': 'application/json',
+    Accept: 'text/event-stream',
+  }
+  const token = getToken()
+  if (token) headers.token = token
+
+  const res = await fetch(`${BASE}${Q}/exec-stream`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(payload),
+    signal,
+  })
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new Error(text || res.statusText || `HTTP ${res.status}`)
+  }
+  if (!res.body) {
+    throw new Error('浏览器不支持流式响应')
+  }
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buf = ''
+  let eventName = 'message'
+  let dataLines = []
+  let donePayload = null
+  let streamError = null
+
+  const flush = () => {
+    if (!dataLines.length && eventName === 'message') return
+    const raw = dataLines.join('\n')
+    dataLines = []
+    const name = eventName
+    eventName = 'message'
+    let data = raw
+    try {
+      data = raw ? JSON.parse(raw) : null
+    } catch {
+      /* keep string */
+    }
+    if (name === 'started') onStarted?.(data)
+    else if (name === 'progress') onProgress?.(data)
+    else if (name === 'done') donePayload = data
+    else if (name === 'error') {
+      streamError = new Error((data && data.message) || raw || '执行失败')
+    }
+  }
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buf += decoder.decode(value, { stream: true })
+    const parts = buf.split(/\r?\n/)
+    buf = parts.pop() ?? ''
+    for (const line of parts) {
+      if (line === '') {
+        flush()
+        continue
+      }
+      if (line.startsWith(':')) continue
+      if (line.startsWith('event:')) {
+        eventName = line.slice(6).trim()
+        continue
+      }
+      if (line.startsWith('data:')) {
+        dataLines.push(line.slice(5).trimStart())
+      }
+    }
+  }
+  if (buf.trim()) {
+    const line = buf
+    if (line.startsWith('event:')) eventName = line.slice(6).trim()
+    else if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart())
+  }
+  flush()
+
+  if (streamError) throw streamError
+  if (donePayload == null) throw new Error('SSE 未收到 done 事件')
+  return donePayload
+}
+
+export function cancelQuery(payload) {
+  return http.post(`${Q}/cancel`, payload)
+}
+
+export function fetchQueryHistory(params = {}) {
+  return http.get(`${Q}/history`, {
+    ws: params.ws,
+    limit: params.limit ?? 30,
+    mineOnly: params.mineOnly ?? true,
+  })
+}
+
+export function fetchSchemaTree() {
+  return http.get(`${Q}/schema-tree`)
+}
+
+/** 懒加载表列。优先 assetId；fqn 为平台 layer.domain.assetCode */
+export function fetchTableColumns(fqn, assetId) {
+  return http.get(`${Q}/columns`, { fqn, assetId })
+}
+
+export function exportQueryAudit(payload) {
+  return http.post(`${Q}/export`, payload)
+}
+
+export function explainQuery(payload) {
+  return http.post(`${Q}/explain`, payload)
+}
+
+export function detectQueryParams(sql) {
+  return http.post(`${Q}/detect-params`, { sql })
+}
+
+export function saveQueryDataset(payload) {
+  return http.post(`${Q}/datasets`, payload)
+}
+
+export function fetchQueryDatasets(params = {}) {
+  return http.get(`${Q}/datasets`, {
+    ws: params.ws,
+    limit: params.limit ?? 30,
+  })
+}
+
+/** 查询治理总览：规则 / 队列 / KPI / 审计（与即席同源） */
+export function fetchQueryGovOverview() {
+  return http.get(`${Q}/gov/overview`)
+}
+
+/** 本地探测 :name / ${name}（与后端 CpQueryParamBinder 对齐） */
+export function detectParamNamesLocal(sql) {
+  if (!sql) return []
+  const names = []
+  const seen = new Set()
+  const re =
+    /'(?:''|[^'])*'|"(?:\\.|[^"\\])*"|:([A-Za-z_][A-Za-z0-9_]*)|\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g
+  let m
+  while ((m = re.exec(sql))) {
+    const n = m[1] || m[2]
+    if (n && !seen.has(n)) {
+      seen.add(n)
+      names.push(n)
+    }
+  }
+  return names
+}
+
+export function formatScanBytes(bytes) {
+  if (bytes == null || bytes < 0 || Number.isNaN(Number(bytes))) return '—'
+  const n = Number(bytes)
+  if (n < 1024) return `${n} B`
+  const kb = n / 1024
+  if (kb < 1024) return `${kb.toFixed(1)} KB`
+  const mb = kb / 1024
+  if (mb < 1024) return `${mb.toFixed(1)} MB`
+  return `${(mb / 1024).toFixed(2)} GB`
+}

@@ -5,13 +5,13 @@ import PageHeader from '@/components/common/PageHeader.vue'
 import ListPager from '@/components/common/ListPager.vue'
 import AppDrawer from '@/components/common/AppDrawer.vue'
 import SqlEditor from '@/components/etl/SqlEditor.vue'
-import ApiBuildWizard from '@/components/dataservice/ApiBuildWizard.vue'
+import ApiBuildWorkbench from '@/components/dataservice/ApiBuildWorkbench.vue'
 import RegisterBindingModal from '@/components/dataservice/RegisterBindingModal.vue'
 import { useToast } from '@/composables/useToast'
 import { usePager } from '@/composables/usePager'
 import { useDataservice } from '@/composables/useDataservice'
 import { pageGuideOf } from '@/data/pageGuides'
-import { apisixStatusMeta, routeOfApi, subscribersOf } from '@/data/dataservice'
+import { apisixStatusMeta, routeOfApi } from '@/data/dataservice'
 import {
   FIELD_TRANSFORM_OPTIONS,
   RESPONSE_FORMAT_OPTIONS,
@@ -25,6 +25,7 @@ const {
   apis,
   routes,
   subs,
+  apiKeys,
   kpis,
   callRank,
   degraded,
@@ -37,7 +38,6 @@ const {
   runSyncFromSqlrest,
   runProjectDs,
   runRegister,
-  openManager,
 } = useDataservice()
 
 onMounted(() => ensureLoaded())
@@ -78,9 +78,8 @@ watch(apiSearch, () => resetPage())
 
 const detailSubs = computed(() => {
   if (!detail.value) return []
-  const fromMock = subscribersOf(detail.value.path)
-  if (fromMock.length) return fromMock
-  return (subs.value || []).filter((s) => s.api === detail.value.path)
+  const path = detail.value.path
+  return (apiKeys.value || []).filter((s) => s.api === path)
 })
 const detailRoute = computed(() => {
   if (!detail.value) return null
@@ -104,11 +103,6 @@ function transformLabel(v) {
 
 function buildApi() {
   createOpen.value = true
-}
-
-function openManagerAdvanced() {
-  const url = openManager('interfaceList')
-  if (!url) showToast('无法打开 SQLREST Manager（请检查部署台账地址）', 'warning')
 }
 
 function onPublishApi(row) {
@@ -226,10 +220,9 @@ function goAsset(asset) {
       <button type="button" class="btn btn-sm" @click="syncFromSqlrest">同步接口目录</button>
       <button type="button" class="btn btn-sm" @click="registerOpen = true">登记绑定</button>
       <button type="button" class="btn btn-sm" @click="goApply()">申请凭证</button>
-      <button type="button" class="btn btn-sm btn-ghost" @click="openManagerAdvanced">打开 Manager</button>
     </PageHeader>
 
-    <ApiBuildWizard :open="createOpen" @close="createOpen = false" @publish="onPublishApi" />
+    <ApiBuildWorkbench :open="createOpen" @close="createOpen = false" @publish="onPublishApi" />
     <RegisterBindingModal
       :open="registerOpen"
       :assignments="assignmentList"
@@ -281,9 +274,6 @@ function goAsset(asset) {
         >
           投影待同步源 ({{ pendingProject.length }})
         </button>
-        <button type="button" class="btn btn-sm" @click="openManagerAdvanced">Manager 接口列表</button>
-        <button type="button" class="btn btn-sm" @click="openManager('client')">客户端</button>
-        <button type="button" class="btn btn-sm" @click="openManager('online')">在线服务</button>
       </div>
       <p v-if="workbench?.hint" class="tip ds-hint">{{ workbench.hint }}</p>
     </div>
@@ -385,27 +375,27 @@ function goAsset(asset) {
       <div class="card">
         <div class="card-header">
           <div class="card-title">订阅 / 客户端</div>
-          <button type="button" class="btn btn-sm" @click="openManager('client')">SQLREST 客户端</button>
         </div>
         <div class="card-body" style="padding: 0">
-          <table class="table ds-sub-table">
+          <table v-if="subs.length" class="table ds-sub-table">
             <thead>
               <tr>
-                <th>应用</th>
-                <th>API</th>
-                <th>申请人</th>
+                <th>名称</th>
+                <th>AppKey</th>
+                <th>说明</th>
                 <th>状态</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="(s, si) in subs" :key="si">
-                <td>{{ s.app }}</td>
-                <td><code>{{ s.api }}</code></td>
-                <td>{{ s.user }}</td>
+              <tr v-for="s in subs" :key="s.id || s.appKey">
+                <td>{{ s.name }}</td>
+                <td><code>{{ s.appKey }}</code></td>
+                <td>{{ s.description }}</td>
                 <td><span class="tag" :class="s.cls">{{ s.status }}</span></td>
               </tr>
             </tbody>
           </table>
+          <p v-else class="tip" style="padding: 12px 16px">暂无客户端。列表来自 SQLREST 客户端接口。</p>
         </div>
       </div>
     </div>
