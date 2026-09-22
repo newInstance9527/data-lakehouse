@@ -409,11 +409,14 @@ async function onBackfill({ markKey, markValue } = {}) {
   if (!current.value) return
   if (!assertEditOrGuide('补数')) return
   try {
-    const resp = await backfillCurrent({ markKey, markValue })
+    const resp = await runBackfillWithGate(markKey, markValue)
     showToast(
       `🔧 补数已提交 ${resp?.markKey}=${resp?.markValue} · ${resp?.runId || ''}`,
       resp?.ds?.degraded ? 'warning' : 'success',
     )
+    if (resp?.complianceGate?.acknowledged) {
+      showToast('已确认合规补数门禁（命中已删分区）', 'warning')
+    }
     if (resp?.opsPath) {
       showToast(`运维入口 ${resp.opsPath}`, 'info')
     }
@@ -421,6 +424,31 @@ async function onBackfill({ markKey, markValue } = {}) {
   } catch (e) {
     if (!toastNeedApply(e)) showToast(e.message || '补数失败', 'error')
   }
+}
+
+/** E7：命中已删分区时提示回填合规请求号后重试 */
+async function runBackfillWithGate(markKey, markValue, confirmReqNo) {
+  try {
+    return await backfillCurrent({ markKey, markValue, confirmReqNo })
+  } catch (e) {
+    if (!isComplianceBackfillGateError(e) || confirmReqNo) throw e
+    const suggested = suggestDelReqNo(e.message)
+    const typed = window.prompt(
+      `${e.message}\n\n请回填合规请求号以二次确认补数：`,
+      suggested,
+    )
+    if (!typed?.trim()) throw e
+    return backfillCurrent({ markKey, markValue, confirmReqNo: typed.trim() })
+  }
+}
+
+function isComplianceBackfillGateError(e) {
+  return /须二次确认|confirmReqNo|已删分区/.test(e?.message || '')
+}
+
+function suggestDelReqNo(msg) {
+  const m = /(DEL-\d{4}-\d+)/.exec(msg || '')
+  return m ? m[1] : ''
 }
 
 async function onOpenRuns() {

@@ -83,13 +83,14 @@ export function deployEtlDag(id, gitRef) {
   return http.post(`${E}/dags/deploy`, { id, gitRef })
 }
 
-/** 补数：mark_key / mark_value → DS 实例 + 水位 */
-export function backfillEtlDag(id, { markKey, markValue, env } = {}) {
+/** 补数：mark_key / mark_value → DS 实例 + 水位；命中已删分区须 confirmReqNo */
+export function backfillEtlDag(id, { markKey, markValue, env, confirmReqNo } = {}) {
   return http.post(`${E}/dags/backfill`, {
     id,
     markKey,
     markValue,
     env,
+    confirmReqNo,
   })
 }
 

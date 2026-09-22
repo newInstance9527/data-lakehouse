@@ -288,7 +288,7 @@ function onAutoMap() {
             :disabled="!task || (task.status !== 'prod' && task.status !== 'paused')"
             @click="submitBackfill"
           >🔧 发起补数</button>
-          <div class="form-hint">仅 prod/paused 可补；写水位并触发 DS 实例，生成带 run_id 的执行记录</div>
+          <div class="form-hint">仅 prod/paused 可补；命中已删分区须回填合规请求号二次确认；写水位并触发 DS 实例</div>
         </template>
         <div v-else class="form-hint">无编辑权不可补数</div>
 

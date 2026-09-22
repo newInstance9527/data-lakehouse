@@ -55,12 +55,15 @@ onMounted(() => {
 async function startSupplement() {
   if (bfDagId.value && bfMarkKey.value && bfMarkValue.value) {
     try {
-      const resp = await backfillEtlDag(bfDagId.value, {
-        markKey: bfMarkKey.value.trim(),
-        markValue: bfMarkValue.value.trim(),
-        env: env.value,
-      })
+      const resp = await runOpsBackfill(
+        bfDagId.value,
+        bfMarkKey.value.trim(),
+        bfMarkValue.value.trim(),
+      )
       showToast(`🔧 补数已提交 · ${resp?.runId || ''}`, resp?.ds?.degraded ? 'warning' : 'success')
+      if (resp?.complianceGate?.acknowledged) {
+        showToast('已确认合规补数门禁（命中已删分区）', 'warning')
+      }
       if (resp?.runId) {
         router.replace({ query: { ...route.query, runId: resp.runId, dagId: bfDagId.value } })
       }
@@ -71,6 +74,31 @@ async function startSupplement() {
     }
   }
   showToast('🔧 发起补数 · 请填写 DAG id 与 mark_key / mark_value', 'info')
+}
+
+async function runOpsBackfill(dagId, markKey, markValue, confirmReqNo) {
+  try {
+    return await backfillEtlDag(dagId, {
+      markKey,
+      markValue,
+      env: env.value,
+      confirmReqNo,
+    })
+  } catch (e) {
+    if (!/须二次确认|confirmReqNo|已删分区/.test(e?.message || '') || confirmReqNo) throw e
+    const m = /(DEL-\d{4}-\d+)/.exec(e.message || '')
+    const typed = window.prompt(
+      `${e.message}\n\n请回填合规请求号以二次确认补数：`,
+      m ? m[1] : '',
+    )
+    if (!typed?.trim()) throw e
+    return backfillEtlDag(dagId, {
+      markKey,
+      markValue,
+      env: env.value,
+      confirmReqNo: typed.trim(),
+    })
+  }
 }
 
 function reimportDiff() {

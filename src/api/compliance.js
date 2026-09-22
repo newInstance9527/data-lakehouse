@@ -97,3 +97,13 @@ export function upsertDelSubjectMap(payload) {
 export function fetchDelCoverage(ws) {
   return http.get(`${C}/coverage`, { ws })
 }
+
+/** E7：补数门禁预检 */
+export function checkBackfillGate({ tables, markKey, markValue }) {
+  return http.post(`${C}/gate/backfill-check`, { tables, markKey, markValue })
+}
+
+/** E7：出湖 restricted 预检 */
+export function checkExportGate(exportTable) {
+  return http.post(`${C}/gate/export-check`, { exportTable })
+}

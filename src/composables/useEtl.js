@@ -360,8 +360,8 @@ export function useEtl() {
     return persistMeta({ status })
   }
 
-  /** D3：按水位补数 */
-  async function backfillCurrent({ markKey, markValue, env } = {}) {
+  /** D3：按水位补数；E7 命中已删分区时可传 confirmReqNo */
+  async function backfillCurrent({ markKey, markValue, env, confirmReqNo } = {}) {
     const t = current.value
     if (!t) return null
     if (!markKey || !markValue) {
@@ -371,6 +371,7 @@ export function useEtl() {
       markKey,
       markValue,
       env: env || t.env || 'prod',
+      confirmReqNo,
     })
     await refreshRuns()
     if (resp?.runId) {
