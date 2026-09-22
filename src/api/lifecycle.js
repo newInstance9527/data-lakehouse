@@ -102,3 +102,8 @@ export function fetchLcRuns(filters = {}) {
 export function syncLcRun(runId) {
   return http.post(`${L}/runs/sync?runId=${encodeURIComponent(runId)}`, {})
 }
+
+/** DS/Worker 推送回调（通常由 DS notify 尾节点调用；门户联调可带登录态） */
+export function callbackLcRun(body) {
+  return http.post(`${L}/runs/callback`, body || {})
+}

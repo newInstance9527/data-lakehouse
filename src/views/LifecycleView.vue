@@ -89,14 +89,15 @@ async function runLifecycleNow() {
       run.status === 'failed' ? 'warning' : 'success',
     )
     if (run.runId && run.status === 'running') {
+      // 主路径：DS notify 推送回调；此处 sync 仅作失败/未配 callback 时的软兜底
       setTimeout(async () => {
         try {
           const s = await syncRun(run.runId)
-          showToast(`↻ DS 状态同步 · ${s.status} · ${s.dsTaskId || ''}`, 'info')
+          showToast(`↻ 状态兜底同步 · ${s.status} · ${s.dsTaskId || ''}`, 'info')
         } catch {
           /* ignore */
         }
-      }, 8000)
+      }, 15000)
     }
   } catch (e) {
     showToast(`提交失败：${e.message || e}`, 'error')
@@ -129,7 +130,7 @@ async function onExpireSnapshot(table, adviceId) {
         } catch {
           /* ignore */
         }
-      }, 8000)
+      }, 15000)
     }
   } catch (e) {
     showToast(`过期失败：${e.message || e}`, 'error')
@@ -150,7 +151,7 @@ async function onRunCompaction(table, adviceId) {
         } catch {
           /* ignore */
         }
-      }, 8000)
+      }, 15000)
     }
   } catch (e) {
     showToast(`合并失败：${e.message || e}`, 'error')
