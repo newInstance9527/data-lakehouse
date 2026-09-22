@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
 import CreateFormModal from '@/components/common/CreateFormModal.vue'
 import ListPager from '@/components/common/ListPager.vue'
@@ -22,18 +22,30 @@ import {
 } from '@/data/ai'
 
 const router = useRouter()
+const route = useRoute()
 const { showToast } = useToast()
 const guide = pageGuideOf('aimodel')
 const api = useAiModels()
 
+/** ?demo=1 强制本地演示；否则优先真 API（空列表也算接真，不再用 AI_MODELS 垫底） */
+const forceDemo = computed(() => String(route.query.demo || '') === '1')
+
 const createOpen = ref(false)
 const editOpen = ref(false)
 const editingId = ref('')
-const useDemo = ref(true)
-const models = ref(AI_MODELS.map((m) => ({ ...m })))
-const routeRows = ref(AI_ROUTES.map((r) => ({ ...r })))
-const usageBars = ref(AI_USAGE_BARS.map((b) => ({ ...b })))
-const kpiCards = ref(AI_MODEL_KPIS.map((k) => ({ ...k })))
+const useDemo = ref(false)
+const loadError = ref('')
+const models = ref([])
+const routeRows = ref([])
+const usageBars = ref([])
+const kpiCards = ref([
+  { icon: '🧠', color: 'blue', value: '—', unit: '个', label: '已接入模型', trend: '加载中', trendUp: true },
+  { icon: '✅', color: 'green', value: '—', unit: '', label: '连通性', trend: '', trendUp: true },
+  { icon: '💬', color: 'purple', value: '—', unit: '', label: '本月调用', trend: '按空间分摊', trendUp: true },
+  { icon: '💰', color: 'orange', value: '—', unit: '', label: '本月成本', trend: '按空间分摊', trendUp: true },
+  { icon: '⚡', color: 'red', value: '—', unit: 's', label: '平均响应', trend: 'P95 ≤ 3s', trendUp: true },
+])
+const gatewayHint = ref('')
 
 const { page, pageSize, total, totalPages, paged, pageNums, goPage, resetPage } = usePager(models)
 const enabledCount = computed(() => models.value.filter((m) => m.enabled).length)
@@ -48,37 +60,113 @@ const vendorMeta = {
   自建: { logo: '⚪', bg: '#f5f5f5' },
 }
 
+function applyDemoData() {
+  useDemo.value = true
+  models.value = AI_MODELS.map((m) => ({ ...m }))
+  routeRows.value = AI_ROUTES.map((r) => ({ ...r }))
+  usageBars.value = AI_USAGE_BARS.map((b) => ({ ...b }))
+  kpiCards.value = AI_MODEL_KPIS.map((k) => ({ ...k }))
+  gatewayHint.value = '演示数据（?demo=1 或 API 不可用）'
+  resetPage()
+}
+
+function applyApiPayload() {
+  useDemo.value = false
+  models.value = (api.models.value || []).map((m) => ({ ...m }))
+  routeRows.value = (api.routes.value || []).map((r) => ({
+    scene: r.scene,
+    ws: r.ws,
+    primary: r.primary,
+    fallback: r.fallback,
+    status: r.status,
+  }))
+  usageBars.value = api.usageBars.value?.length
+    ? api.usageBars.value.map((b) => ({ ...b }))
+    : []
+  if (api.overview.value) applyOverviewKpi(api.overview.value)
+  else applyOverviewKpi({ total: models.value.length, enabledCount: enabledCount.value })
+  const ov = api.overview.value || {}
+  if (ov.litellmSyncMode) {
+    const mode = ov.litellmSyncMode
+    gatewayHint.value =
+      mode === 'live'
+        ? 'LiteLLM 同步：live'
+        : mode === 'skipped'
+          ? 'LiteLLM 未启用 · 启停仅写门户'
+          : 'LiteLLM 降级 · 启停仅写门户'
+  } else {
+    gatewayHint.value = '已接 API'
+  }
+  resetPage()
+}
+
 onMounted(async () => {
+  if (forceDemo.value) {
+    applyDemoData()
+    return
+  }
   try {
     await api.loadAll()
-    if (api.models.value?.length) {
-      models.value = api.models.value.map((m) => ({ ...m }))
-      useDemo.value = false
-    }
-    if (api.routes.value?.length) {
-      routeRows.value = api.routes.value.map((r) => ({
-        scene: r.scene,
-        ws: r.ws,
-        primary: r.primary,
-        fallback: r.fallback,
-        status: r.status,
-      }))
-    }
-    if (api.usageBars.value?.length) usageBars.value = api.usageBars.value
-    if (api.overview.value) applyOverviewKpi(api.overview.value)
-    resetPage()
-  } catch {
-    /* keep demo */
+    applyApiPayload()
+  } catch (e) {
+    loadError.value = e?.message || '加载失败'
+    applyDemoData()
   }
 })
 
 function applyOverviewKpi(ov) {
+  const lat =
+    ov.avgLatencySec != null
+      ? String(ov.avgLatencySec)
+      : ov.avgLatencyMs != null
+        ? (Number(ov.avgLatencyMs) / 1000).toFixed(1)
+        : '—'
   kpiCards.value = [
-    { icon: '🧠', color: 'blue', value: String(ov.total ?? models.value.length), unit: '个', label: '已接入模型', trend: `${ov.enabledCount ?? enabledCount.value} 启用`, trendUp: true },
-    { icon: '✅', color: 'green', value: `${ov.okCount ?? '—'}`, unit: '', label: '连通性', trend: ov.warnCount ? `${ov.warnCount} 个告警` : '正常', trendUp: true },
-    { icon: '💬', color: 'purple', value: String(ov.monthCalls ?? '—'), unit: '', label: '本月调用', trend: '按空间分摊', trendUp: true },
-    { icon: '💰', color: 'orange', value: ov.monthCost != null ? `¥${ov.monthCost}` : '—', unit: '', label: '本月成本', trend: '按空间分摊', trendUp: true },
-    { icon: '⚡', color: 'red', value: ov.avgLatencySec != null ? String(ov.avgLatencySec) : '—', unit: 's', label: '平均响应', trend: 'P95 ≤ 3s', trendUp: true },
+    {
+      icon: '🧠',
+      color: 'blue',
+      value: String(ov.modelCount ?? ov.total ?? models.value.length),
+      unit: '个',
+      label: '已接入模型',
+      trend: `${ov.enabledCount ?? enabledCount.value} 启用`,
+      trendUp: true,
+    },
+    {
+      icon: '✅',
+      color: 'green',
+      value: `${ov.okCount ?? ov.connectivity ?? '—'}`,
+      unit: '',
+      label: '连通性',
+      trend: ov.warnCount ? `${ov.warnCount} 个告警` : ov.litellmReachable === false ? '网关未通' : '正常',
+      trendUp: true,
+    },
+    {
+      icon: '💬',
+      color: 'purple',
+      value: String(ov.monthCalls ?? '—'),
+      unit: '',
+      label: '本月调用',
+      trend: '按空间分摊',
+      trendUp: true,
+    },
+    {
+      icon: '💰',
+      color: 'orange',
+      value: ov.monthCost != null ? `¥${ov.monthCost}` : '—',
+      unit: '',
+      label: '本月成本',
+      trend: '按空间分摊',
+      trendUp: true,
+    },
+    {
+      icon: '⚡',
+      color: 'red',
+      value: lat,
+      unit: 's',
+      label: '平均响应',
+      trend: 'P95 ≤ 3s',
+      trendUp: true,
+    },
   ]
 }
 
@@ -120,6 +208,11 @@ async function onAddModel(payload) {
     if (!useDemo.value) {
       const n = await api.addModel(payload)
       models.value.unshift(n)
+      if (n?.litellmSyncMessage) {
+        showToast(`✅ 模型已接入：${payload.model} · ${n.litellmSyncMessage}`, n.litellmSyncOk ? 'success' : 'info')
+      } else {
+        showToast(`✅ 模型已接入：${payload.model}`, 'success')
+      }
     } else {
       const meta = vendorMeta[payload.vendor] || vendorMeta['自建']
       const pricing = applyPricing(payload)
@@ -140,10 +233,10 @@ async function onAddModel(payload) {
         cost: '¥0',
         role: payload.use || '新接入',
       })
+      showToast(`✅ 模型已接入：${payload.model}`, 'success')
     }
     createOpen.value = false
     resetPage()
-    showToast(`✅ 模型已接入：${payload.model}`, 'success')
   } catch (e) {
     showToast(e?.message || '接入失败', 'error')
   }
@@ -157,18 +250,10 @@ function editModel(m) {
 async function onEditModel(payload) {
   try {
     if (!useDemo.value) {
-      await api.editModel(editingId.value, payload)
+      const saved = await api.editModel(editingId.value, payload)
       const idx = models.value.findIndex((x) => x.id === editingId.value)
       if (idx >= 0) {
-        const pricing = applyPricing(payload)
-        Object.assign(models.value[idx], {
-          name: payload.model,
-          vendor: payload.vendor,
-          endpoint: payload.baseURL,
-          context: payload.context,
-          role: payload.use,
-          ...pricing,
-        })
+        models.value[idx] = { ...models.value[idx], ...saved }
         if (String(payload.key || '').trim()) {
           models.value[idx].key = maskApiKey(payload.key)
         }
@@ -211,6 +296,7 @@ async function testModel(m) {
       const r = await api.test(m.id)
       showToast(`🔧 测试 · ${m.name} · ${r?.status || 'ok'} · ${r?.latencyMs ?? '—'}ms`, 'success')
       if (r?.latencyMs != null) m.latency = `${(r.latencyMs / 1000).toFixed(1)}s`
+      if (r?.status) m.status = r.status
     } else {
       showToast(`🔧 测试连通性 · ${m.name || m} · 正常（演示）`, 'success')
     }
@@ -222,10 +308,14 @@ async function testModel(m) {
 async function toggleModel(m) {
   try {
     if (!useDemo.value) {
-      await api.toggle(m.id, !m.enabled)
+      const saved = await api.toggle(m.id, !m.enabled)
+      Object.assign(m, saved)
+      const syncBit = saved?.litellmSyncMessage ? ` · ${saved.litellmSyncMessage}` : ''
+      showToast(`${m.enabled ? '启用' : '停用'}模型 · ${m.name}${syncBit}`, 'info')
+    } else {
+      m.enabled = !m.enabled
+      showToast(`${m.enabled ? '启用' : '停用'}模型 · ${m.name}`, 'info')
     }
-    m.enabled = !m.enabled
-    showToast(`${m.enabled ? '启用' : '停用'}模型 · ${m.name}`, 'info')
   } catch (e) {
     showToast(e?.message || '操作失败', 'error')
   }
@@ -238,9 +328,13 @@ function addPolicy() {
 watch(
   () => api.models.value,
   (list) => {
-    if (!useDemo.value && list?.length) models.value = list.map((m) => ({ ...m }))
+    if (!useDemo.value && Array.isArray(list)) models.value = list.map((m) => ({ ...m }))
   },
 )
+
+watch(forceDemo, (v) => {
+  if (v) applyDemoData()
+})
 </script>
 
 <template>
@@ -254,6 +348,13 @@ watch(
       <button type="button" class="btn btn-sm" @click="usageReport">📊 用量报表</button>
       <button type="button" class="btn btn-sm btn-primary" @click="goChat">🤖 去对话</button>
     </PageHeader>
+
+    <div v-if="gatewayHint || loadError" class="aim-banner tip">
+      <span v-if="useDemo">演示模式</span>
+      <span v-else>在线</span>
+      <span v-if="gatewayHint"> · {{ gatewayHint }}</span>
+      <span v-if="loadError"> · {{ loadError }}</span>
+    </div>
 
     <CreateFormModal
       :open="createOpen"
@@ -287,6 +388,7 @@ watch(
         <span class="tag tag-green">{{ enabledCount }} 启用</span>
       </div>
       <div class="card-body">
+        <div v-if="!models.length" class="aim-empty tip">暂无模型 · 点击「接入模型」或检查 /lh/ai/models</div>
         <div class="grid grid-3 aim-model-grid">
           <div
             v-for="m in paged"
@@ -391,6 +493,17 @@ watch(
 </template>
 
 <style scoped>
+.aim-banner {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  font-size: 12px;
+  border-radius: 6px;
+  background: var(--bg-muted, #f5f5f5);
+}
+.aim-empty {
+  padding: 24px 8px;
+  text-align: center;
+}
 .aim-kpi {
   grid-template-columns: repeat(5, 1fr);
   margin-bottom: 16px;
@@ -400,47 +513,28 @@ watch(
     grid-template-columns: repeat(3, 1fr);
   }
 }
-@media (max-width: 700px) {
+@media (max-width: 720px) {
   .aim-kpi {
     grid-template-columns: repeat(2, 1fr);
   }
 }
-
-.tip {
-  font-size: 12px;
-  font-weight: 400;
-  color: var(--text-3);
-}
-
 .aim-models-card {
-  margin-top: 0;
+  margin-bottom: 16px;
 }
-
 .aim-model-grid {
-  gap: 14px;
+  gap: 12px;
 }
-
-.aim-bottom {
-  margin-top: 16px;
-}
-
 .model-card {
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 14px;
-  background: var(--bg-1);
-  transition: all 0.15s;
-}
-.model-card:hover {
-  border-color: var(--primary);
-  box-shadow: var(--shadow-md);
+  border: 1px solid var(--border, #e8e8e8);
+  border-radius: 8px;
+  padding: 12px;
+  background: var(--bg-card, #fff);
 }
 .model-card.disabled {
-  opacity: 0.6;
+  opacity: 0.55;
 }
 .mc-head {
   display: flex;
-  align-items: center;
   gap: 10px;
   margin-bottom: 10px;
 }
@@ -454,7 +548,6 @@ watch(
   font-size: 18px;
 }
 .mc-name {
-  font-size: 14px;
   font-weight: 600;
   display: flex;
   align-items: center;
@@ -462,72 +555,58 @@ watch(
   flex-wrap: wrap;
 }
 .mc-vendor {
-  font-size: 11px;
-  color: var(--text-3);
+  font-size: 12px;
+  color: var(--text-secondary, #888);
+  margin-top: 2px;
 }
 .mc-rows {
   display: grid;
-  grid-template-columns: 90px 1fr;
-  gap: 6px 10px;
+  grid-template-columns: 72px 1fr;
+  gap: 4px 8px;
   font-size: 12px;
+  margin-bottom: 10px;
 }
 .mcr-k {
-  color: var(--text-3);
+  color: var(--text-secondary, #888);
 }
 .mcr-v {
-  color: var(--text-1);
-  font-family: monospace;
-  font-size: 11px;
   word-break: break-all;
 }
 .mc-foot {
-  margin-top: 12px;
-  padding-top: 10px;
-  border-top: 1px dashed var(--border);
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
   flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
 }
 .mc-stats {
   font-size: 11px;
-  color: var(--text-3);
+  color: var(--text-secondary, #888);
 }
-
+.aim-bottom {
+  gap: 16px;
+}
 .call-bar-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: 120px 1fr 100px;
+  gap: 8px;
   align-items: center;
-  gap: 12px;
-  margin-bottom: 12px;
+  margin-bottom: 8px;
   font-size: 12px;
 }
-.cbr-name {
-  width: 200px;
-  flex-shrink: 0;
-  color: var(--text-2);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .cbr-bar {
-  flex: 1;
   height: 8px;
-  background: var(--bg-2);
+  background: var(--bg-muted, #f0f0f0);
   border-radius: 4px;
   overflow: hidden;
 }
 .cbr-bar-fill {
   height: 100%;
-  background: linear-gradient(90deg, var(--primary) 0%, #5cdbd3 100%);
+  background: var(--primary, #1677ff);
   border-radius: 4px;
-  transition: width 0.4s;
 }
 .cbr-val {
-  width: 90px;
   text-align: right;
-  font-weight: 600;
-  color: var(--text-1);
-  flex-shrink: 0;
+  color: var(--text-secondary, #888);
 }
 </style>

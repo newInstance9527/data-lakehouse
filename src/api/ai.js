@@ -39,6 +39,10 @@ export function enableAiModel(id, enabled) {
   return http.post(`${AI}/models/${encodeURIComponent(id)}/enable`, { enabled: !!enabled })
 }
 
+export function fetchAiGatewayProbe() {
+  return http.get(`${AI}/models/gateway/probe`)
+}
+
 export function fetchAiRoutes(ws) {
   return http.get(`${AI}/routes`, { ws })
 }

@@ -63,6 +63,10 @@ export function normalizeAiModel(row) {
     kind: row.kind || 'chat',
     modelName: row.modelName,
     vaultPath: row.vaultPath,
+    litellmAlias: row.litellmAlias,
+    litellmSyncOk: row.litellmSyncOk,
+    litellmSyncSkipped: row.litellmSyncSkipped,
+    litellmSyncMessage: row.litellmSyncMessage,
   }
 }
 
