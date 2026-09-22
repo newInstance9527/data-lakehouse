@@ -208,7 +208,7 @@ async function exportAudit() {
     a.download = `export-audit-${ws.value}-${Date.now()}.csv`
     a.click()
     URL.revokeObjectURL(url)
-    showToast(`📋 已导出审计摘要 ${lines.length} 条（一期 soft）`, 'success')
+    showToast(`📋 已导出审计摘要 ${lines.length} 条（${data?.source === 'gov_export_audit' ? '正式落库' : 'soft 回落'}）`, 'success')
   } catch (e) {
     showToast(`审计导出失败：${e.message || e}`, 'error')
   }
