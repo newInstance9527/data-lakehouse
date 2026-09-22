@@ -13,6 +13,7 @@ import {
   syncTables as apiSyncTables,
   testDatasource as apiTest,
   toggleDatasourceStatus,
+  projectToSqlrest as apiProjectToSqlrest,
 } from '@/api/datasource'
 import { tablesToSchema } from '@/utils/schemaList'
 import { dsTypeMeta } from '@/data/dsForm'
@@ -104,6 +105,22 @@ export function useDatasources() {
     return true
   }
 
+  async function projectSqlrest(ids = []) {
+    const r = await apiProjectToSqlrest(ids)
+    // 刷新列表以带回 syncState / lastError
+    if (ids?.length === 1) {
+      try {
+        const detail = await fetchDatasourceDetail(ids[0])
+        replaceLocal(detail)
+      } catch {
+        await loadSources()
+      }
+    } else {
+      await loadSources()
+    }
+    return r
+  }
+
   async function ensureTables(id) {
     const s = getSource(id)
     if (!s) return []
@@ -184,6 +201,7 @@ export function useDatasources() {
     testSource,
     toggleStatus,
     removeSource,
+    projectSqlrest,
     ensureTables,
     setTables,
     syncTables,
@@ -230,6 +248,11 @@ function normalizeSource(row) {
     color: row.color || meta.color,
     tables: Array.isArray(row.tables) ? row.tables.map(normalizeTable) : row.tables,
     conn,
+    sqlrestProjectable: row.sqlrestProjectable ?? false,
+    sqlrestSyncState: row.sqlrestSyncState || null,
+    sqlrestProjected: !!row.sqlrestProjected,
+    sqlrestLastError: row.sqlrestLastError || null,
+    sqlrestDatasourceId: row.sqlrestDatasourceId ?? null,
   }
 }
 

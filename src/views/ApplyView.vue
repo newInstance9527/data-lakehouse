@@ -9,11 +9,8 @@ import { pageGuideOf } from '@/data/pageGuides'
 import {
   APPLY_API_OPTIONS,
   APPLY_EXPIRE_OPTIONS,
-  APPLY_KPIS,
-  APPLY_METRIC_DOMAINS,
   APPLY_METRIC_KINDS,
   APPLY_METRIC_SCOPES,
-  APPLY_METRIC_TYPES,
   APPLY_OPS_PRIVILEGES,
   APPLY_PERM_LEVELS,
   APPLY_PERM_MODES,
@@ -34,6 +31,7 @@ import {
 } from '@/data/apply'
 import { createApplyTicket, approveTicket as apiApproveTicket, rejectTicket as apiRejectTicket } from '@/api/apply'
 import { fetchDatasourcePage } from '@/api/datasource'
+import { fetchDataapiApis, fetchDataapiDetail } from '@/api/dataapi'
 import { fetchEtlDags } from '@/api/etl'
 import { useApplyBoard, pushExportApply, approveExportOnBoard, hydrateApplyBoardFromServer } from '@/composables/useApplyBoard'
 import { useMetrics } from '@/composables/useMetrics'
@@ -46,14 +44,69 @@ const router = useRouter()
 const { showToast } = useToast()
 const guide = pageGuideOf('apply')
 const { pending, mine } = useApplyBoard()
+
+const applyKpis = computed(() => {
+  const pend = pending.value.length
+  const my = mine.value.length
+  const approved = mine.value.filter((m) => m.side === 'approved').length
+  const rejected = mine.value.filter((m) => m.side === 'rejected').length
+  const processing = mine.value.filter((m) => m.side === 'pending').length
+  return [
+    {
+      icon: '⏳',
+      color: 'orange',
+      label: '待我审批',
+      value: String(pend),
+      unit: '单',
+      trend: pend ? `${pend} 单待处理` : '暂无待审',
+      trendUp: false,
+      trendWarn: pend > 0,
+    },
+    {
+      icon: '📝',
+      color: 'blue',
+      label: '我申请的',
+      value: String(my),
+      unit: '单',
+      trend: processing ? `${processing} 处理中` : '列表已同步',
+      trendUp: processing > 0,
+    },
+    {
+      icon: '✅',
+      color: 'green',
+      label: '本页已通过',
+      value: String(approved),
+      unit: '单',
+      trend: '来自「我的申请」列表',
+      trendUp: true,
+    },
+    {
+      icon: '❌',
+      color: 'red',
+      label: '本页驳回',
+      value: String(rejected),
+      unit: '单',
+      trend: '来自「我的申请」列表',
+      trendUp: false,
+    },
+  ]
+})
 const { catalog: metricCatalog, ensureLoaded: ensureMetricsLoaded } = useMetrics()
 const { list: assetList, ensureLoaded: ensureAssetsLoaded } = useAssets()
 const assetsLive = ref(false)
 const assetsLoadError = ref('')
 
 onMounted(async () => {
-  hydrateApplyBoardFromServer()
+  await hydrateApplyBoardFromServer().catch(() => false)
+  const ticketQ = typeof route.query.ticket === 'string' ? route.query.ticket : ''
+  if (ticketQ) {
+    const hit =
+      mine.value.find((m) => m.ticketNo === ticketQ || m.id === ticketQ) ||
+      pending.value.find((m) => m.ticketNo === ticketQ || m.id === ticketQ)
+    if (hit) openDetail(hit)
+  }
   loadOpsResourceOptions()
+  loadPublishedApiOptions()
   ensureMetricsLoaded()
   try {
     await ensureAssetsLoaded()
@@ -121,11 +174,46 @@ const activeTab = ref('all')
 const creating = ref(false)
 const form = ref(emptyForm())
 const tokenModal = ref(null)
+const rejectModal = ref(null) // { ticket, remark }
+const rejectSubmitting = ref(false)
 const detailOpen = ref(false)
 const detail = ref(null)
+const apiPreview = ref(null)
+const apiPreviewLoading = ref(false)
+const apiPreviewError = ref('')
 const tokenVisible = ref(false)
 const opsDsOptions = ref([])
 const opsEtlOptions = ref([])
+/** 已发布 API（订阅下拉） */
+const apiOptions = ref(APPLY_API_OPTIONS.map((o) => ({ ...o })))
+
+async function loadPublishedApiOptions() {
+  try {
+    const list = await fetchDataapiApis({ state: 'published' })
+    const rows = Array.isArray(list) ? list : list?.records || list?.data || []
+    const mapped = rows
+      .filter((a) => a && (a.path || a.publicPath))
+      .map((a) => {
+        const path = a.path || a.publicPath
+        const method = (a.method || 'GET').toUpperCase()
+        return {
+          value: path,
+          label: `${method} ${path}${a.name ? ` · ${a.name}` : ''}`,
+          bindingId: a.id,
+          method,
+          name: a.name,
+        }
+      })
+    if (mapped.length) {
+      apiOptions.value = mapped
+      if (!apiOptions.value.some((o) => o.value === form.value.apiPath)) {
+        form.value.apiPath = mapped[0].value
+      }
+    }
+  } catch {
+    /* 保留演示选项 */
+  }
+}
 
 async function loadOpsResourceOptions() {
   try {
@@ -290,7 +378,7 @@ const permAssetOptions = computed(() => {
 })
 
 const showExpireField = computed(() => {
-  if (form.value.type === 'publish') return false
+  if (form.value.type === 'publish' || form.value.type === 'api_publish') return false
   if (form.value.type === 'metric') return form.value.metricKind === 'query'
   if (form.value.type === 'table') return form.value.tableKind === 'read'
   return true
@@ -311,7 +399,14 @@ watch(
     if (t === 'api') {
       activeTab.value = 'api'
       creating.value = true
-      form.value = { ...emptyForm(), type: 'api', app: '我的应用' }
+      loadPublishedApiOptions()
+      const path = typeof route.query.path === 'string' ? route.query.path : ''
+      form.value = {
+        ...emptyForm(),
+        type: 'api',
+        app: '我的应用',
+        apiPath: path || emptyForm().apiPath,
+      }
     } else if (t === 'metric') {
       activeTab.value = 'metric'
       creating.value = true
@@ -480,7 +575,7 @@ function toggleCreate() {
   creating.value = !creating.value
   if (creating.value) {
     form.value = emptyForm()
-    if (['api', 'metric', 'perm', 'table', 'publish', 'export'].includes(activeTab.value)) {
+    if (['api', 'api_publish', 'metric', 'perm', 'table', 'publish', 'export'].includes(activeTab.value)) {
       form.value.type = activeTab.value
     }
     if (form.value.type === 'metric') syncMetricVersionDefaults()
@@ -489,9 +584,10 @@ function toggleCreate() {
 
 function purposePlaceholder() {
   if (form.value.type === 'api') return '业务系统、调用场景、预估 QPS 与下游产物'
+  if (form.value.type === 'api_publish') return '请从数据服务工作台发起「申请发布」'
   if (form.value.type === 'metric') {
-    if (form.value.metricKind === 'change') return '变更背景、影响下游、回滚方案'
-    if (form.value.metricKind === 'create') return '业务诉求、预期口径、消费方'
+    if (form.value.metricKind === 'change') return '请从指标中心发起「申请变更」'
+    if (form.value.metricKind === 'create') return '请从指标中心保存草稿后发起「申请发布」'
     return '看板 / 即席 / API 引用场景与下游产物'
   }
   if (form.value.type === 'perm') return '业务背景、访问场景、是否含敏感字段'
@@ -503,6 +599,21 @@ function purposePlaceholder() {
 }
 
 async function submitApply() {
+  if (form.value.type === 'api_publish') {
+    showToast('API 发布申请请到「数据服务 → 构建工作台」保存后发起', 'warning')
+    router.push('/dataservice')
+    return
+  }
+  if (form.value.type === 'metric' && (form.value.metricKind === 'create' || form.value.metricKind === 'change')) {
+    showToast(
+      form.value.metricKind === 'change'
+        ? '口径变更发布请到「指标中心」对已启用指标点「申请变更」'
+        : '指标发布请到「指标中心」新建并保存草稿后点「申请发布」',
+      'warning',
+    )
+    router.push('/metrics')
+    return
+  }
   const purpose = form.value.purpose.trim()
   if (!purpose) {
     showToast('请填写使用用途', 'warning')
@@ -514,17 +625,8 @@ async function submitApply() {
       return
     }
   } else if (form.value.type === 'metric') {
-    if (form.value.metricKind === 'create') {
-      if (!form.value.metricNameNew.trim()) {
-        showToast('请填写拟新建指标名称', 'warning')
-        return
-      }
-    } else if (!form.value.metricId) {
-      showToast('请选择指标', 'warning')
-      return
-    }
-    if (form.value.metricKind === 'change' && !form.value.caliberDiff.trim()) {
-      showToast('请填写口径变更说明', 'warning')
+    if (form.value.metricKind === 'query' && !form.value.metricId) {
+      showToast('请选择要申请权限的指标', 'warning')
       return
     }
   } else if (form.value.type === 'perm') {
@@ -586,6 +688,31 @@ async function submitApply() {
   if (form.value.type === 'api') {
     const path = form.value.apiPath
     const app = form.value.app.trim()
+    const hit = apiOptions.value.find((o) => o.value === path)
+    try {
+      const server = await createApplyTicket({
+        ticketType: 'api_subscribe',
+        title: `API 订阅 · ${app} · ${path}`,
+        reason: purpose,
+        consumerName: app,
+        publicPath: path,
+        method: hit?.method || 'GET',
+        apiBindingId: hit?.bindingId || undefined,
+        qps: form.value.qps || 100,
+        expireLabel: form.value.expire,
+      })
+      showToast(
+        `✅ 订阅申请已提交 ${server?.ticketNo || server?.id || ''}，审批通过后签发调用 Key`,
+        'success',
+        { duration: 8000 },
+      )
+      await hydrateApplyBoardFromServer().catch(() => {})
+      creating.value = false
+      activeTab.value = 'api'
+      return
+    } catch (e) {
+      showToast(e?.message || '订阅申请提交失败，已落本地演示单', 'warning')
+    }
     mine.value.unshift({
       id,
       type: 'api',
@@ -620,11 +747,13 @@ async function submitApply() {
         { label: '✓ 提交', cls: 'done' },
         { label: '● API Owner', cls: 'current' },
         { label: '签发令牌', cls: '' },
-        { label: 'APISIX 生效', cls: '' },
+        { label: 'Gateway 生效', cls: '' },
       ],
     })
   } else if (form.value.type === 'metric') {
-    submitMetricApply(id, now, purpose)
+    await submitMetricApply(id, now, purpose)
+    creating.value = false
+    return
   } else if (form.value.type === 'manage') {
     try {
       const resourceType = form.value.resourceType || 'asset'
@@ -721,113 +850,71 @@ async function submitApply() {
   showToast(`✅ 申请已提交：${id}（${typeLabel}）已通知审批人`, 'success')
 }
 
-function submitMetricApply(id, now, purpose) {
+async function submitMetricApply(id, now, purpose) {
   const kind = form.value.metricKind
-  const kindLabel = metricKindLabel(kind)
-  let metricId = form.value.metricId
-  let metricName = selectedMetric.value?.name || metricId
-  let titleCore = ''
-  let desc = ''
-  let statusTag = '待指标 Owner'
-  let timelinePending = []
-  let timelineMine = []
-  const base = {
-    id,
-    type: 'metric',
-    side: 'pending',
-    metricKind: kind,
-    purpose,
-    applicant: '我',
-    expire: form.value.expire,
-    metricDomain: form.value.metricDomain,
+  // create/change 已在 submitApply 拦截；此处仅 query，走真工单
+  if (kind !== 'query') {
+    showToast('指标发布/变更请到指标中心发起', 'warning')
+    router.push('/metrics')
+    return
   }
-
-  if (kind === 'create') {
-    metricId = '（待分配）'
-    metricName = form.value.metricNameNew.trim()
-    titleCore = `新建指标「${metricName}」· ${form.value.metricTypeNew}`
-    desc = `类型：${form.value.metricTypeNew} · 域：${form.value.metricDomain} · ${purpose}`
-    statusTag = '待指标委员会立项'
-    timelinePending = [
-      { label: '✓ 提交', cls: 'done' },
-      { label: '● 指标委员会', cls: 'current' },
-      { label: '分配 ID / 草稿', cls: '' },
-      { label: '进入指标中心', cls: '' },
-    ]
-    timelineMine = [
-      { label: '✓ 提交', cls: 'done' },
-      { label: '● 指标委员会立项', cls: 'current' },
-      { label: '进入指标中心', cls: '' },
-    ]
-    Object.assign(base, {
-      metricId,
-      metricName,
-      metricTypeNew: form.value.metricTypeNew,
-      metricDomain: form.value.metricDomain,
+  const metricId = form.value.metricId
+  const metricName = selectedMetric.value?.name || metricId
+  try {
+    const server = await createApplyTicket({
+      ticketType: 'metric',
+      title: `指标查询权限 · ${metricId} · ${metricName}`,
+      reason: purpose,
+      metricCode: metricId,
+      metricKind: 'query',
+      expireLabel: form.value.expire,
     })
-  } else if (kind === 'change') {
-    titleCore = `${metricId} ${metricName} · 口径变更 ${form.value.metricFromVer} → ${form.value.metricToVer}`
-    desc = `变更：${form.value.caliberDiff.trim()} · ${purpose}`
-    statusTag = '待指标委员会'
-    timelinePending = [
-      { label: '✓ 提交', cls: 'done' },
-      { label: '● 指标委员会', cls: 'current' },
-      { label: '版本发布', cls: '' },
-      { label: '通知下游', cls: '' },
-    ]
-    timelineMine = [
-      { label: '✓ 提交', cls: 'done' },
-      { label: '● 指标委员会评审', cls: 'current' },
-      { label: '版本发布', cls: '' },
-    ]
-    Object.assign(base, {
-      metricId,
-      metricName,
-      metricFromVer: form.value.metricFromVer,
-      metricToVer: form.value.metricToVer,
-      caliberDiff: form.value.caliberDiff.trim(),
-      metricOwner: selectedMetric.value?.owner,
-      metricCaliber: selectedMetric.value?.caliber,
-    })
-  } else {
+    showToast(
+      `✅ 指标查询权限申请已提交 ${server?.ticketNo || server?.id || ''}，审批通过后生效`,
+      'success',
+      { duration: 8000 },
+    )
+    await hydrateApplyBoardFromServer().catch(() => {})
+    activeTab.value = 'metric'
+  } catch (e) {
+    showToast(e?.message || '指标权限申请提交失败，已落本地演示单', 'warning')
     const scopeLabel = SCOPE_LABEL[form.value.metricScope] || form.value.metricScope
-    titleCore = `${metricId} ${metricName} · ${kindLabel}`
-    desc = `场景：${scopeLabel} · 时效 ${form.value.expire} · ${purpose}`
-    timelinePending = [
-      { label: '✓ 提交', cls: 'done' },
-      { label: '● 指标 Owner', cls: 'current' },
-      { label: '写入 Gravitino', cls: '' },
-    ]
-    timelineMine = [
-      { label: '✓ 提交', cls: 'done' },
-      { label: '● 指标 Owner 审批中', cls: 'current' },
-      { label: '写入 Gravitino', cls: '' },
-    ]
-    Object.assign(base, {
+    const base = {
+      id,
+      type: 'metric',
+      side: 'pending',
+      metricKind: kind,
       metricId,
       metricName,
       metricScope: form.value.metricScope,
-      metricOwner: selectedMetric.value?.owner,
-      metricCaliber: selectedMetric.value?.caliber,
-      metricVer: selectedMetric.value?.ver,
+      purpose,
+      applicant: '我',
+      expire: form.value.expire,
+    }
+    mine.value.unshift({
+      ...base,
+      titleHtml: `<span class="tag tag-orange">处理中</span> 我申请 ${metricId} ${metricName} · 查询权限`,
+      time: now,
+      desc: `场景：${scopeLabel} · 时效 ${form.value.expire} · ${purpose}`,
+      timeline: [
+        { label: '✓ 提交', cls: 'done' },
+        { label: '● 指标 Owner 审批中', cls: 'current' },
+        { label: '写入授权', cls: '' },
+      ],
+    })
+    pending.value.unshift({
+      ...base,
+      titleHtml: `<span class="tag tag-blue">指标</span> ${metricId} ${metricName} · 查询权限`,
+      statusTag: '待指标 Owner',
+      statusCls: 'tag-orange',
+      desc: `场景：${scopeLabel} · 时效 ${form.value.expire} · ${purpose}`,
+      timeline: [
+        { label: '✓ 提交', cls: 'done' },
+        { label: '● 指标 Owner', cls: 'current' },
+        { label: '写入授权', cls: '' },
+      ],
     })
   }
-
-  mine.value.unshift({
-    ...base,
-    titleHtml: `<span class="tag tag-orange">处理中</span> 我申请 ${titleCore}`,
-    time: now,
-    desc,
-    timeline: timelineMine,
-  })
-  pending.value.unshift({
-    ...base,
-    titleHtml: `<span class="tag tag-blue">指标</span> ${titleCore}`,
-    statusTag,
-    statusCls: 'tag-orange',
-    desc,
-    timeline: timelinePending,
-  })
 }
 
 function submitPermApply(id, now, purpose, meta = {}) {
@@ -1027,22 +1114,50 @@ async function approveTicket(id) {
   if (idx < 0) return
   const ticket = pending.value[idx]
 
-  // perm / ops / publish(api_publish) 均须打后端
+  // perm / ops / publish / api(subscribe) / metric 均须打后端
   if (
-    (ticket.type === 'perm' || ticket.type === 'ops' || ticket.type === 'publish') &&
+    (ticket.type === 'perm' || ticket.type === 'ops' || ticket.type === 'publish' || ticket.type === 'api_publish' || ticket.type === 'api' || ticket.type === 'metric') &&
     (ticket.fromServer || ticket.serverId)
   ) {
     try {
-      await apiApproveTicket(ticket.serverId || ticket.id)
-      const ok = await hydrateApplyBoardFromServer().catch(() => false)
-      if (ok) {
+      const res = await apiApproveTicket(ticket.serverId || ticket.id)
+      const issued = res?.issuedKey || res?.data?.issuedKey
+      if (ticket.type === 'api' && issued?.token) {
+        const gw = issued.publicPath || ticket.apiPath || ''
+        tokenModal.value = {
+          ticketId: ticket.ticketNo || ticket.id,
+          app: ticket.app || issued.appKey || '应用',
+          apiPath: gw,
+          qps: issued.qpsLimit || ticket.qps || 100,
+          expire: ticket.expire || '—',
+          issuedAt: new Date().toLocaleString('zh-CN', { hour12: false }),
+          token: issued.token,
+          appKey: issued.appKey,
+          header: 'Authorization: Bearer <token> · X-App-Key: ' + (issued.appKey || ''),
+          curl: issued.curl || `curl -H "Authorization: Bearer ${issued.token}" "{gateway}${gw}"`,
+        }
+        showToast(`✅ 已签发调用 Key ${ticket.ticketNo || id} · 请立即复制保存`, 'success')
+      } else {
         const tip =
-          ticket.type === 'publish'
-            ? `✅ 已通过 ${ticket.ticketNo || id} · 可填回数据服务工作台发布`
-            : `✅ 已通过 ${ticket.ticketNo || id} · 已写 sec_auth_grant（门户生效）`
+          ticket.type === 'api_publish'
+            ? res?.publishOk === false
+              ? `✅ 已通过 ${ticket.ticketNo || id}，但自动发布未完全成功，请到工作台「手动补发」`
+              : `✅ 已通过并自动发布 ${ticket.ticketNo || id} · 接口可调用`
+            : ticket.type === 'metric'
+              ? ticket.metricKind === 'query'
+                ? `✅ 已通过 ${ticket.ticketNo || id} · 指标查询权限已登记`
+                : res?.publishOk === false
+                  ? `✅ 已通过 ${ticket.ticketNo || id}，但自动启用未完全成功，请到指标中心核对状态`
+                  : `✅ 已通过并自动启用 ${ticket.ticketNo || id} · 指标可被引用`
+            : ticket.type === 'publish'
+            ? `✅ 已通过 ${ticket.ticketNo || id}`
+            : ticket.type === 'api'
+              ? `✅ 已通过 ${ticket.ticketNo || id} · Key 已写入（密文仅首次返回）`
+              : `✅ 已通过 ${ticket.ticketNo || id} · 已写 sec_auth_grant（门户生效）`
         showToast(tip, 'success')
-        return
       }
+      await hydrateApplyBoardFromServer().catch(() => false)
+      return
     } catch (e) {
       showToast(e?.message || '审批接口失败', 'danger')
       return
@@ -1126,7 +1241,7 @@ async function approveTicket(id) {
         { label: '✓ 提交', cls: 'done' },
         { label: '✓ API Owner', cls: 'done' },
         { label: '✓ 令牌已签发', cls: 'done' },
-        { label: '✓ APISIX 已生效', cls: 'done' },
+        { label: '✓ Gateway 已生效', cls: 'done' },
       ],
     })
     // 同步更新「我的申请」里同号处理中单
@@ -1139,6 +1254,7 @@ async function approveTicket(id) {
   }
 
   if (ticket.type === 'metric') {
+    // 仅本地演示单；服务端 metric 已在上方走 apiApproveTicket
     pending.value.splice(idx, 1)
     const now = new Date().toLocaleString('zh-CN', {
       hour12: false,
@@ -1153,36 +1269,34 @@ async function approveTicket(id) {
     let timeline = []
     let toastMsg = ''
     if (kind === 'create') {
-      const assigned = `M-${String(9000 + mine.value.length).slice(-4)}`
-      title = `新建指标「${ticket.metricName}」已立项 · ${assigned}`
-      desc = `类型：${ticket.metricTypeNew || '衍生'} · 域：${ticket.metricDomain || '—'} · 草稿已进入指标中心`
+      title = `${ticket.metricId || ''} ${ticket.metricName || ''} · 已启用`
+      desc = `指标发布已通过并自动启用 · 可被报表/API 引用`
       timeline = [
-        { label: '✓ 提交', cls: 'done' },
-        { label: '✓ 指标委员会', cls: 'done' },
-        { label: `✓ 分配 ${assigned}`, cls: 'done' },
-        { label: '✓ 指标中心草稿', cls: 'done' },
+        { label: '✓ 保存/申请发布', cls: 'done' },
+        { label: '✓ 审核通过', cls: 'done' },
+        { label: '✓ 自动启用', cls: 'done' },
+        { label: '✓ 可引用', cls: 'done' },
       ]
-      toastMsg = `✅ 已通过 ${id} · 已立项 ${assigned}，可在指标中心继续完善`
-      ticket.metricId = assigned
+      toastMsg = `✅ 已通过 ${id} · 指标已自动启用`
     } else if (kind === 'change') {
-      title = `${ticket.metricId} ${ticket.metricName || ''} · 口径 ${ticket.metricFromVer} → ${ticket.metricToVer}`
-      desc = `已发布 ${ticket.metricToVer} · ${ticket.caliberDiff || ''} · 已通知下游 owner`
+      title = `${ticket.metricId} ${ticket.metricName || ''} · 新版本已启用`
+      desc = `口径变更已发布 · ${ticket.caliberDiff || ''}`
       timeline = [
-        { label: '✓ 提交', cls: 'done' },
-        { label: '✓ 指标委员会', cls: 'done' },
-        { label: `✓ 版本发布 ${ticket.metricToVer}`, cls: 'done' },
+        { label: '✓ 申请发布', cls: 'done' },
+        { label: '✓ 审核通过', cls: 'done' },
+        { label: '✓ 自动启用', cls: 'done' },
         { label: '✓ 已通知下游', cls: 'done' },
       ]
-      toastMsg = `✅ 已通过 ${id} · 口径版本 ${ticket.metricToVer} 已发布`
+      toastMsg = `✅ 已通过 ${id} · 口径新版本已自动启用`
     } else {
       title = `${ticket.metricId} ${ticket.metricName || ''} · 查询权限`
-      desc = `场景：${SCOPE_LABEL[ticket.metricScope] || ticket.metricScope || '—'} · 时效 ${ticket.expire || '—'} · 已写入 Gravitino 指标 ACL`
+      desc = `场景：${SCOPE_LABEL[ticket.metricScope] || ticket.metricScope || '—'} · 时效 ${ticket.expire || '—'} · 已登记授权`
       timeline = [
         { label: '✓ 提交', cls: 'done' },
         { label: '✓ 指标 Owner', cls: 'done' },
-        { label: '✓ Gravitino 已授权', cls: 'done' },
+        { label: '✓ 已授权', cls: 'done' },
       ]
-      toastMsg = `✅ 已通过 ${id} · 指标查询权限已写入 Gravitino`
+      toastMsg = `✅ 已通过 ${id} · 指标查询权限已登记`
     }
     mine.value.unshift({
       ...ticket,
@@ -1307,24 +1421,55 @@ async function approveTicket(id) {
   showToast(`✅ 已通过 ${id}`, 'success')
 }
 
-async function rejectTicket(id) {
-  const ticket = pending.value.find((w) => w.id === id)
-  if ((ticket?.type === 'perm' || ticket?.type === 'ops') && (ticket.fromServer || ticket.serverId)) {
-    try {
-      await apiRejectTicket(ticket.serverId || ticket.id, '驳回')
-      const ok = await hydrateApplyBoardFromServer().catch(() => false)
-      if (ok) {
-        showToast(`❌ 已驳回 ${ticket.ticketNo || id} · 已通知申请人`, 'warning')
-        return
-      }
-    } catch (e) {
-      showToast(e?.message || '驳回接口失败', 'danger')
+function openRejectModal(id) {
+  const ticket = pending.value.find((w) => w.id === id) || (detail.value?.id === id ? detail.value : null)
+  if (!ticket || ticket.side === 'approved' || ticket.side === 'rejected') return
+  rejectModal.value = {
+    ticket,
+    remark:
+      ticket.type === 'api_publish'
+        ? ''
+        : '',
+  }
+}
+
+function closeRejectModal() {
+  if (rejectSubmitting.value) return
+  rejectModal.value = null
+}
+
+async function confirmReject() {
+  const modal = rejectModal.value
+  if (!modal?.ticket) return
+  const remark = String(modal.remark || '').trim()
+  if (!remark) {
+    showToast('请填写驳回意见', 'warning')
+    return
+  }
+  if (remark.length < 2) {
+    showToast('驳回意见过短，请说明需修改的内容', 'warning')
+    return
+  }
+  const ticket = modal.ticket
+  const id = ticket.id
+  rejectSubmitting.value = true
+  try {
+    if (ticket.fromServer || ticket.serverId) {
+      await apiRejectTicket(ticket.serverId || ticket.id, remark)
+      await hydrateApplyBoardFromServer().catch(() => false)
+      showToast(
+        ticket.type === 'api_publish' || (ticket.type === 'metric' && ticket.metricKind !== 'query')
+          ? `已退回重改 ${ticket.ticketNo || id} · 驳回意见已写入`
+          : `已驳回 ${ticket.ticketNo || id} · 驳回意见已写入`,
+        'warning',
+      )
+      rejectModal.value = null
+      if (detail.value?.id === id) closeDetail()
       return
     }
-  }
-  const idx = pending.value.findIndex((w) => w.id === id)
-  if (idx >= 0) pending.value.splice(idx, 1)
-  if (ticket) {
+
+    const idx = pending.value.findIndex((w) => w.id === id)
+    if (idx >= 0) pending.value.splice(idx, 1)
     const mineIdx = mine.value.findIndex((m) => m.id === ticket.id && m.side === 'pending')
     if (mineIdx >= 0) {
       const now = new Date()
@@ -1339,17 +1484,31 @@ async function rejectTicket(id) {
       mine.value.splice(mineIdx, 1, {
         ...ticket,
         side: 'rejected',
-        titleHtml: `<span class="tag tag-red">已驳回</span> ${ticket.asset || ticket.ticketNo || ticket.id}`,
+        remark,
+        titleHtml: `<span class="tag tag-red">已驳回</span> ${ticket.asset || ticket.apiPath || ticket.ticketNo || ticket.id}`,
         time: now,
-        desc: `驳回原因：请补充用途/脱敏说明后重提 · 原单号 ${ticket.ticketNo || ticket.id}`,
+        desc: `驳回意见：${remark} · 原单号 ${ticket.ticketNo || ticket.id}`,
+        statusTag: '已驳回·请重改',
+        statusCls: 'tag-red',
         timeline: [
           { label: '✓ 提交', cls: 'done' },
           { label: '✗ 已驳回', cls: 'done' },
+          { label: '改后重提', cls: 'current' },
         ],
       })
     }
+    showToast(`已驳回 ${id} · 驳回意见已记录`, 'warning')
+    rejectModal.value = null
+    if (detail.value?.id === id) closeDetail()
+  } catch (e) {
+    showToast(e?.message || '驳回失败', 'danger')
+  } finally {
+    rejectSubmitting.value = false
   }
-  showToast(`❌ 已驳回 ${id} · 已通知申请人`, 'warning')
+}
+
+function rejectTicket(id) {
+  openRejectModal(id)
 }
 
 function copyToken() {
@@ -1416,21 +1575,88 @@ function openDetailFromTokenModal() {
         { label: '✓ 提交', cls: 'done' },
         { label: '✓ API Owner', cls: 'done' },
         { label: '✓ 令牌已签发', cls: 'done' },
-        { label: '✓ APISIX 已生效', cls: 'done' },
+        { label: '✓ Gateway 已生效', cls: 'done' },
       ],
     })
   }
 }
 
-function openDetail(w) {
+async function openDetail(w) {
   detail.value = w
   tokenVisible.value = false
   detailOpen.value = true
+  apiPreview.value = null
+  apiPreviewError.value = ''
+  if (w?.type === 'api_publish') {
+    await loadApiPublishPreview(w.apiBindingId)
+  }
+}
+
+async function loadApiPublishPreview(bindingId) {
+  if (!bindingId) return
+  apiPreviewLoading.value = true
+  apiPreviewError.value = ''
+  try {
+    const d = await fetchDataapiDetail(bindingId, true)
+    if (!d) {
+      apiPreviewError.value = '未找到绑定详情'
+      return
+    }
+    const sr = d.sqlrest || {}
+    const srData = sr.data && typeof sr.data === 'object' ? sr.data : sr
+    let sqlText = d.sql || ''
+    const sqlList = d.contextList || srData?.sqlList || d.sqlList
+    if (!sqlText && Array.isArray(sqlList) && sqlList.length) {
+      sqlText = sqlList
+        .map((s) => (typeof s === 'string' ? s : s.sqlText || s.sql || ''))
+        .filter(Boolean)
+        .join('\n\n-- ---\n\n')
+    } else if (Array.isArray(d.contextList) && d.contextList.length > 1) {
+      sqlText = d.contextList.filter(Boolean).join('\n\n-- ---\n\n')
+    }
+    const script = d.script || srData?.script || ''
+    const params = Array.isArray(d.params)
+      ? d.params
+      : Array.isArray(srData?.params)
+        ? srData.params
+        : []
+    const outputs = Array.isArray(d.outputs)
+      ? d.outputs
+      : Array.isArray(d.responses)
+        ? d.responses
+        : Array.isArray(srData?.outputs)
+          ? srData.outputs
+          : []
+    apiPreview.value = {
+      id: d.id || bindingId,
+      name: d.name || '—',
+      method: d.method || 'GET',
+      path: d.path || d.publicPath || '—',
+      state: d.state || '—',
+      engine: d.engine || srData?.engine || 'SQL',
+      owner: d.owner || d.ownerUser || '—',
+      domain: d.domain || d.domainCode || '—',
+      desc: d.desc || d.description || d.remark || '',
+      datasource: d.portalDsId || d.sqlrestDatasourceId || '—',
+      sqlrestApiId: d.sqlrestApiId || '—',
+      sql: sqlText,
+      script,
+      params,
+      outputs,
+      managerDeepLink: d.managerDeepLink || '',
+    }
+  } catch (e) {
+    apiPreviewError.value = e?.message || String(e)
+  } finally {
+    apiPreviewLoading.value = false
+  }
 }
 
 function closeDetail() {
   detailOpen.value = false
   tokenVisible.value = false
+  apiPreview.value = null
+  apiPreviewError.value = ''
 }
 
 function toggleTokenVisible() {
@@ -1454,11 +1680,21 @@ function goPublishCenter(pkg) {
   router.push({ path: '/publish', query: pkg ? { q: pkg } : {} })
 }
 
+function goDataservice(path) {
+  router.push({ path: '/dataservice', query: path ? { q: path } : {} })
+}
+
+function openExternal(url) {
+  if (!url) return
+  window.open(url, '_blank', 'noopener')
+}
+
 function approveBtnLabel(w) {
-  if (w.type === 'api') return '通过并签发令牌'
+  if (w.type === 'api') return '通过并签发调用 Key'
+  if (w.type === 'api_publish') return '通过并自动发布'
   if (w.type === 'metric') {
-    if (w.metricKind === 'change') return '通过并发布版本'
-    if (w.metricKind === 'create') return '通过并立项'
+    if (w.metricKind === 'change') return '通过并自动启用新版本'
+    if (w.metricKind === 'create') return '通过并自动启用'
     return '通过并授权'
   }
   if (w.type === 'perm') return w.permMode === 'plain' || w.permLevel === '机密' ? '通过并加签授权' : '通过并授权'
@@ -1468,7 +1704,9 @@ function approveBtnLabel(w) {
     if (w.tableKind === 'alter') return '通过并变更'
     return '通过并授权'
   }
-  if (w.type === 'publish') return `通过并上线 ${w.publishEnv || ''}`.trim()
+  if (w.type === 'publish') {
+    return `通过并上线 ${w.publishEnv || ''}`.trim()
+  }
   if (w.type === 'export') return '通过并签发出湖单号'
   return '通过'
 }
@@ -1484,7 +1722,7 @@ function displayToken() {
   <div class="apply-page">
     <PageHeader
       title="申请中心"
-      subtitle="权限 / 表 / 发布 / API / 指标 · 统一工单 · 通过后写门户授权或上线门禁"
+      subtitle="权限 / 出湖 / API 发布 / API 调用 / 指标 · 统一工单"
       :guide="guide"
     >
       <button type="button" class="btn btn-sm" @click="exportTickets">📤 导出工单</button>
@@ -1492,7 +1730,7 @@ function displayToken() {
     </PageHeader>
 
     <div class="kpi-grid apply-kpi">
-      <div v-for="(k, i) in APPLY_KPIS" :key="i" class="kpi-card" :class="k.color">
+      <div v-for="(k, i) in applyKpis" :key="i" class="kpi-card" :class="k.color">
         <div class="kpi-icon" :class="k.color">{{ k.icon }}</div>
         <div class="kpi-label">{{ k.label }}</div>
         <div class="kpi-value">
@@ -1537,7 +1775,7 @@ function displayToken() {
           <label>
             <span>申请 API</span>
             <select v-model="form.apiPath" class="select">
-              <option v-for="o in APPLY_API_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
+              <option v-for="o in apiOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
             </select>
           </label>
           <label>
@@ -1564,23 +1802,16 @@ function displayToken() {
             </div>
           </label>
 
-          <template v-if="form.metricKind === 'create'">
-            <label>
-              <span>拟新建名称</span>
-              <input v-model="form.metricNameNew" class="input" placeholder="如 跨境日 GMV" />
-            </label>
-            <label>
-              <span>指标类型</span>
-              <select v-model="form.metricTypeNew" class="select">
-                <option v-for="t in APPLY_METRIC_TYPES" :key="t.value" :value="t.value">{{ t.label }}</option>
-              </select>
-            </label>
-            <label>
-              <span>业务域</span>
-              <select v-model="form.metricDomain" class="select">
-                <option v-for="d in APPLY_METRIC_DOMAINS" :key="d" :value="d">{{ d }}</option>
-              </select>
-            </label>
+          <template v-if="form.metricKind === 'create' || form.metricKind === 'change'">
+            <p class="apply-api-hint wide">
+              <template v-if="form.metricKind === 'create'">
+                <strong>指标发布</strong>：请到「指标中心」新建并保存草稿后点「申请发布」；审核通过后自动启用。本页只做审批与查看，不在此新建发布单。
+              </template>
+              <template v-else>
+                <strong>口径变更发布</strong>：请到「指标中心」对已启用指标点「申请变更」；审核通过后自动启用新版本。本页只做审批与查看。
+              </template>
+            </p>
+            <button type="button" class="btn btn-sm" @click="router.push('/metrics')">打开指标中心</button>
           </template>
           <template v-else>
             <label class="wide">
@@ -1596,26 +1827,12 @@ function displayToken() {
             <p v-if="selectedMetric" class="apply-metric-meta tip wide">
               口径：{{ selectedMetric.caliber || '—' }} · Owner {{ selectedMetric.owner || '—' }} · {{ selectedMetric.ver || '' }}
             </p>
-            <label v-if="form.metricKind === 'query'">
+            <label>
               <span>使用场景</span>
               <select v-model="form.metricScope" class="select">
                 <option v-for="s in APPLY_METRIC_SCOPES" :key="s.value" :value="s.value">{{ s.label }}</option>
               </select>
             </label>
-            <template v-if="form.metricKind === 'change'">
-              <label>
-                <span>当前版本</span>
-                <input v-model="form.metricFromVer" class="input" placeholder="v3" />
-              </label>
-              <label>
-                <span>目标版本</span>
-                <input v-model="form.metricToVer" class="input" placeholder="v4" />
-              </label>
-              <label class="wide">
-                <span>口径变更说明</span>
-                <textarea v-model="form.caliberDiff" class="input apply-textarea" placeholder="说明新旧口径差异、影响范围" />
-              </label>
-            </template>
           </template>
         </template>
 
@@ -1821,7 +2038,7 @@ function displayToken() {
           </p>
         </template>
 
-        <label :class="{ wide: ['api', 'metric', 'perm', 'table', 'publish', 'export'].includes(form.type) }">
+        <label :class="{ wide: ['api', 'api_publish', 'metric', 'perm', 'table', 'publish', 'export'].includes(form.type) }">
           <span>使用用途</span>
           <textarea
             v-model="form.purpose"
@@ -1836,12 +2053,16 @@ function displayToken() {
           </select>
         </label>
         <p v-if="form.type === 'api'" class="apply-api-hint">
-          此处填写的是 <b>本应用</b> 的调用配额（绑定签发令牌），不是接口全局上限。全局 QPS 在「构建 API」时配置；申请方配额合计不得超过全局上限。审批通过后签发 Bearer 令牌。
+          <strong>API 调用申请</strong>：对已发布接口申请调用凭证。此处填写的是本应用的调用配额（签发 Key），不是接口全局上限。全局 QPS 在「构建 API」配置；审批通过后签发 Bearer / AppKey。
+        </p>
+        <p v-else-if="form.type === 'api_publish'" class="apply-api-hint">
+          <strong>API 发布申请</strong>：请到「数据服务 → 构建工作台」保存后点「申请发布」；审核通过后自动上线。本页只做审批与查看，不在此新建发布单。
+          <button type="button" class="btn-link" @click="router.push('/dataservice')">前往数据服务</button>
         </p>
         <p v-else-if="form.type === 'metric'" class="apply-api-hint">
-          <template v-if="form.metricKind === 'query'">查询权限通过后写入 Gravitino 指标 ACL，可供看板 / 即席 / API 引用。</template>
-          <template v-else-if="form.metricKind === 'change'">口径变更需指标委员会评审；通过后发布新版本并通知下游。</template>
-          <template v-else>新建立项通过后分配指标 ID，并在指标中心生成草稿供完善口径与启用。</template>
+          <template v-if="form.metricKind === 'query'">查询权限通过后登记授权，可供看板 / 即席 / API 引用已启用指标。</template>
+          <template v-else-if="form.metricKind === 'change'">口径变更发布须从指标中心发起；通过后自动启用新版本。</template>
+          <template v-else>指标发布须从指标中心保存草稿后发起；通过后自动启用。</template>
         </p>
         <p v-else-if="form.type === 'perm'" class="apply-api-hint">
           表/列权限通过后写入 Gravitino；敏感列明文需安全加签，且不可选「长期」。
@@ -1850,9 +2071,25 @@ function displayToken() {
           只读走表 ACL；登记上架写入资产目录；结构变更需 Owner + 平台确认后元数据生效。
         </p>
         <p v-else-if="form.type === 'publish'" class="apply-api-hint">
-          发布须过门禁（编译 / 血缘 / 质量 / stg）；prod 必须填写回滚预案，禁止裸改生产 SQL。
+          <strong>发布包审批</strong>（ETL/制品上线，非数据服务 API）。API 上线请用「API 发布申请」。prod 必须填写回滚预案。
         </p>
-        <button type="button" class="btn btn-sm btn-primary" @click="submitApply">提交申请</button>
+        <button
+          v-if="form.type === 'api_publish'"
+          type="button"
+          class="btn btn-sm btn-primary"
+          @click="router.push('/dataservice')"
+        >
+          前往构建工作台
+        </button>
+        <button
+          v-else-if="form.type === 'metric' && (form.metricKind === 'create' || form.metricKind === 'change')"
+          type="button"
+          class="btn btn-sm btn-primary"
+          @click="router.push('/metrics')"
+        >
+          前往指标中心
+        </button>
+        <button v-else type="button" class="btn btn-sm btn-primary" @click="submitApply">提交申请</button>
       </div>
     </div>
 
@@ -1882,6 +2119,10 @@ function displayToken() {
                 <span class="tag" :class="w.statusCls">{{ w.statusTag }}</span>
               </div>
               <div class="wf-desc">{{ w.desc }}</div>
+              <div v-if="w.side === 'rejected' && w.remark" class="wf-reject-opin">
+                <span class="wf-reject-label">驳回意见</span>
+                {{ w.remark }}
+              </div>
               <div class="wf-timeline">
                 <template v-for="(node, ni) in w.timeline" :key="ni">
                   <span class="wf-node" :class="node.cls">{{ node.label }}</span>
@@ -1893,7 +2134,7 @@ function displayToken() {
                 <button type="button" class="btn btn-sm btn-primary" @click="approveTicket(w.id)">
                   {{ approveBtnLabel(w) }}
                 </button>
-                <button type="button" class="btn btn-sm" @click="rejectTicket(w.id)">驳回</button>
+                <button type="button" class="btn btn-sm" @click="rejectTicket(w.id)">驳回 / 退回重改</button>
               </div>
             </div>
           </div>
@@ -1917,6 +2158,10 @@ function displayToken() {
                   <span v-if="w.time" class="apply-time">{{ w.time }}</span>
                 </div>
                 <div class="wf-desc">{{ w.desc }}</div>
+                <div v-if="w.side === 'rejected' && w.remark" class="wf-reject-opin">
+                  <span class="wf-reject-label">驳回意见</span>
+                  {{ w.remark }}
+                </div>
                 <div v-if="w.tokenMasked" class="token-chip" @click="openDetail(w)">
                   <span>令牌</span>
                   <code class="token-chip-code" title="点击查看详情并显示明文">{{ w.tokenMasked }}</code>
@@ -1951,6 +2196,7 @@ function displayToken() {
           <div class="modal-body">
             <div class="token-kv">
               <div><span>应用</span><code>{{ tokenModal.app }}</code></div>
+              <div v-if="tokenModal.appKey"><span>AppKey</span><code>{{ tokenModal.appKey }}</code></div>
               <div><span>API</span><code>{{ tokenModal.apiPath }}</code></div>
               <div><span>申请方限流 / 时效</span><code>{{ tokenModal.qps }} QPS · {{ tokenModal.expire }}</code></div>
               <div><span>签发时间</span><code>{{ tokenModal.issuedAt }}</code></div>
@@ -1973,17 +2219,61 @@ function displayToken() {
       </div>
     </Teleport>
 
+    <Teleport to="body">
+      <div v-if="rejectModal" class="modal-mask" @click.self="closeRejectModal">
+        <div class="modal token-modal">
+          <div class="modal-header">
+            <div>
+              <div class="modal-title">
+                {{ rejectModal.ticket?.type === 'api_publish' ? '退回重改' : '驳回申请' }}
+              </div>
+              <div class="modal-sub">
+                工单 {{ rejectModal.ticket?.ticketNo || rejectModal.ticket?.id }} · 请填写意见以便申请人修改
+              </div>
+            </div>
+            <button type="button" class="btn btn-sm" :disabled="rejectSubmitting" @click="closeRejectModal">✕</button>
+          </div>
+          <div class="modal-body">
+            <label class="token-field">
+              <span>驳回意见（必填）</span>
+              <textarea
+                v-model="rejectModal.remark"
+                class="input apply-textarea"
+                rows="4"
+                :placeholder="
+                  rejectModal.ticket?.type === 'api_publish'
+                    ? '说明需修改的内容，例如：SQL 未加 LIMIT、路径冲突、参数校验不足…'
+                    : '说明驳回原因与修改建议'
+                "
+              />
+            </label>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-sm" :disabled="rejectSubmitting" @click="closeRejectModal">取消</button>
+            <button
+              type="button"
+              class="btn btn-sm btn-primary"
+              :disabled="rejectSubmitting"
+              @click="confirmReject"
+            >
+              {{ rejectSubmitting ? '提交中…' : rejectModal.ticket?.type === 'api_publish' ? '确认退回' : '确认驳回' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
     <AppDrawer
       :open="detailOpen"
       storage-key="apply-detail-width"
-      :default-width="520"
+      :default-width="detail?.apiBindingId ? 640 : 520"
       @close="closeDetail"
     >
       <div v-if="detail" class="detail-drawer">
         <div class="detail-head">
           <div>
             <div class="detail-title">申请详情</div>
-            <div class="tip">{{ detail.id || '—' }}</div>
+            <div class="tip">{{ detail.ticketNo || detail.id || '—' }}</div>
           </div>
           <button type="button" class="btn btn-sm" @click="closeDetail">✕</button>
         </div>
@@ -2002,7 +2292,9 @@ function displayToken() {
           <div v-if="detail.time || detail.tokenIssuedAt"><span>时间</span><div>{{ detail.time || detail.tokenIssuedAt }}</div></div>
           <div v-if="detail.applicant"><span>申请人</span><div>{{ detail.applicant }}</div></div>
           <div v-if="detail.app"><span>调用应用</span><div>{{ detail.app }}</div></div>
+          <div v-if="detail.method && detail.apiBindingId"><span>方法</span><div><code>{{ detail.method }}</code></div></div>
           <div v-if="detail.apiPath"><span>API</span><div><code>{{ detail.apiPath }}</code></div></div>
+          <div v-if="detail.apiBindingId"><span>绑定 id</span><div><code>{{ detail.apiBindingId }}</code></div></div>
           <div v-if="detail.asset"><span>资产 / 表</span><div><code>{{ detail.asset }}</code></div></div>
           <div v-if="detail.type === 'export' && (detail.ticketNo || detail.id)">
             <span>出湖单号</span>
@@ -2026,7 +2318,7 @@ function displayToken() {
           <div v-if="detail.columns" class="wide"><span>字段 / 列</span><div><code>{{ detail.columns }}</code></div></div>
           <div v-if="detail.type === 'table'"><span>表申请场景</span><div>{{ tableKindLabel(detail.tableKind) }}</div></div>
           <div v-if="detail.releasePkg"><span>发布包</span><div><code>{{ detail.releasePkg }}</code> {{ detail.releaseTag || '' }}</div></div>
-          <div v-if="detail.publishEnv && detail.type === 'publish'"><span>目标环境</span><div>{{ detail.publishEnv }}</div></div>
+          <div v-if="detail.publishEnv && detail.type === 'publish' && !detail.apiBindingId"><span>目标环境</span><div>{{ detail.publishEnv }}</div></div>
           <div v-if="detail.rollbackPlan" class="wide"><span>回滚预案</span><div>{{ detail.rollbackPlan }}</div></div>
           <div v-if="detail.assetOwner"><span>资产 Owner</span><div>{{ detail.assetOwner }}</div></div>
           <div v-if="detail.type === 'metric'"><span>申请场景</span><div>{{ metricKindLabel(detail.metricKind) }}</div></div>
@@ -2044,7 +2336,67 @@ function displayToken() {
           <div v-if="detail.qps != null"><span>申请方限流</span><div>{{ detail.qps }} QPS</div></div>
           <div v-if="detail.expire"><span>时效</span><div>{{ detail.expire }}</div></div>
           <div v-if="detail.purpose || detail.desc" class="wide"><span>用途 / 说明</span><div>{{ detail.purpose || detail.desc }}</div></div>
+          <div v-if="detail.side === 'rejected' && detail.remark" class="wide">
+            <span>驳回 / 退回原因</span>
+            <div class="reject-remark">{{ detail.remark }}</div>
+          </div>
         </div>
+
+        <!-- 数据服务 API 发布：审核看待发布内容 -->
+        <template v-if="detail.type === 'api_publish'">
+          <div class="detail-sec-title">待发布 API 内容</div>
+          <p v-if="apiPreviewLoading" class="tip">加载绑定详情…</p>
+          <p v-else-if="apiPreviewError" class="tip apply-api-err">加载失败：{{ apiPreviewError }}</p>
+          <div v-else-if="apiPreview" class="api-preview">
+            <div class="detail-kv">
+              <div><span>名称</span><div>{{ apiPreview.name }}</div></div>
+              <div><span>状态</span><div><code>{{ apiPreview.state }}</code></div></div>
+              <div><span>方法 / 路径</span><div><code>{{ apiPreview.method }} {{ apiPreview.path }}</code></div></div>
+              <div><span>引擎</span><div>{{ apiPreview.engine }}</div></div>
+              <div><span>负责人</span><div>{{ apiPreview.owner }}</div></div>
+              <div><span>业务域</span><div>{{ apiPreview.domain }}</div></div>
+              <div v-if="apiPreview.desc" class="wide"><span>描述</span><div>{{ apiPreview.desc }}</div></div>
+              <div class="wide"><span>SQLREST id</span><div><code>{{ apiPreview.sqlrestApiId }}</code></div></div>
+            </div>
+            <div v-if="apiPreview.params?.length" class="api-preview-block">
+              <div class="detail-sec-title">入参（{{ apiPreview.params.length }}）</div>
+              <table class="table detail-table">
+                <thead>
+                  <tr><th>名</th><th>类型</th><th>必填</th><th>位置</th></tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(p, i) in apiPreview.params" :key="'ap-' + i">
+                    <td><code>{{ p.name }}</code></td>
+                    <td>{{ p.type || '—' }}</td>
+                    <td>{{ p.required ? '是' : '否' }}</td>
+                    <td>{{ p.location || '—' }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div v-if="apiPreview.outputs?.length" class="api-preview-block">
+              <div class="detail-sec-title">出参 / 映射（{{ apiPreview.outputs.length }}）</div>
+              <table class="table detail-table">
+                <thead>
+                  <tr><th>源</th><th>名</th><th>类型</th><th>转换</th></tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(o, i) in apiPreview.outputs" :key="'ao-' + i">
+                    <td><code>{{ o.source || o.name || '—' }}</code></td>
+                    <td><code>{{ o.name || '—' }}</code></td>
+                    <td>{{ o.type || '—' }}</td>
+                    <td>{{ o.transform || 'none' }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div v-if="apiPreview.sql || apiPreview.script" class="api-preview-block">
+              <div class="detail-sec-title">{{ apiPreview.engine === 'GROOVY' ? 'Groovy 脚本' : 'SQL' }}</div>
+              <pre class="api-sql">{{ apiPreview.script || apiPreview.sql }}</pre>
+            </div>
+            <p v-else class="tip">暂无 SQL/脚本正文（可能尚未同步到 SQLREST）</p>
+          </div>
+        </template>
 
         <div v-if="detail.type === 'api' && detail.tokenIssued" class="detail-token-block">
           <div class="detail-sec-title">调用令牌</div>
@@ -2077,9 +2429,39 @@ function displayToken() {
           >
             打开指标中心
           </button>
+          <button
+            v-if="detail.side === 'pending' && (detail.metricKind === 'create' || detail.metricKind === 'change')"
+            type="button"
+            class="btn btn-sm"
+            @click="rejectTicket(detail.id)"
+          >
+            驳回 / 退回重改
+          </button>
         </div>
         <div v-else-if="detail.asset && (detail.type === 'perm' || detail.type === 'table')" class="detail-actions-row">
           <button type="button" class="btn btn-sm" @click="goCatalog(detail.asset)">打开资产目录</button>
+        </div>
+        <div v-else-if="detail.type === 'api_publish'" class="detail-actions-row">
+          <button type="button" class="btn btn-sm" @click="goDataservice(detail.apiPath)">打开数据服务</button>
+          <button
+            v-if="apiPreview?.managerDeepLink"
+            type="button"
+            class="btn btn-sm"
+            @click="openExternal(apiPreview.managerDeepLink)"
+          >
+            在 Manager 打开
+          </button>
+          <button type="button" class="btn btn-sm" :disabled="apiPreviewLoading" @click="loadApiPublishPreview(detail.apiBindingId)">
+            刷新 API 内容
+          </button>
+          <button
+            v-if="detail.side === 'pending'"
+            type="button"
+            class="btn btn-sm"
+            @click="rejectTicket(detail.id)"
+          >
+            驳回 / 退回重改
+          </button>
         </div>
         <div v-else-if="detail.type === 'publish'" class="detail-actions-row">
           <button type="button" class="btn btn-sm" @click="goPublishCenter(detail.releasePkg)">打开发布中心</button>
@@ -2303,6 +2685,22 @@ function displayToken() {
   margin-bottom: 8px;
   font-size: 12px;
 }
+.wf-reject-opin {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--danger, #b45309);
+  background: #fff7e6;
+  border: 1px solid #ffd591;
+  border-radius: 6px;
+  line-height: 1.45;
+}
+.wf-reject-label {
+  display: inline-block;
+  margin-right: 6px;
+  font-weight: 600;
+  color: #ad6800;
+}
 .wf-timeline {
   display: flex;
   flex-wrap: wrap;
@@ -2406,6 +2804,36 @@ function displayToken() {
   font-size: 13px;
   font-weight: 600;
   margin: 8px 0 10px;
+}
+.api-preview {
+  margin-bottom: 8px;
+}
+.api-preview-block {
+  margin-top: 10px;
+}
+.api-sql {
+  margin: 0;
+  padding: 10px 12px;
+  max-height: 280px;
+  overflow: auto;
+  font-size: 11px;
+  line-height: 1.45;
+  background: var(--bg-2, #f8fafc);
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 6px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.apply-api-err {
+  color: var(--danger, #c0392b);
+}
+.reject-remark {
+  color: var(--danger, #b45309);
+  background: #fff7e6;
+  border: 1px solid #ffd591;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 13px;
 }
 .detail-token-block {
   margin-bottom: 16px;

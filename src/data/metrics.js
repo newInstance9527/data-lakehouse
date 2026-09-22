@@ -64,32 +64,33 @@ export const METRIC_KPIS = [
 ]
 
 /**
- * 状态机：
- * 草稿 → 评审中 → 已启用 →（变更）新版本评审 → 已启用
+ * 状态机（与数据服务 API 发布同口径）：
+ * 草稿 → 待发布（申请）→ 已启用 →（变更）待发布·变更 → 已启用
  * 已启用 → 已废弃
+ * 审批在申请中心；通过后自动启用，驳回退回重改并带意见。
  */
 export const METRIC_STATUS = {
   draft: { key: 'draft', label: '草稿', cls: 'tag-gray' },
-  review: { key: 'review', label: '评审中', cls: 'tag-orange' },
+  review: { key: 'review', label: '待发布', cls: 'tag-orange' },
   active: { key: 'active', label: '已启用', cls: 'tag-green' },
-  version_review: { key: 'version_review', label: '新版本评审', cls: 'tag-blue' },
+  version_review: { key: 'version_review', label: '待发布·变更', cls: 'tag-blue' },
   deprecated: { key: 'deprecated', label: '已废弃', cls: 'tag-red' },
 }
 
 export const METRIC_STATUS_TABS = [
   { id: 'all', label: '全部状态' },
   { id: 'draft', label: '草稿' },
-  { id: 'review', label: '评审中' },
+  { id: 'review', label: '待发布' },
   { id: 'active', label: '已启用' },
-  { id: 'version_review', label: '新版本评审' },
+  { id: 'version_review', label: '待发布·变更' },
   { id: 'deprecated', label: '已废弃' },
 ]
 
 export const METRIC_LIFECYCLE_STAGES = [
   { id: 'draft', label: '草稿' },
-  { id: 'review', label: '评审中' },
+  { id: 'review', label: '待发布' },
   { id: 'active', label: '已启用' },
-  { id: 'version_review', label: '新版本评审' },
+  { id: 'version_review', label: '待发布·变更' },
   { id: 'deprecated', label: '已废弃' },
 ]
 
@@ -97,14 +98,14 @@ export function metricStatusMeta(key) {
   return METRIC_STATUS[key] || METRIC_STATUS.draft
 }
 
-/** 当前状态允许的操作 */
+/** 当前状态允许的操作（启用/驳回走申请中心，不在本页直批） */
 export function metricActions(status) {
   return (
     {
-      draft: ['edit', 'submit', 'detail'],
-      review: ['approve', 'reject', 'detail'],
-      active: ['applyQuery', 'applyChange', 'change', 'deprecate', 'detail'],
-      version_review: ['approveVersion', 'cancelChange', 'detail'],
+      draft: ['edit', 'applyPublish', 'detail'],
+      review: ['edit', 'goTicket', 'detail'],
+      active: ['applyQuery', 'applyChange', 'deprecate', 'detail'],
+      version_review: ['goTicket', 'detail'],
       deprecated: ['detail'],
     }[status] || ['detail']
   )

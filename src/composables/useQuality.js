@@ -69,6 +69,7 @@ function normalizeRule(row) {
 
 function buildMetrics(ov) {
   if (!ov) return []
+  const empty = !!ov.empty || Number(ov.runCount ?? 0) === 0
   const avg = Number(ov.avgScore ?? 0)
   const passRate = Number(ov.passRate ?? 0)
   const goldCount = Number(ov.goldCount ?? 0)
@@ -76,22 +77,22 @@ function buildMetrics(ov) {
   return [
     {
       title: '平均质量分',
-      value: String(avg),
-      unit: '分',
-      ringPct: avg,
+      value: empty ? '—' : String(avg),
+      unit: empty ? '' : '分',
+      ringPct: empty ? 0 : avg,
       ringColor: '#00c48c',
-      ringText: `${Math.round(avg)}%`,
-      sub: `规则 ${ov.ruleCount ?? 0} · 运行 ${ov.runCount ?? 0}`,
+      ringText: empty ? '暂无' : `${Math.round(avg)}%`,
+      sub: empty ? '暂无质量运行' : `规则 ${ov.ruleCount ?? 0} · 运行 ${ov.runCount ?? 0}`,
       subSuccess: true,
     },
     {
       title: '规则通过率',
-      value: String(passRate),
-      unit: '%',
-      ringPct: passRate,
+      value: empty ? '—' : String(passRate),
+      unit: empty ? '' : '%',
+      ringPct: empty ? 0 : passRate,
       ringColor: '#1e6fff',
-      ringText: `${Math.round(passRate)}%`,
-      sub: `共执行 ${ov.runCount ?? 0} 次 · 失败 ${ov.failCount ?? 0} 次`,
+      ringText: empty ? '暂无' : `${Math.round(passRate)}%`,
+      sub: empty ? '暂无质量运行' : `共执行 ${ov.runCount ?? 0} 次 · 失败 ${ov.failCount ?? 0} 次`,
       subSuccess: false,
     },
     {

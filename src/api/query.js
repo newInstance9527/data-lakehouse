@@ -155,6 +155,26 @@ export function fetchQueryDatasets(params = {}) {
   })
 }
 
+/** 保存即席脚本到 cp_query_saved */
+export function saveQueryScript(payload) {
+  return http.post(`${Q}/saved`, payload)
+}
+
+export function fetchQueryScripts(params = {}) {
+  return http.get(`${Q}/saved`, {
+    ws: params.ws,
+    limit: params.limit ?? 50,
+  })
+}
+
+export function fetchQueryScript(id) {
+  return http.get(`${Q}/saved/${encodeURIComponent(id)}`)
+}
+
+export function deleteQueryScript(id) {
+  return http.post(`${Q}/saved/${encodeURIComponent(id)}/delete`, {})
+}
+
 /** 即席查询面：白名单 ∩ SHOW CATALOGS */
 export function fetchQuerySurface() {
   return http.get(`${Q}/query-surface`)

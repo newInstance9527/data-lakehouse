@@ -19,6 +19,7 @@ import {
   metricActions,
   metricToFormPayload,
 } from '@/data/metrics'
+import { createApplyTicket, pageMyTickets } from '@/api/apply'
 
 const route = useRoute()
 const router = useRouter()
@@ -50,6 +51,8 @@ const saving = ref(false)
 const trialBusy = ref(false)
 const trialResult = ref(null)
 const trialDt = ref('')
+/** metricCode → 最近发布单 { ticketNo, status, remark } */
+const publishTickets = ref({})
 
 const TYPE_TABS = [
   { id: 'all', label: '全部类型' },
@@ -57,6 +60,15 @@ const TYPE_TABS = [
   { id: '衍生', label: '衍生' },
   { id: '复合', label: '复合' },
 ]
+
+/** 待发布：review / version_review；含驳回后退回草稿待重改 */
+const pendingPublish = computed(() =>
+  catalog.value.filter((r) => {
+    if (r.status === 'review' || r.status === 'version_review') return true
+    const hit = publishTickets.value[r.id]
+    return r.status === 'draft' && hit?.status === 'rejected'
+  }),
+)
 
 const filteredCatalog = computed(() => {
   let rows = catalog.value
@@ -87,15 +99,49 @@ const editing = computed(() => catalog.value.find((r) => r.id === editingId.valu
 const editForm = computed(() => ({
   ...METRIC_CREATE_FORM,
   title: editing.value ? `✎ 编辑指标 · ${editing.value.id}` : '✎ 编辑指标',
-  intro: '仅草稿可改口径定义；已启用请走「变更」进入新版本评审',
+  intro: '仅草稿/待发布可改口径；已启用请走「申请变更」进入待发布·变更',
   submitLabel: '保存修改',
 }))
 
 const editInitial = computed(() => (editing.value ? metricToFormPayload(editing.value) : null))
 
+async function refreshPublishTickets() {
+  try {
+    const page = await pageMyTickets({ current: 1, size: 100, ticketType: 'metric' })
+    const rows = page?.records || page?.rows || []
+    const map = {}
+    for (const t of rows) {
+      let payload = t.payload
+      if (typeof payload === 'string') {
+        try {
+          payload = JSON.parse(payload)
+        } catch {
+          payload = {}
+        }
+      }
+      const code = payload?.metricCode
+      const kind = payload?.metricKind
+      if (!code || kind === 'query') continue
+      const prev = map[code]
+      if (!prev || String(t.createTime || '') >= String(prev.createTime || '')) {
+        map[code] = {
+          ticketNo: t.ticketNo,
+          status: t.status,
+          remark: t.remark || '',
+          createTime: t.createTime,
+          metricKind: kind,
+        }
+      }
+    }
+    publishTickets.value = map
+  } catch {
+    /* 无工单不影响目录 */
+  }
+}
+
 onMounted(async () => {
   try {
-    await Promise.all([loadAll(), warmMetricBindAssets().catch(() => {})])
+    await Promise.all([loadAll(), warmMetricBindAssets().catch(() => {}), refreshPublishTickets()])
     const q = typeof route.query.q === 'string' ? route.query.q.trim() : ''
     if (q) {
       const hit = catalog.value.find((r) => r.id === q || r.name?.includes(q))
@@ -116,7 +162,7 @@ async function onCreateMetric(payload) {
   try {
     const row = await addMetric(enrichMetricBindPayload(payload))
     resetPage()
-    showToast(`✅ 已保存草稿 ${row.id} ${row.name} · 可提交评审`, 'success')
+    showToast(`✅ 已保存草稿 ${row.id} ${row.name} · 可「申请发布」`, 'success')
     createOpen.value = false
     openDetail(row.id)
   } catch (e) {
@@ -169,7 +215,7 @@ async function doTrial() {
 
 function openEdit(row) {
   if (row.status !== 'draft' && row.status !== 'review') {
-    showToast('仅草稿/评审中可直接编辑；已启用请使用「变更」', 'warning')
+    showToast('仅草稿/待发布可直接编辑；已启用请使用「申请变更」', 'warning')
     return
   }
   editingId.value = row.id
@@ -198,8 +244,71 @@ function goApplyMetric(row, kind = 'query') {
   router.push({ path: '/apply', query })
 }
 
-function goApplyCreate() {
-  router.push({ path: '/apply', query: { type: 'metric', kind: 'create' } })
+function goApplyTicket(row) {
+  const hit = publishTickets.value[row.id]
+  router.push({
+    path: '/apply',
+    query: hit?.ticketNo
+      ? { tab: 'metric', ticket: hit.ticketNo }
+      : { tab: 'metric' },
+  })
+}
+
+function pendingStatusLabel(row) {
+  const hit = publishTickets.value[row.id]
+  if (!hit) return row.statusLabel
+  if (hit.status === 'pending') return '待审·待发布'
+  if (hit.status === 'rejected') return '已驳回·待重改'
+  return row.statusLabel
+}
+
+function pendingRejectRemark(row) {
+  const hit = publishTickets.value[row.id]
+  if (hit?.status === 'rejected' && hit.remark) return hit.remark
+  const last = [...(row.history || [])].reverse().find((h) => /驳回|退回/.test(h.note || h.label || ''))
+  return last?.note || ''
+}
+
+/** 草稿 → 申请首次发布；已启用 → 申请口径变更发布 */
+async function submitPublishApply(row, kind = 'create') {
+  if (!row?.id) return
+  saving.value = true
+  try {
+    let caliberDiff = ''
+    if (kind === 'change') {
+      const input = window.prompt('变更说明（新口径摘要）', row.caliber || '')
+      if (input === null) return
+      caliberDiff = input.trim() || row.caliber || ''
+    }
+    const t = await createApplyTicket({
+      ticketType: 'metric',
+      title:
+        kind === 'change'
+          ? `口径变更发布 · ${row.id} · ${row.name || ''}`
+          : `指标发布 · ${row.id} · ${row.name || ''}`,
+      reason:
+        kind === 'change'
+          ? caliberDiff || '口径变更发布审批'
+          : `申请发布指标 ${row.id} ${row.name || ''}`,
+      metricCode: row.id,
+      metricKind: kind,
+      caliberDiff: caliberDiff || undefined,
+      expireLabel: '长期',
+    })
+    const ticketNo = t?.ticketNo || t?.data?.ticketNo || ''
+    await Promise.all([loadAll(), refreshPublishTickets()])
+    showToast(
+      ticketNo
+        ? `已申请发布 ${ticketNo}（待审核）。通过后将自动启用，驳回则按意见重改`
+        : '已提交发布申请，待审核通过后自动启用',
+      'success',
+    )
+    if (detailOpen.value) openDetail(row.id)
+  } catch (e) {
+    showToast(e?.message || '提交发布申请失败', 'warning')
+  } finally {
+    saving.value = false
+  }
 }
 
 async function runAction(row, action) {
@@ -215,32 +324,28 @@ async function runAction(row, action) {
     goApplyMetric(row, 'query')
     return
   }
-  if (action === 'applyChange') {
-    goApplyMetric(row, 'change')
+  if (action === 'applyPublish') {
+    await submitPublishApply(row, 'create')
     return
   }
-  let note = ''
-  if (action === 'change') {
-    const input = window.prompt('变更说明（新口径摘要）', row.caliber)
-    if (input === null) return
-    note = input.trim() || row.caliber
+  if (action === 'applyChange') {
+    await submitPublishApply(row, 'change')
+    return
+  }
+  if (action === 'goTicket') {
+    goApplyTicket(row)
+    return
+  }
+  if (action === 'deprecate') {
+    if (!window.confirm(`确认废弃 ${row.id}？废弃后禁止新引用。`)) return
   }
   saving.value = true
   try {
-    const next = await runTransition(row.id, action, note)
+    const next = await runTransition(row.id, action, '')
     const tips = {
-      submit: `已提交评审 ${row.id}`,
-      approve: `已启用 ${row.id} · 可被报表/API 引用`,
-      reject: `已退回草稿 ${row.id}`,
-      change: `📝 ${row.id} 已进入新版本评审`,
-      approveVersion: `新版本 ${next?.ver || ''} 已启用 ${row.id}`,
-      cancelChange: `已取消变更 ${row.id}`,
       deprecate: `已废弃 ${row.id} · 禁止新引用`,
     }
-    showToast(
-      tips[action] || `状态已更新 ${row.id}`,
-      action === 'deprecate' || action === 'reject' ? 'warning' : 'success',
-    )
+    showToast(tips[action] || `状态已更新 ${row.id}${next?.ver ? ' · ' + next.ver : ''}`, action === 'deprecate' ? 'warning' : 'success')
     if (detailOpen.value) openDetail(row.id)
   } catch (e) {
     showToast(e?.message || '操作失败', 'warning')
@@ -254,22 +359,18 @@ function actionLabel(a) {
     {
       detail: '详情',
       edit: '编辑',
-      submit: '提交评审',
-      approve: '启用',
-      reject: '退回',
+      applyPublish: '申请发布',
+      goTicket: '查看工单',
       applyQuery: '申请权限',
       applyChange: '申请变更',
-      change: 'Owner变更',
-      approveVersion: '通过新版本',
-      cancelChange: '取消变更',
       deprecate: '废弃',
     }[a] || a
   )
 }
 
 function actionClass(a) {
-  if (a === 'deprecate' || a === 'reject') return 'danger'
-  if (a === 'approve' || a === 'approveVersion' || a === 'submit') return 'ok'
+  if (a === 'deprecate') return 'danger'
+  if (a === 'applyPublish' || a === 'applyChange') return 'ok'
   return ''
 }
 
@@ -295,7 +396,7 @@ function stageState(row, stageId) {
 
 async function refresh() {
   try {
-    await loadAll()
+    await Promise.all([loadAll(), refreshPublishTickets()])
     showToast('已刷新指标目录', 'success')
   } catch (e) {
     showToast(e?.message || '刷新失败', 'warning')
@@ -307,13 +408,12 @@ async function refresh() {
   <div class="met-page">
     <PageHeader
       title="指标中心"
-      subtitle="原子 / 衍生 / 复合 · 草稿→评审→启用→变更→废弃 · 数据来自 /lh/metric"
+      subtitle="原子 / 衍生 / 复合 · 草稿→待发布→启用→变更→废弃 · 发布审批对齐申请中心"
       :guide="guide"
     >
       <button type="button" class="btn btn-sm" :disabled="loading || saving" @click="refresh">
         ↻ 刷新
       </button>
-      <button type="button" class="btn btn-sm" @click="goApplyCreate">📋 申请新建</button>
       <button type="button" class="btn btn-sm" @click="goApplyMetric(null, 'query')">
         🔑 申请权限
       </button>
@@ -370,7 +470,7 @@ async function refresh() {
       <div class="card-header">
         <div class="card-title">
           生命周期
-          <span class="tip">· 草稿 → 评审中 → 已启用 → 新版本评审 → 已启用 · 已启用 → 已废弃</span>
+          <span class="tip">· 草稿 → 待发布（申请）→ 已启用 → 待发布·变更 → 已启用 · 已启用 → 已废弃</span>
         </div>
       </div>
       <div class="card-body met-stages">
@@ -379,6 +479,84 @@ async function refresh() {
           <span>{{ s.label }}</span>
           <span v-if="i < METRIC_LIFECYCLE_STAGES.length - 1" class="met-stage-arrow">→</span>
         </div>
+      </div>
+    </div>
+
+    <div class="card met-pending">
+      <div class="card-header">
+        <div class="card-title">
+          待发布
+          <span class="tip">· {{ pendingPublish.length }} 项 · 审核通过后自动启用</span>
+        </div>
+      </div>
+      <div class="card-body" style="padding: 0">
+        <table v-if="pendingPublish.length" class="table met-table">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>指标名</th>
+              <th>状态</th>
+              <th>发布单</th>
+              <th>驳回意见</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="row in pendingPublish" :key="'p-' + row.id" class="met-row warn">
+              <td class="met-id">
+                <button type="button" class="btn-link" @click="openDetail(row.id)">{{ row.id }}</button>
+              </td>
+              <td class="met-name">{{ row.name }}</td>
+              <td>
+                <span class="tag" :class="row.statusCls">{{ pendingStatusLabel(row) }}</span>
+              </td>
+              <td>
+                <code>{{ publishTickets[row.id]?.ticketNo || '—' }}</code>
+              </td>
+              <td class="met-caliber">{{ pendingRejectRemark(row) || '—' }}</td>
+              <td class="met-acts">
+                <button
+                  v-if="row.status === 'review' || row.status === 'draft'"
+                  type="button"
+                  class="btn-link"
+                  :disabled="saving"
+                  @click="openEdit(row)"
+                >
+                  编辑
+                </button>
+                <button
+                  v-if="publishTickets[row.id]"
+                  type="button"
+                  class="btn-link"
+                  @click="goApplyTicket(row)"
+                >
+                  查看工单
+                </button>
+                <button
+                  v-if="publishTickets[row.id]?.status === 'rejected' && row.status === 'draft'"
+                  type="button"
+                  class="btn-link ok"
+                  :disabled="saving"
+                  @click="submitPublishApply(row, 'create')"
+                >
+                  重新申请
+                </button>
+                <button
+                  v-if="row.status === 'review' && !publishTickets[row.id]"
+                  type="button"
+                  class="btn-link ok"
+                  :disabled="saving"
+                  @click="submitPublishApply(row, 'create')"
+                >
+                  申请发布
+                </button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p v-else class="met-pending-empty tip">
+          暂无待发布项。新建/编辑保存为草稿后点「申请发布」；工单待审或驳回重改时会出现在此。
+        </p>
       </div>
     </div>
 
@@ -586,16 +764,8 @@ async function refresh() {
             🔑 申请查询权限
           </button>
           <button
-            v-if="active.status === 'active'"
-            type="button"
-            class="btn btn-sm"
-            @click="goApplyMetric(active, 'change')"
-          >
-            申请口径变更
-          </button>
-          <button
             v-for="a in metricActions(active.status).filter(
-              (x) => x !== 'detail' && x !== 'applyQuery' && x !== 'applyChange',
+              (x) => x !== 'detail' && x !== 'applyQuery',
             )"
             :key="a"
             type="button"
@@ -613,7 +783,7 @@ async function refresh() {
           </button>
         </div>
         <p class="met-apply-hint tip">
-          试跑走 Trino（编译 SQL + 参数绑定）；「申请查询权限 / 口径变更」走申请中心。
+          流程：① 保存草稿 → ② 申请发布 → ③ 待审核 → ④ 通过后<strong>自动启用</strong> / 驳回按意见重改。查询权限另走申请中心。
         </p>
 
         <div v-if="trialResult" class="met-trial-box">
@@ -726,6 +896,16 @@ async function refresh() {
   color: #ad6800;
   background: #fff7e6;
   border-color: #ffd591;
+}
+.met-pending-empty {
+  margin: 0;
+  padding: 16px 18px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+.met-acts .ok {
+  color: var(--success);
+  font-weight: 600;
 }
 .met-sql {
   margin: 0;

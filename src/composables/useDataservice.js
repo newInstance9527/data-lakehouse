@@ -1,5 +1,5 @@
 /**
- * 数据服务中心：治理壳 — SQLREST Manager 构建（SQL/Groovy）+ 门户绑定/APISIX
+ * 数据服务中心：治理壳 — SQLREST Manager 构建（SQL/Groovy）+ 门户绑定 + Gateway
  */
 import { computed, ref } from 'vue'
 import {
@@ -9,6 +9,7 @@ import {
   fetchDataapiEmbedUrl,
   fetchDataapiKeys,
   fetchDataapiOverview,
+  fetchDataapiOpenapi,
   fetchDataapiRoutes,
   fetchDataapiWorkbench,
   fetchListForSqlrest,
@@ -19,10 +20,8 @@ import {
   syncFromSqlrest,
   trialDataapi,
 } from '@/api/dataapi.js'
+import { pageMyTickets } from '@/api/apply.js'
 import {
-  API_CALL_RANK,
-  API_LIST,
-  APISIX_ROUTES,
   DS_KPIS,
   defaultSqlrestEmbed,
 } from '@/data/dataservice'
@@ -30,21 +29,104 @@ import {
 const loaded = ref(false)
 const loading = ref(false)
 const degraded = ref(false)
-const apis = ref(API_LIST.map((a) => ({ ...a })))
-const routes = ref(APISIX_ROUTES.map((r) => ({ ...r })))
-/** SQLREST 客户端；空列表表示接口无数据，不回退演示数据 */
+const apis = ref([])
+const routes = ref([])
+/** 门户订阅 Key（/lh/dataapi/keys） */
 const subs = ref([])
-/** 门户订阅 Key（/lh/dataapi/keys）；空则详情里不展示演示订阅方 */
 const apiKeys = ref([])
+/** 待发布：已保存且有 api_publish 工单、尚未上线（pending / rejected） */
+const pendingPublish = ref([])
 const kpis = ref(DS_KPIS.map((k) => ({ ...k })))
-const callRank = ref(API_CALL_RANK.map((r) => ({ ...r })))
+const callRank = ref([])
+const callTrend = ref([])
 const workbench = ref(null)
 const sqlrestDs = ref([])
 /** 默认对齐部署台账；后端 embedUrl / workbench 成功后覆盖 */
 const embed = ref(defaultSqlrestEmbed())
 
+function parseTicketPayload(raw) {
+  if (!raw) return {}
+  if (typeof raw === 'object') return raw
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return {}
+  }
+}
+
+function mapPendingPublish(tickets, apiList) {
+  const byId = new Map((apiList || []).map((a) => [a.id, a]))
+  const rows = []
+  for (const t of tickets || []) {
+    const status = t.status || 'pending'
+    if (status !== 'pending' && status !== 'rejected') continue
+    const payload = parseTicketPayload(t.payload)
+    const bindingId = payload.apiBindingId || t.apiBindingId
+    const api = bindingId ? byId.get(bindingId) : null
+    const path = payload.publicPath || payload.path || api?.path || t.title || '—'
+    const method = String(payload.method || api?.method || 'GET').toUpperCase()
+    rows.push({
+      id: bindingId || t.id,
+      bindingId: bindingId || '',
+      ticketId: t.id,
+      ticketNo: t.ticketNo || t.id,
+      status,
+      remark: t.remark || '',
+      method,
+      path,
+      name: api?.name || path,
+      state: api?.state || (status === 'pending' ? 'draft' : 'draft'),
+      purpose: t.reason || payload.purpose || '',
+      createTime: t.createTime || '',
+      statusLabel:
+        status === 'pending' ? '待审·待发布' : status === 'rejected' ? '已驳回·待重改' : status,
+      statusCls: status === 'rejected' ? 'tag-red' : 'tag-orange',
+    })
+  }
+  return rows
+}
+
+function mapKeyRow(k) {
+  const hint = k.keyHint || ''
+  const appKey = k.appKey || '—'
+  const maskedKey =
+    appKey && appKey !== '—' && appKey.length > 8
+      ? `${appKey.slice(0, 4)}····${appKey.slice(-4)}`
+      : appKey
+  const statusRaw = k.status || '—'
+  const statusLabel = statusRaw === 'active' ? '有效' : statusRaw === 'pending' ? '待生效' : statusRaw
+  return {
+    id: k.id,
+    name: k.name || k.app || '—',
+    app: k.app || k.name || '—',
+    appKey,
+    appKeyMasked: maskedKey,
+    keyHint: hint,
+    api: k.api || '—',
+    apiName: k.apiName || '',
+    method: k.method || '—',
+    bindingId: k.bindingId || '',
+    user: k.user || k.applicant || '—',
+    applicant: k.applicant || k.user || '—',
+    description: k.description || (k.api ? `${k.api} · ${k.qps || k.qpsLimit || '—'} QPS` : '—'),
+    status: statusLabel,
+    statusRaw,
+    cls: k.cls || (statusRaw === 'active' ? 'tag-green' : 'tag-orange'),
+    qps: k.qps ?? k.qpsLimit ?? '—',
+    ticketId: k.ticketId || '',
+    ticketNo: k.ticketNo || '',
+    expireAt: k.expireAt || '',
+    createTime: k.createTime || '',
+    remark: k.remark || '',
+  }
+}
+
 function mapOverview(ov) {
-  if (!ov) return DS_KPIS.map((k) => ({ ...k }))
+  if (!ov) {
+    return DS_KPIS.map((k) => ({ ...k, value: '—', delta: '未加载' }))
+  }
+  const calls = ov.calls24h
+  const latency = ov.avgLatencyMs
   return [
     {
       label: '门户已发布',
@@ -54,17 +136,20 @@ function mapOverview(ov) {
       deltaCls: '',
     },
     {
+      label: '近 24h 调用',
+      value: calls != null ? String(calls) : '—',
+      unit: '次',
+      delta:
+        latency != null
+          ? `均延迟 ${Math.round(Number(latency))} ms`
+          : ov.callsNote || 'SQLREST overview',
+      deltaCls: '',
+    },
+    {
       label: 'SQLREST 接口',
       value: ov.sqlrestTotal != null ? String(ov.sqlrestTotal) : '—',
       unit: '个',
       delta: ov.sqlrestOnline != null ? `上线 ${ov.sqlrestOnline}` : '来自 Manager',
-      deltaCls: '',
-    },
-    {
-      label: 'SQLREST 数据源',
-      value: ov.sqlrestDatasourceCount != null ? String(ov.sqlrestDatasourceCount) : '—',
-      unit: '个',
-      delta: '投影自数据源中心',
       deltaCls: '',
     },
     {
@@ -78,33 +163,28 @@ function mapOverview(ov) {
 }
 
 function mapTrendToRank(wb) {
-  const top = wb?.topPath?.data
+  const top = wb?.callStats?.topPath || wb?.topPath?.data
   if (Array.isArray(top) && top.length) {
-    const max = Math.max(...top.map((t) => Number(t.total || t.count || 0)), 1)
+    const max = Math.max(...top.map((t) => Number(t.calls || t.total || t.count || 0)), 1)
     return top.slice(0, 8).map((t) => ({
       name: t.path || t.name || '—',
-      calls: String(t.total ?? t.count ?? 0),
-      pct: Math.round(((Number(t.total || t.count || 0) / max) * 100)),
+      calls: String(t.calls ?? t.total ?? t.count ?? 0),
+      pct: Math.round((Number(t.calls || t.total || t.count || 0) / max) * 100),
     }))
   }
-  return API_CALL_RANK.map((r) => ({ ...r }))
+  return []
 }
 
-function mapSqlrestClients(wb) {
-  const raw = wb?.clients?.data
-  if (!Array.isArray(raw)) return []
-  return raw.map((c) => {
-    const expired = c.isExpired === true
-    const forever = c.expireDuration === 'FOR_EVER' || c.expireAt === -1 || c.expireAt === '-1'
-    return {
-      id: c.id,
-      name: c.name || '—',
-      appKey: c.appKey || '—',
-      description: c.description || '—',
-      status: expired ? '已过期' : forever ? '长期有效' : (c.expireAtStr || '有效'),
-      cls: expired ? 'tag-orange' : 'tag-green',
-    }
-  })
+function mapCallTrend(wb) {
+  const trend = wb?.callStats?.trend || wb?.trend?.data
+  if (!Array.isArray(trend) || !trend.length) return []
+  const max = Math.max(...trend.map((t) => Number(t.calls || 0)), 1)
+  return trend.map((t) => ({
+    day: t.day || t.date || '—',
+    calls: Number(t.calls || 0),
+    pct: Math.round((Number(t.calls || 0) / max) * 100),
+    latencyMs: t.latencyMs != null ? Number(t.latencyMs) : null,
+  }))
 }
 
 export function useDataservice() {
@@ -112,7 +192,7 @@ export function useDataservice() {
     if (loaded.value && !force) return
     loading.value = true
     try {
-      const [list, ov, routePack, keyList, wb, dsList, emb] = await Promise.all([
+      const [list, ov, routePack, keyList, wb, dsList, emb, pubTickets] = await Promise.all([
         fetchDataapiApis({}).catch(() => null),
         fetchDataapiOverview().catch(() => null),
         fetchDataapiRoutes().catch(() => null),
@@ -120,6 +200,7 @@ export function useDataservice() {
         fetchDataapiWorkbench().catch(() => null),
         fetchListForSqlrest().catch(() => null),
         fetchDataapiEmbedUrl().catch(() => null),
+        pageMyTickets({ current: 1, size: 100, ticketType: 'api_publish' }).catch(() => null),
       ])
       if (Array.isArray(list)) {
         apis.value = list
@@ -127,7 +208,7 @@ export function useDataservice() {
       } else {
         degraded.value = true
       }
-      if (ov) kpis.value = mapOverview(ov)
+      kpis.value = mapOverview(ov)
       if (routePack?.bindings?.length) {
         routes.value = routePack.bindings
       } else if (routePack?.apisix?.length) {
@@ -142,15 +223,16 @@ export function useDataservice() {
           note: r.id || '',
         }))
       }
-      apiKeys.value = Array.isArray(keyList) ? keyList : []
+      apiKeys.value = Array.isArray(keyList) ? keyList.map(mapKeyRow) : []
       if (wb) {
         workbench.value = wb
         callRank.value = mapTrendToRank(wb)
-        subs.value = mapSqlrestClients(wb)
+        callTrend.value = mapCallTrend(wb)
         if (wb.embed) embed.value = { ...defaultSqlrestEmbed(), ...wb.embed }
-      } else {
-        subs.value = []
       }
+      subs.value = apiKeys.value
+      const ticketRows = pubTickets?.records || pubTickets?.rows || (Array.isArray(pubTickets) ? pubTickets : [])
+      pendingPublish.value = mapPendingPublish(ticketRows, apis.value)
       if (emb) embed.value = { ...defaultSqlrestEmbed(), ...(embed.value || {}), ...emb }
       // 后端未返回时仍保留部署台账默认地址，避免「未配置」
       if (!embed.value?.sqlrest) embed.value = defaultSqlrestEmbed()
@@ -267,6 +349,19 @@ export function useDataservice() {
     return url || null
   }
 
+  async function exportOpenapi({ id, filename } = {}) {
+    const doc = await fetchDataapiOpenapi({ id })
+    if (!doc || typeof doc !== 'object') throw new Error('OpenAPI 为空')
+    const blob = new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename || (id ? `openapi-${id}.json` : `openapi-dataapi-${Date.now()}.json`)
+    a.click()
+    URL.revokeObjectURL(url)
+    return doc
+  }
+
   return {
     loaded: computed(() => loaded.value),
     loading: computed(() => loading.value),
@@ -275,8 +370,10 @@ export function useDataservice() {
     routes,
     subs,
     apiKeys,
+    pendingPublish,
     kpis,
     callRank,
+    callTrend,
     workbench,
     sqlrestDs,
     embed,
@@ -289,5 +386,6 @@ export function useDataservice() {
     runProjectDs,
     runRegister,
     openManager,
+    exportOpenapi,
   }
 }

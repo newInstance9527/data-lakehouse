@@ -64,7 +64,7 @@ function submit() {
         <div class="modal-hd">
           <div>
             <div class="modal-title">登记绑定</div>
-            <div class="tip">在 SQLREST Manager 用 SQL/Groovy 构建后，到此登记资产绑定并发布 APISIX</div>
+            <div class="tip">在 SQLREST Manager 用 SQL/Groovy 构建后，到此登记资产绑定并经 Gateway 发布</div>
           </div>
           <button type="button" class="btn btn-sm" @click="emit('close')">✕</button>
         </div>

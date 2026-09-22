@@ -79,6 +79,14 @@ export function gatewayProbe(payload) {
   return http.post(`${BASE}/gatewayProbe`, payload)
 }
 
+export function fetchDataapiCallStats(days = 7) {
+  return http.get(`${BASE}/callStats`, { days })
+}
+
+export function fetchDataapiOpenapi({ ws, id } = {}) {
+  return http.get(`${BASE}/openapi.json`, { ws, id })
+}
+
 export function fetchListForSqlrest() {
   return http.get(`${DS}/listForSqlrest`)
 }

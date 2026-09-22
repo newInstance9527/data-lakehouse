@@ -9,6 +9,7 @@ import { fetchDatasourceKpi, fetchDatasourcePage } from '@/api/datasource'
 import { fetchEtlDags, fetchEtlRuns } from '@/api/etl'
 import { fetchLineageFields } from '@/api/lineage'
 import { fetchMetricOverview } from '@/api/metric'
+import { fetchDataapiOverview } from '@/api/dataapi.js'
 import { fetchQualityGold, fetchQualityOverview, fetchQualityTrend } from '@/api/quality'
 import { fetchStdNamings, fetchStdOverview } from '@/api/standard'
 import { layerMeta } from '@/data/assetMeta'
@@ -51,6 +52,7 @@ export function useOverview() {
   const dsStats = ref({ total: 0, online: 0, warn: 0, paused: 0, types: 0, healthPct: 0 })
   const assetStats = ref({
     total: 0,
+    sampleSize: 0,
     byLayer: {},
     gold: 0,
     sensitive: 0,
@@ -105,6 +107,15 @@ export function useOverview() {
     composite: 0,
     active: 0,
   })
+  const serviceStats = ref({
+    calls24h: null,
+    avgLatencyMs: null,
+    published: 0,
+    draft: 0,
+    sqlrestOnline: null,
+    sqlrestTotal: null,
+    loaded: false,
+  })
 
   /** 无真实后端/统计能力的区块 */
   const availability = computed(() => ({
@@ -117,9 +128,8 @@ export function useOverview() {
     standard: true,
     apply: true,
     metrics: true,
-    /** 数据服务 API 列表/调用量无后端 */
-    serviceCalls: false,
-    apiPublish: false,
+    serviceCalls: serviceStats.value.loaded,
+    apiPublish: serviceStats.value.loaded,
   }))
 
   async function loadAll(rangeKey = range.value) {
@@ -142,6 +152,7 @@ export function useOverview() {
         pagePendingTickets({ current: 1, size: 1 }),
         pageMyTickets({ current: 1, size: 1 }),
         fetchMetricOverview(),
+        fetchDataapiOverview().catch(() => null),
       ])
 
       const val = (i) => (results[i].status === 'fulfilled' ? results[i].value : null)
@@ -208,6 +219,7 @@ export function useOverview() {
       })
       assetStats.value = {
         total: pageTotal(assetPage) || assets.length,
+        sampleSize: assets.length,
         byLayer,
         gold,
         sensitive,
@@ -348,6 +360,30 @@ export function useOverview() {
         }
       }
 
+      // 数据服务 overview（含 callStats 富化）
+      const dsOv = val(14)
+      if (dsOv) {
+        serviceStats.value = {
+          calls24h: dsOv.calls24h != null ? Number(dsOv.calls24h) : null,
+          avgLatencyMs: dsOv.avgLatencyMs != null ? Number(dsOv.avgLatencyMs) : null,
+          published: Number(dsOv.publishedApis ?? 0),
+          draft: Number(dsOv.draftApis ?? 0),
+          sqlrestOnline: dsOv.sqlrestOnline != null ? Number(dsOv.sqlrestOnline) : null,
+          sqlrestTotal: dsOv.sqlrestTotal != null ? Number(dsOv.sqlrestTotal) : null,
+          loaded: true,
+        }
+      } else {
+        serviceStats.value = {
+          calls24h: null,
+          avgLatencyMs: null,
+          published: 0,
+          draft: 0,
+          sqlrestOnline: null,
+          sqlrestTotal: null,
+          loaded: false,
+        }
+      }
+
       loaded.value = true
     } catch (e) {
       lastError.value = e
@@ -380,6 +416,7 @@ export function useOverview() {
     lineageStats,
     applyStats,
     metricStats,
+    serviceStats,
     availability,
     loadAll,
     refresh,

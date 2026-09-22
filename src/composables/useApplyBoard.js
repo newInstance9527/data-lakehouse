@@ -38,15 +38,21 @@ export function mapServerTicket(t, sideHint) {
   const isExport = t.ticketType === 'lake_export' || t.ticketType === 'export'
   const isOps = t.ticketType === 'resource_manage' || t.ticketType === 'manage'
   const isApiPublish = t.ticketType === 'api_publish' || t.ticketType === 'publish_api'
+  const isApiSubscribe = t.ticketType === 'api_subscribe' || t.ticketType === 'subscribe'
+  const isMetric = t.ticketType === 'metric' || t.ticketType === 'metric_publish'
   const type = isExport
     ? 'export'
     : isOps
       ? 'ops'
       : isApiPublish
-        ? 'publish'
-        : t.ticketType === 'table_read'
-          ? 'perm'
-          : t.ticketType || 'perm'
+        ? 'api_publish'
+        : isApiSubscribe
+          ? 'api'
+          : isMetric
+            ? 'metric'
+            : t.ticketType === 'table_read'
+              ? 'perm'
+              : t.ticketType || 'perm'
   const status = t.status || sideHint || 'pending'
   const side = status === 'approved' ? 'approved' : status === 'rejected' ? 'rejected' : 'pending'
   const tableLabel = payload.exportTable || payload.assetCode || t.title || t.ticketNo
@@ -55,6 +61,7 @@ export function mapServerTicket(t, sideHint) {
   const purposeText = t.reason || payload.purpose || ''
   const ticketNo = t.ticketNo || t.id
   const id = t.id || ticketNo
+  const rejectRemark = t.remark || ''
 
   if (type === 'export') {
     const base = {
@@ -153,7 +160,7 @@ export function mapServerTicket(t, sideHint) {
     }
   }
 
-  if (type === 'publish') {
+  if (type === 'api_publish') {
     const path = payload.publicPath || payload.path || t.title || ticketNo
     const method = String(payload.method || 'GET').toUpperCase()
     return {
@@ -161,36 +168,191 @@ export function mapServerTicket(t, sideHint) {
       serverId: t.id,
       fromServer: true,
       ticketNo,
-      type: 'publish',
+      type: 'api_publish',
       side,
       apiBindingId: payload.apiBindingId,
       apiPath: path,
       method,
       purpose: purposeText,
       expire: expireLabel,
+      remark: rejectRemark,
       applicant: t.applicant || '我',
       titleHtml:
         side === 'approved'
-          ? `<span class="tag tag-green">已通过</span> API 发布 ${method} ${path} · ${ticketNo}`
-          : `<span class="tag tag-purple">发布</span> API ${method} ${path}`,
-      statusTag: side === 'pending' ? '待 API Owner' : side === 'approved' ? '可发布' : '已驳回',
-      statusCls: side === 'approved' ? 'tag-green' : 'tag-orange',
+          ? `<span class="tag tag-green">API 发布</span> 已上线 ${method} ${path} · ${ticketNo}`
+          : side === 'rejected'
+            ? `<span class="tag tag-red">API 发布</span> 已驳回 ${method} ${path} · ${ticketNo}`
+            : `<span class="tag tag-purple">API 发布</span> ${method} ${path}`,
+      statusTag: side === 'pending' ? '待审核·通过后自动发布' : side === 'approved' ? '已自动发布' : '已驳回·请重改',
+      statusCls: side === 'approved' ? 'tag-green' : side === 'rejected' ? 'tag-red' : 'tag-orange',
       time: t.createTime || nowLabel(),
       desc:
-        purposeText ||
-        `api_publish · 绑定 ${payload.apiBindingId || '—'} · 单号 ${ticketNo}（填回工作台发布门禁）`,
+        side === 'rejected'
+          ? `驳回意见：${rejectRemark || '请修改后重新申请发布'} · 单号 ${ticketNo}`
+          : side === 'approved'
+            ? `API 发布申请已通过并自动上线 · 单号 ${ticketNo}`
+            : purposeText ||
+              `API 发布申请 · 待审核通过后自动发布 · 绑定 ${payload.apiBindingId || '—'} · ${ticketNo}`,
+      timeline:
+        side === 'approved'
+          ? [
+              { label: '✓ 保存/申请发布', cls: 'done' },
+              { label: '✓ 审核通过', cls: 'done' },
+              { label: '✓ 自动发布', cls: 'done' },
+              { label: '✓ 可调用', cls: 'done' },
+            ]
+          : side === 'rejected'
+            ? [
+                { label: '✓ 申请发布', cls: 'done' },
+                { label: '✗ 退回重改', cls: 'done' },
+                { label: '改后重提', cls: 'current' },
+              ]
+            : [
+                { label: '✓ 申请发布', cls: 'done' },
+                { label: '● 待审核', cls: 'current' },
+                { label: '自动发布', cls: '' },
+                { label: '可调用', cls: '' },
+              ],
+    }
+  }
+
+  if (type === 'api') {
+    const path = payload.publicPath || payload.path || t.title || ticketNo
+    const app = payload.consumerName || t.applicant || '应用'
+    const qps = payload.qps || 100
+    return {
+      id,
+      serverId: t.id,
+      fromServer: true,
+      ticketNo,
+      type: 'api',
+      side,
+      apiBindingId: payload.apiBindingId,
+      apiPath: path,
+      app,
+      qps,
+      purpose: purposeText,
+      expire: expireLabel,
+      remark: rejectRemark,
+      applicant: t.applicant || '我',
+      titleHtml:
+        side === 'approved'
+          ? `<span class="tag tag-green">API 调用</span> ${app} · ${path} · ${ticketNo}`
+          : side === 'rejected'
+            ? `<span class="tag tag-red">API 调用</span> 已驳回 ${app} · ${path}`
+            : `<span class="tag tag-blue">API 调用</span> ${app} 申请 ${path}`,
+      statusTag: side === 'pending' ? '待审核·通过后签发 Key' : side === 'approved' ? '已签发调用 Key' : '已驳回·请重改',
+      statusCls: side === 'approved' ? 'tag-green' : side === 'rejected' ? 'tag-red' : 'tag-orange',
+      time: t.createTime || nowLabel(),
+      desc:
+        side === 'rejected'
+          ? `驳回意见：${rejectRemark || '请修改后重提'} · 单号 ${ticketNo}`
+          : purposeText || `API 调用申请 · 应用 ${app} · ${qps} QPS · 时效 ${expireLabel} · ${ticketNo}`,
       timeline:
         side === 'approved'
           ? [
               { label: '✓ 提交', cls: 'done' },
               { label: '✓ API Owner', cls: 'done' },
-              { label: `✓ ${ticketNo}`, cls: 'done' },
+              { label: '✓ 签发令牌', cls: 'done' },
+              { label: '✓ Gateway', cls: 'done' },
             ]
-          : [
-              { label: '✓ 提交', cls: 'done' },
-              { label: '● API Owner', cls: 'current' },
-              { label: '工作台发布', cls: '' },
-            ],
+          : side === 'rejected'
+            ? [
+                { label: '✓ 提交', cls: 'done' },
+                { label: '✗ 已驳回', cls: 'done' },
+                { label: '改后重提', cls: 'current' },
+              ]
+            : [
+                { label: '✓ 提交', cls: 'done' },
+                { label: '● API Owner', cls: 'current' },
+                { label: '签发令牌', cls: '' },
+                { label: 'Gateway 生效', cls: '' },
+              ],
+    }
+  }
+
+  if (type === 'metric') {
+    const metricKind = payload.metricKind || 'query'
+    const metricId = payload.metricCode || payload.metricId || '—'
+    const metricName = payload.metricName || ''
+    const kindTag =
+      metricKind === 'create' ? '指标发布' : metricKind === 'change' ? '口径变更' : '指标权限'
+    const isPublish = metricKind === 'create' || metricKind === 'change'
+    return {
+      id,
+      serverId: t.id,
+      fromServer: true,
+      ticketNo,
+      type: 'metric',
+      side,
+      metricKind,
+      metricId,
+      metricName,
+      purpose: purposeText,
+      expire: expireLabel,
+      remark: rejectRemark,
+      caliberDiff: payload.caliberDiff || '',
+      applicant: t.applicant || '我',
+      titleHtml:
+        side === 'approved'
+          ? `<span class="tag tag-green">${kindTag}</span> ${metricId} ${metricName} · ${ticketNo}`
+          : side === 'rejected'
+            ? `<span class="tag tag-red">${kindTag}</span> 已驳回 ${metricId} · ${ticketNo}`
+            : `<span class="tag tag-blue">${kindTag}</span> ${metricId} ${metricName}`,
+      statusTag: side === 'pending'
+        ? isPublish
+          ? '待审核·通过后自动启用'
+          : '待指标 Owner'
+        : side === 'approved'
+          ? isPublish
+            ? '已自动启用'
+            : '已授权'
+          : '已驳回·请重改',
+      statusCls: side === 'approved' ? 'tag-green' : side === 'rejected' ? 'tag-red' : 'tag-orange',
+      time: t.createTime || nowLabel(),
+      desc:
+        side === 'rejected'
+          ? `驳回意见：${rejectRemark || '请修改后重新申请发布'} · 单号 ${ticketNo}`
+          : side === 'approved'
+            ? isPublish
+              ? `指标发布申请已通过并自动启用 · 单号 ${ticketNo}`
+              : `指标查询权限已通过 · 单号 ${ticketNo}`
+            : purposeText ||
+              (isPublish
+                ? `指标发布申请 · 待审核通过后自动启用 · ${metricId} · ${ticketNo}`
+                : `指标查询权限 · ${metricId} · ${ticketNo}`),
+      timeline:
+        side === 'approved'
+          ? isPublish
+            ? [
+                { label: '✓ 保存/申请发布', cls: 'done' },
+                { label: '✓ 审核通过', cls: 'done' },
+                { label: '✓ 自动启用', cls: 'done' },
+                { label: '✓ 可引用', cls: 'done' },
+              ]
+            : [
+                { label: '✓ 提交', cls: 'done' },
+                { label: '✓ 指标 Owner', cls: 'done' },
+                { label: '✓ 已授权', cls: 'done' },
+              ]
+          : side === 'rejected'
+            ? [
+                { label: '✓ 申请发布', cls: 'done' },
+                { label: '✗ 退回重改', cls: 'done' },
+                { label: '改后重提', cls: 'current' },
+              ]
+            : isPublish
+              ? [
+                  { label: '✓ 申请发布', cls: 'done' },
+                  { label: '● 待审核', cls: 'current' },
+                  { label: '自动启用', cls: '' },
+                  { label: '可引用', cls: '' },
+                ]
+              : [
+                  { label: '✓ 提交', cls: 'done' },
+                  { label: '● 指标 Owner', cls: 'current' },
+                  { label: '写入授权', cls: '' },
+                ],
     }
   }
 
@@ -206,17 +368,23 @@ export function mapServerTicket(t, sideHint) {
     asset: assetLabel,
     purpose: purposeText,
     expire: expireLabel,
+    remark: rejectRemark,
     columns: payload.columns || '',
     permMode: payload.privilege === 'SELECT' ? 'read' : payload.privilege || 'read',
     applicant: t.applicant || '我',
     titleHtml:
       side === 'approved'
         ? `<span class="tag tag-green">已通过</span> ${assetLabel} · 表读权限`
-        : `<span class="tag tag-orange">处理中</span> 我申请 ${assetLabel} 读权限`,
-    statusTag: side === 'pending' ? '待 Owner' : side === 'approved' ? '已授权' : '已驳回',
-    statusCls: side === 'approved' ? 'tag-green' : 'tag-orange',
+        : side === 'rejected'
+          ? `<span class="tag tag-red">已驳回</span> ${assetLabel} · 表读权限`
+          : `<span class="tag tag-orange">处理中</span> 我申请 ${assetLabel} 读权限`,
+    statusTag: side === 'pending' ? '待 Owner' : side === 'approved' ? '已授权' : '已驳回·请重改',
+    statusCls: side === 'approved' ? 'tag-green' : side === 'rejected' ? 'tag-red' : 'tag-orange',
     time: t.createTime || nowLabel(),
-    desc: purposeText || t.title,
+    desc:
+      side === 'rejected'
+        ? `驳回意见：${rejectRemark || '请修改后重提'} · 单号 ${ticketNo}`
+        : purposeText || t.title,
     timeline:
       side === 'approved'
         ? [
@@ -224,11 +392,17 @@ export function mapServerTicket(t, sideHint) {
             { label: '✓ 审批', cls: 'done' },
             { label: '✓ sec_auth_grant', cls: 'done' },
           ]
-        : [
-            { label: '✓ 提交', cls: 'done' },
-            { label: '● 审批中', cls: 'current' },
-            { label: '写 grant', cls: '' },
-          ],
+        : side === 'rejected'
+          ? [
+              { label: '✓ 提交', cls: 'done' },
+              { label: '✗ 已驳回', cls: 'done' },
+              { label: '改后重提', cls: 'current' },
+            ]
+          : [
+              { label: '✓ 提交', cls: 'done' },
+              { label: '● 审批中', cls: 'current' },
+              { label: '写 grant', cls: '' },
+            ],
   }
 }
 

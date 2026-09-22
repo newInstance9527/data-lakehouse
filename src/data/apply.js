@@ -1,13 +1,14 @@
 /** 申请中心 · 对齐演示 HTML */
 
+/** 申请中心 KPI 骨架（无演示数字；页面用真实工单统计覆盖） */
 export const APPLY_KPIS = [
   {
     icon: '⏳',
     color: 'orange',
     label: '待我审批',
-    value: '5',
+    value: '—',
     unit: '单',
-    trend: '1 单机密需加签',
+    trend: '加载中…',
     trendUp: false,
     trendWarn: true,
   },
@@ -15,27 +16,27 @@ export const APPLY_KPIS = [
     icon: '📝',
     color: 'blue',
     label: '我申请的',
-    value: '12',
+    value: '—',
     unit: '单',
-    trend: '↑ 2 处理中',
+    trend: '',
     trendUp: true,
   },
   {
     icon: '✅',
     color: 'green',
-    label: '本月已通过',
-    value: '48',
+    label: '本页已通过',
+    value: '—',
     unit: '单',
-    trend: '↑ 平均耗时 4.2h',
+    trend: '来自「我的申请」列表',
     trendUp: true,
   },
   {
     icon: '❌',
     color: 'red',
-    label: '本月驳回',
-    value: '6',
+    label: '本页驳回',
+    value: '—',
     unit: '单',
-    trend: '用途不规范为主',
+    trend: '来自「我的申请」列表',
     trendUp: false,
   },
 ]
@@ -46,8 +47,9 @@ export const APPLY_TABS = [
   { id: 'ops', label: '🛡 操作权限' },
   { id: 'table', label: '📚 表申请' },
   { id: 'export', label: '📤 出湖申请' },
-  { id: 'publish', label: '🚀 发布审批' },
-  { id: 'api', label: '🔌 API申请' },
+  { id: 'api_publish', label: '🚀 API 发布' },
+  { id: 'api', label: '🔑 API 调用' },
+  { id: 'publish', label: '📦 发布包' },
   { id: 'metric', label: '📊 指标申请' },
 ]
 
@@ -56,8 +58,9 @@ export const APPLY_TYPE_OPTIONS = [
   { value: 'manage', label: '🛡 操作权限申请' },
   { value: 'table', label: '📚 表申请' },
   { value: 'export', label: '📤 出湖申请' },
-  { value: 'publish', label: '🚀 发布审批' },
-  { value: 'api', label: '🔌 API 申请' },
+  { value: 'api_publish', label: '🚀 API 发布申请' },
+  { value: 'api', label: '🔑 API 调用申请' },
+  { value: 'publish', label: '📦 发布包审批' },
   { value: 'metric', label: '📊 指标申请' },
 ]
 
@@ -164,11 +167,11 @@ export function tableKindLabel(kind) {
   return APPLY_TABLE_KINDS.find((k) => k.value === kind)?.label || kind || '表申请'
 }
 
-/** 指标申请子类型 */
+/** 指标申请子类型（create/change = 发布流，对齐 API；query = 权限） */
 export const APPLY_METRIC_KINDS = [
   { value: 'query', label: '查询权限', tip: '看板 / 即席 / API 引用已启用指标' },
-  { value: 'change', label: '口径变更', tip: '提交新版本口径，经指标委员会评审' },
-  { value: 'create', label: '新建指标', tip: '申请立项新建原子/衍生/复合指标' },
+  { value: 'change', label: '口径变更发布', tip: '从指标中心发起；通过后自动启用新版本' },
+  { value: 'create', label: '指标发布', tip: '从指标中心保存草稿后申请；通过后自动启用' },
 ]
 
 export const APPLY_METRIC_SCOPES = [
@@ -250,5 +253,6 @@ export const APPLY_MINE = []
 
 export function applyTabMatches(cardType, tabId) {
   if (tabId === 'all') return true
+  if (tabId === 'ops') return cardType === 'ops' || cardType === 'manage'
   return cardType === tabId
 }

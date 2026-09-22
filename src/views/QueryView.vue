@@ -15,11 +15,14 @@ import {
   explainQuery,
   exportQueryAudit,
   fetchQueryHistory,
+  fetchQueryScripts,
   fetchSchemaTree,
   fetchTableColumns,
   formatScanBytes,
   saveQueryDataset,
+  saveQueryScript,
 } from '@/api/query'
+import { useSession } from '@/composables/useSession'
 import {
   QUERY_CATALOG,
   QUERY_HISTORY,
@@ -28,6 +31,7 @@ import {
 } from '@/data/query'
 
 const { showToast } = useToast()
+const { currentWs } = useSession()
 const guide = pageGuideOf('query')
 const route = useRoute()
 const router = useRouter()
@@ -38,12 +42,14 @@ const catalogDegraded = ref(false)
 const catalogQuery = ref('')
 const catWidth = ref(Number(localStorage.getItem('lh.query.catWidth')) || 300)
 const catResizing = ref(false)
+const savedScripts = ref([])
 function blankQueryTab() {
   return {
     id: 'tab_query_1',
     name: '查询 1',
     closable: true,
     sql: '',
+    savedId: '',
   }
 }
 
@@ -367,8 +373,12 @@ watch(
 )
 
 onMounted(async () => {
-  await Promise.all([loadSchemaTree(), loadHistory()])
+  await Promise.all([loadSchemaTree(), loadHistory(), loadSavedScripts()])
   applyDeepLink()
+})
+
+watch(currentWs, () => {
+  loadSavedScripts()
 })
 
 function onCatResizeStart(e) {
@@ -608,14 +618,55 @@ function onSaveAsDevelopDraft() {
 function onSaveSql() {
   const tab = activeTab.value
   if (!tab) return
-  if (/^unsaved_/i.test(tab.name) || tab.name.startsWith('untitled') || tab.name.startsWith('draft_')) {
-    const suggested = `query_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}.sql`
-    const name = window.prompt('保存脚本名称', suggested)
-    if (!name) return
-    tab.name = name.endsWith('.sql') ? name : `${name}.sql`
+  const sql = String(sqlText.value || '').trim()
+  if (!sql) {
+    showToast('当前无 SQL 可保存', 'warning')
+    return
   }
-  tab.savedAt = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
-  showToast(`已保存脚本 ${tab.name}`, 'success')
+  let name = tab.name
+  if (/^unsaved_/i.test(name) || name.startsWith('untitled') || name.startsWith('draft_') || /^查询\s*\d+$/.test(name)) {
+    const suggested = `query_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}.sql`
+    const input = window.prompt('保存脚本名称', suggested)
+    if (!input) return
+    name = input.endsWith('.sql') ? input : `${input}.sql`
+  }
+  saveQueryScript({
+    id: tab.savedId || undefined,
+    name,
+    ws: currentWs.value || 'default',
+    sql,
+    engine: 'trino',
+  })
+    .then((row) => {
+      tab.name = row?.name || name
+      tab.savedId = row?.id || tab.savedId
+      tab.savedAt = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+      showToast(row?.message || `已保存脚本 ${tab.name}`, 'success')
+      return loadSavedScripts()
+    })
+    .catch((e) => showToast(e?.message || '保存脚本失败', 'warning'))
+}
+
+async function loadSavedScripts() {
+  try {
+    savedScripts.value = (await fetchQueryScripts({ ws: currentWs.value || 'default', limit: 30 })) || []
+  } catch {
+    savedScripts.value = []
+  }
+}
+
+function openSavedScript(row) {
+  if (!row?.sql) return
+  const id = `tab_saved_${row.id || Date.now()}`
+  tabs.value.push({
+    id,
+    name: row.name || 'saved.sql',
+    closable: true,
+    sql: row.sql,
+    savedId: row.id || '',
+  })
+  activeTabId.value = id
+  showToast(`已打开 ${row.name}`, 'success')
 }
 
 function summarize(sql) {
@@ -1252,6 +1303,39 @@ function cellClass(col, row) {
             </table>
           </div>
         </div>
+
+        <section class="card">
+          <div class="card-header">
+            <div class="card-title">已保存脚本 {{ savedScripts.length }}</div>
+            <button type="button" class="btn btn-sm" @click="loadSavedScripts">刷新</button>
+          </div>
+          <div class="card-body" style="padding: 0; overflow: auto">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>名称</th>
+                  <th>摘要</th>
+                  <th>更新</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-if="!savedScripts.length">
+                  <td colspan="3" class="empty">暂无保存脚本 · 点「保存脚本」写入 cp_query_saved</td>
+                </tr>
+                <tr
+                  v-for="s in savedScripts"
+                  :key="s.id"
+                  class="hist-row"
+                  @click="openSavedScript(s)"
+                >
+                  <td>{{ s.name }}</td>
+                  <td><code>{{ s.sqlSummary || '—' }}</code></td>
+                  <td>{{ s.updateTime || '—' }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
 
         <section class="card">
           <div class="card-header">

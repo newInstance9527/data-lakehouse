@@ -233,6 +233,21 @@ async function onSubmitPublish() {
   }
 }
 
+function onOpenQueryValidate() {
+  const sql = String(sqlText.value || '').trim()
+  if (!sql) {
+    showToast('当前无 SQL 可送即席校验', 'warning')
+    return
+  }
+  router.push({
+    path: '/query',
+    query: {
+      sql,
+      name: activeFile.value?.name || '',
+    },
+  })
+}
+
 async function onNewScript() {
   const folderNode = tree.value.find((n) => n.type === 'folder' && n.open) || tree.value.find((n) => n.type === 'folder')
   const name = `untitled_${new Date().toISOString().slice(11, 19).replace(/:/g, '')}.sql`
@@ -331,6 +346,7 @@ onMounted(async () => {
       :guide="guide"
     >
       <button class="btn btn-sm" @click="onSave">💾 自动保存</button>
+      <button class="btn btn-sm" :disabled="!sqlText.trim()" @click="onOpenQueryValidate">🔍 打开即席校验</button>
       <button class="btn btn-sm" :disabled="trialing" @click="onTrialRun">
         {{ trialing ? '试跑中…' : `▶ 试跑(${engineLabel} · ${env})` }}
       </button>

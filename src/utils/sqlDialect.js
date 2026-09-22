@@ -12,7 +12,7 @@ const MYSQL = {
   functions: ['IFNULL', 'GROUP_CONCAT', 'DATE_FORMAT', 'DATE_ADD', 'DATE_SUB', 'UNIX_TIMESTAMP', 'FROM_UNIXTIME'],
   types: ['MEDIUMINT', 'LONGTEXT', 'MEDIUMTEXT', 'TINYTEXT', 'DATETIME', 'JSON', 'ENUM', 'SET'],
   completes: [{ caption: 'LIMIT', insert: 'LIMIT 100' }],
-  sample: 'SELECT * FROM `table` LIMIT 100;',
+  sample: 'SELECT * FROM `table`',
 }
 
 const POSTGRESQL = {
@@ -24,7 +24,7 @@ const POSTGRESQL = {
   functions: ['COALESCE', 'NULLIF', 'STRING_AGG', 'NOW', 'DATE_TRUNC', 'AGE', 'GREATEST', 'LEAST'],
   types: ['INT2', 'INT4', 'INT8', 'SERIAL', 'BIGSERIAL', 'JSONB', 'UUID', 'TIMESTAMPTZ', 'TEXT', 'BOOLEAN', 'NUMERIC'],
   completes: [{ caption: 'LIMIT', insert: 'LIMIT 100' }, { caption: 'ILIKE', insert: 'ILIKE' }],
-  sample: 'SELECT * FROM "table" LIMIT 100;',
+  sample: 'SELECT * FROM "table"',
 }
 
 const ORACLE = {
@@ -60,7 +60,7 @@ const CLICKHOUSE = {
   functions: ['toDate', 'toDateTime', 'toString', 'ifNull', 'arrayJoin', 'uniq', 'countIf'],
   types: ['INT8', 'INT16', 'INT32', 'INT64', 'UINT8', 'UINT16', 'UINT32', 'UINT64', 'FLOAT32', 'FLOAT64', 'STRING', 'DATETIME64', 'ARRAY', 'NULLABLE'],
   completes: [{ caption: 'LIMIT', insert: 'LIMIT 100' }, { caption: 'PREWHERE', insert: 'PREWHERE' }],
-  sample: 'SELECT * FROM `table` LIMIT 100;',
+  sample: 'SELECT * FROM `table`',
 }
 
 const HIVE = {
@@ -72,7 +72,7 @@ const HIVE = {
   functions: ['NVL', 'COALESCE', 'FROM_UNIXTIME', 'UNIX_TIMESTAMP', 'GET_JSON_OBJECT'],
   types: ['STRING', 'BIGINT', 'ARRAY', 'MAP', 'STRUCT', 'TIMESTAMP'],
   completes: [{ caption: 'LIMIT', insert: 'LIMIT 100' }],
-  sample: 'SELECT * FROM `table` LIMIT 100;',
+  sample: 'SELECT * FROM `table`',
 }
 
 const TRINO = {
@@ -84,7 +84,7 @@ const TRINO = {
   functions: ['DATE_TRUNC', 'FROM_UNIXTIME', 'JSON_EXTRACT'],
   types: ['VARCHAR', 'BIGINT', 'DOUBLE', 'TIMESTAMP', 'ARRAY', 'MAP', 'ROW'],
   completes: [{ caption: 'LIMIT', insert: 'LIMIT 100' }],
-  sample: 'SELECT * FROM "table" LIMIT 100;',
+  sample: 'SELECT * FROM "table"',
 }
 
 const ANSI = {
@@ -110,7 +110,7 @@ const SQLITE = {
   functions: [],
   types: [],
   completes: [{ caption: 'LIMIT', insert: 'LIMIT 100' }],
-  sample: 'SELECT * FROM "table" LIMIT 100;',
+  sample: 'SELECT * FROM "table"',
 }
 
 const TDENGINE = {
@@ -123,7 +123,7 @@ const TDENGINE = {
   functions: [],
   types: [],
   completes: [{ caption: 'LIMIT', insert: 'LIMIT 100' }],
-  sample: 'SELECT * FROM `table` LIMIT 100;',
+  sample: 'SELECT * FROM `table`',
 }
 
 const NON_SQL = {
@@ -150,7 +150,7 @@ const UNKNOWN = {
   functions: [],
   types: [],
   completes: [{ caption: 'LIMIT', insert: 'LIMIT 100' }],
-  sample: 'SELECT * FROM table LIMIT 100;',
+  sample: 'SELECT * FROM table',
 }
 const PROFILES = [MYSQL, POSTGRESQL, ORACLE, SQLSERVER, CLICKHOUSE, HIVE, TRINO, ANSI, SQLITE, TDENGINE, NON_SQL, UNKNOWN]
 
@@ -224,4 +224,50 @@ export function quoteQualified(schema, name, dialect) {
   const s = String(schema || '').trim()
   if (!s) return id
   return `${quoteIdent(s, dialect)}.${id}`
+}
+
+/** PostgreSQL 系（含 openGauss / Kingbase / Greenplum / Redshift） */
+export function isPostgresFamily(dialect) {
+  if (!dialect) return false
+  if (dialect.id === 'postgresql') return true
+  return String(dialect.family || '') === 'PostgreSQL'
+}
+
+/**
+ * PG 下 concat/LIKE 中的裸 #{x} 无法推断 JDBC 类型。
+ * 仅当语句含 concat( 或 LIKE/ILIKE，且存在未加 ::cast 的占位符时为 true。
+ */
+export function sqlNeedsPgParamTextCast(sql) {
+  const s = String(sql || '')
+  if (!/\bconcat\s*\(/i.test(s) && !/\bi?like\b/i.test(s)) return false
+  return /#\{[a-zA-Z_][\w.]*\}(?!::)/.test(s)
+}
+
+/** 对 concat/LIKE 场景中的裸 #{name} 追加 ::text（已有 :: 的不动） */
+export function applyPgParamTextCasts(sql) {
+  if (!sqlNeedsPgParamTextCast(sql)) return String(sql || '')
+  return String(sql || '').replace(/#\{([a-zA-Z_][\w.]*)\}(?!::)/g, '#{$1}::text')
+}
+
+/**
+ * SQLREST 对 SELECT 自动追加 LIMIT ? OFFSET ?。
+ * 发往 debug/build 前去掉尾部分号与末尾 LIMIT[/OFFSET]，避免 PG「syntax error at or near LIMIT Position: 2」。
+ */
+export function normalizeSqlContext(sql) {
+  let s = String(sql || '').trim()
+  while (s.endsWith(';')) {
+    s = s.slice(0, -1).trim()
+  }
+  s = s.replace(
+    /\s+LIMIT\s+(?:\d+|\?|#\{[\w.]+\}(?:::\w+)?)(?:\s+OFFSET\s+(?:\d+|\?|#\{[\w.]+\}(?:::\w+)?))?\s*$/i,
+    '',
+  )
+  return s.trim()
+}
+
+/** 是否含会被 SQLREST 自动分页撞上的尾部 LIMIT（规范化前） */
+export function sqlHasTrailingLimit(sql) {
+  const raw = String(sql || '').trim()
+  if (!raw) return false
+  return normalizeSqlContext(raw) !== raw.replace(/;+\s*$/, '').trim()
 }

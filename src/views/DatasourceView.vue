@@ -38,7 +38,38 @@ const {
   batchSync: apiBatchSync,
   ensureTables,
   removeSource,
+  projectSqlrest,
 } = useDatasources()
+
+function sqlrestBadge(s) {
+  if (!s?.sqlrestProjectable) return null
+  if (s.sqlrestProjected || s.sqlrestSyncState === 'synced') {
+    return { tag: 'tag-green', label: 'SQLREST✓', title: `已投影 #${s.sqlrestDatasourceId || ''}` }
+  }
+  if (s.sqlrestSyncState === 'error') {
+    return { tag: 'tag-red', label: '投影失败', title: s.sqlrestLastError || 'SQLREST 投影失败，可重试' }
+  }
+  return { tag: 'tag-orange', label: '待投影', title: '尚未投影到 SQLREST' }
+}
+
+async function retrySqlrest(s) {
+  if (!s?.id) return
+  try {
+    const r = await projectSqlrest([s.id])
+    const err = Number(r?.errors || 0)
+    const ok = Number(r?.projected || 0)
+    showToast(
+      err > 0
+        ? `投影失败 ${err} · 成功 ${ok}：${r?.details?.[0]?.message || s.sqlrestLastError || ''}`
+        : `已投影到 SQLREST · ${ok}`,
+      err > 0 ? 'warning' : 'success',
+    )
+    await loadSources()
+    if (current.value?.id === s.id) current.value = getSource(s.id)
+  } catch (e) {
+    showToast(`投影失败：${e?.message || e}`, 'error')
+  }
+}
 
 function goApplyManageDs(s) {
   if (!s) return
@@ -459,6 +490,15 @@ function goPage(p) {
                   </div>
                   <span class="tag" :class="statusMeta(s.status).tag">{{ statusMeta(s.status).label }}</span>
                 </div>
+                <div v-if="sqlrestBadge(s)" class="ds-card-sqlrest" :title="sqlrestBadge(s).title">
+                  <span class="tag" :class="sqlrestBadge(s).tag">{{ sqlrestBadge(s).label }}</span>
+                  <button
+                    v-if="sqlrestBadge(s).label !== 'SQLREST✓' && canEditDatasource(s)"
+                    type="button"
+                    class="btn-link btn-sm"
+                    @click.stop="retrySqlrest(s)"
+                  >重试投影</button>
+                </div>
                 <div class="ds-card-endpoint" :title="endpointOf(s)">{{ endpointOf(s) }}</div>
                 <div class="ds-card-schema">
                   <button
@@ -638,3 +678,13 @@ function goPage(p) {
     />
   </div>
 </template>
+
+<style scoped>
+.ds-card-sqlrest {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 12px 8px;
+  flex-wrap: wrap;
+}
+</style>

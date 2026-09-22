@@ -34,6 +34,8 @@ const suggestOpen = ref(false)
 const suggestIndex = ref(0)
 const suggestHits = ref([])
 let suggestSpan = { start: 0, end: 0 }
+/** 失焦后仍记住选区，供元数据树双击插入 */
+const savedSel = ref({ start: 0, end: 0 })
 
 const SQL_SUGGESTS = [
   { caption: 'SELECT', insert: 'SELECT' },
@@ -109,8 +111,75 @@ function enterEdit() {
 }
 
 function leaveEdit() {
+  rememberSel()
   editing.value = false
 }
+
+function rememberSel() {
+  const el = taRef.value
+  if (!el) return
+  const len = String(props.modelValue || '').length
+  const start = Number.isFinite(el.selectionStart) ? el.selectionStart : len
+  const end = Number.isFinite(el.selectionEnd) ? el.selectionEnd : start
+  savedSel.value = {
+    start: Math.max(0, Math.min(start, len)),
+    end: Math.max(0, Math.min(end, len)),
+  }
+}
+
+function placeCaret(pos) {
+  const el = taRef.value
+  if (!el) return
+  el.focus()
+  const max = el.value != null ? el.value.length : String(props.modelValue || '').length
+  const p = Math.max(0, Math.min(pos, max))
+  el.selectionStart = el.selectionEnd = p
+  savedSel.value = { start: p, end: p }
+}
+
+/**
+ * 在当前光标/选区插入文本；编辑器未聚焦时用上次记住的选区。
+ * @param {string} text
+ * @param {{ wrapSpace?: boolean }} [opts]
+ */
+function insertText(text, opts = {}) {
+  if (text == null || text === '') return
+  let chunk = String(text)
+  if (props.readonly) return
+  if (!editing.value) {
+    editing.value = true
+  }
+  nextTick(() => {
+    const el = taRef.value
+    const v = String(props.modelValue || '')
+    let start
+    let end
+    // 失焦后浏览器常把 selection 置 0，必须用 blur 时保存的选区
+    if (el && document.activeElement === el) {
+      start = el.selectionStart
+      end = el.selectionEnd
+    } else {
+      start = savedSel.value.start
+      end = savedSel.value.end
+    }
+    start = Math.max(0, Math.min(start ?? v.length, v.length))
+    end = Math.max(0, Math.min(end ?? start, v.length))
+    if (opts.wrapSpace) {
+      const left = v.slice(0, start)
+      const right = v.slice(end)
+      const needL = left.length && !/\s$/.test(left)
+      const needR = right.length && !/^\s/.test(right)
+      chunk = `${needL ? ' ' : ''}${chunk}${needR ? ' ' : ''}`
+    }
+    const next = `${v.slice(0, start)}${chunk}${v.slice(end)}`
+    emit('update:modelValue', next)
+    const caret = start + chunk.length
+    savedSel.value = { start: caret, end: caret }
+    nextTick(() => placeCaret(caret))
+  })
+}
+
+defineExpose({ insertText, enterEdit, focus: () => taRef.value?.focus() })
 
 function onFormat() {
   const next = isGroovy.value ? formatGroovy(props.modelValue) : formatSql(props.modelValue)
@@ -311,6 +380,28 @@ function onAreaInput(e) {
   refreshSuggest(value, e.target.selectionStart, false)
 }
 
+function normalizeSuggest(s) {
+  if (typeof s === 'string') return { caption: s, insert: s }
+  return { caption: s.caption || s.insert, insert: s.insert || s.caption }
+}
+
+/** 越小越优先：前缀 / 列名段 / 包含 */
+function suggestRank(item, q) {
+  const cap = String(item.caption || '').toLowerCase()
+  if (!cap) return -1
+  if (cap === q) return 0
+  if (cap.startsWith(q)) return 1
+  const dot = cap.lastIndexOf('.')
+  if (dot >= 0) {
+    const col = cap.slice(dot + 1)
+    if (col === q || col.startsWith(q)) return 2
+  }
+  if (cap.includes(q)) return 3
+  const ins = String(item.insert || '').toLowerCase()
+  if (ins.includes(q)) return 4
+  return -1
+}
+
 function refreshSuggest(value, caret, force) {
   const left = String(value || '').slice(0, caret ?? 0)
   const m = left.match(/[A-Za-z_\u4e00-\u9fa5][\w.]*$/)
@@ -319,19 +410,38 @@ function refreshSuggest(value, caret, force) {
     return
   }
   const q = m[0].toLowerCase()
-  const extra = (props.suggests || []).map((s) =>
-    typeof s === 'string' ? { caption: s, insert: s } : { caption: s.caption || s.insert, insert: s.insert || s.caption },
-  )
+  const extra = (props.suggests || []).map(normalizeSuggest)
   const dialectHits = isGroovy.value
     ? []
     : [
         ...(sqlDialect.value.keywords || []).map((k) => ({ caption: k, insert: k })),
         ...(sqlDialect.value.completes || []),
       ]
-  const pool = [...(isGroovy.value ? GROOVY_SUGGESTS : SQL_SUGGESTS), ...dialectHits, ...extra]
-  const hits = pool
-    .filter((item) => item.caption && item.caption.toLowerCase().includes(q))
-    .slice(0, 8)
+  const builtins = isGroovy.value ? GROOVY_SUGGESTS : SQL_SUGGESTS
+  // 表/列（extra）优先于关键字，避免被 SELECT/FROM 等占满前几项
+  const scored = []
+  const seen = new Set()
+  for (const [group, meta] of [
+    [extra, true],
+    [dialectHits, false],
+    [builtins, false],
+  ]) {
+    for (const item of group) {
+      if (!item?.caption) continue
+      const rank = suggestRank(item, q)
+      if (rank < 0) continue
+      const key = `${item.caption}\0${item.insert}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      scored.push({ item, rank, meta })
+    }
+  }
+  scored.sort((a, b) => {
+    if (a.meta !== b.meta) return a.meta ? -1 : 1
+    if (a.rank !== b.rank) return a.rank - b.rank
+    return String(a.item.caption).localeCompare(String(b.item.caption))
+  })
+  const hits = scored.slice(0, 12).map((x) => x.item)
   suggestSpan = { start: caret - m[0].length, end: caret }
   suggestHits.value = hits
   suggestIndex.value = 0
@@ -345,6 +455,7 @@ function applySuggest(item) {
   emit('update:modelValue', next)
   suggestOpen.value = false
   const caret = suggestSpan.start + item.insert.length
+  savedSel.value = { start: caret, end: caret }
   nextTick(() => {
     const el = taRef.value
     if (!el) return
@@ -416,6 +527,10 @@ function onEditScroll(e) {
           @input="onAreaInput"
           @keydown="onKeydown"
           @scroll="onEditScroll"
+          @click="rememberSel"
+          @keyup="rememberSel"
+          @select="rememberSel"
+          @blur="rememberSel"
         />
         <ul v-if="suggestOpen" class="sql-suggest">
           <li
@@ -430,7 +545,7 @@ function onEditScroll(e) {
       </div>
     </div>
 
-    <div v-if="editing" class="sql-edit-tip">Tab 缩进 · Ctrl+Shift+F 格式化 · Esc / Ctrl+Enter 完成编辑 · 支持 &#123;&#123;param&#125;&#125; / #{param}</div>
+    <div v-if="editing" class="sql-edit-tip">输入表/列名可自动补全 · Ctrl+Space 强制补全 · Tab 缩进 · Ctrl+Shift+F 格式化 · Esc / Ctrl+Enter 完成 · 支持 &#123;&#123;param&#125;&#125; / #{param}</div>
   </div>
 </template>
 

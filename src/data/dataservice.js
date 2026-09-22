@@ -23,32 +23,32 @@ export function defaultSqlrestEmbed(root = SQLREST_MANAGER_URL, gateway = SQLRES
 
 export const DS_KPIS = [
   {
-    label: '已发布 API',
-    value: '28',
+    label: '门户已发布',
+    value: '—',
     unit: '个',
-    delta: '↑ 4 本周新增',
+    delta: '加载中…',
     deltaCls: '',
   },
   {
-    label: '近 24h 调用量',
-    value: '2,834,921',
-    unit: '',
-    delta: 'SLA 99.94%',
-    deltaCls: 'success',
+    label: '近 24h 调用',
+    value: '—',
+    unit: '次',
+    delta: '',
+    deltaCls: '',
   },
   {
-    label: '平均延迟',
-    value: '86',
-    unit: 'ms',
-    delta: 'P99 312 ms',
+    label: 'SQLREST 接口',
+    value: '—',
+    unit: '个',
+    delta: '',
     deltaCls: '',
   },
   {
     label: '活动订阅方',
-    value: '73',
+    value: '—',
     unit: '个',
-    delta: '7 个待审批',
-    deltaCls: 'warn',
+    delta: '',
+    deltaCls: '',
   },
 ]
 

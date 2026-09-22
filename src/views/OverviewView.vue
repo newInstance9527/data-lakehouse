@@ -25,6 +25,7 @@ const {
   lineageStats,
   applyStats,
   metricStats,
+  serviceStats,
   availability,
   refresh: reloadOverview,
 } = useOverview()
@@ -129,12 +130,12 @@ const kpiCards = computed(() => {
     },
     {
       ...meta.quality,
-      value: String(q.avg),
-      unit: '分',
-      sub: `通过率 ${q.passRate}% · 阻断 ${q.blocked}`,
-      meter: q.avg,
-      meterLabel: '均分',
-      tone: q.blocked || q.low ? 'warn' : 'ok',
+      value: q.runCount > 0 ? String(q.avg) : '—',
+      unit: q.runCount > 0 ? '分' : '',
+      sub: q.runCount > 0 ? `通过率 ${q.passRate}% · 阻断 ${q.blocked}` : '暂无质量运行',
+      meter: q.runCount > 0 ? q.avg : 0,
+      meterLabel: q.runCount > 0 ? '均分' : '暂无',
+      tone: q.runCount > 0 && (q.blocked || q.low) ? 'warn' : 'ok',
       spark: qSpark,
     },
   ]
@@ -497,7 +498,10 @@ const rangeLabel = computed(() => {
         <header class="ov-hd">
           <div>
             <h3>资产分层</h3>
-            <p>表数量对比</p>
+            <p>
+              当前页抽样 {{ assetStats.sampleSize || 0 }} 张
+              <template v-if="assetStats.total"> · 总量 {{ assetStats.total }}</template>
+            </p>
           </div>
           <button type="button" class="ov-link" @click="go('/catalog')">详情</button>
         </header>
@@ -533,7 +537,7 @@ const rangeLabel = computed(() => {
         <header class="ov-hd">
           <div>
             <h3>质量分桶</h3>
-            <p>表质量分布</p>
+            <p>客户端分桶（资产页质量分 / 黄金榜）</p>
           </div>
           <button type="button" class="ov-link" @click="go('/quality')">详情</button>
         </header>
@@ -700,19 +704,47 @@ const rangeLabel = computed(() => {
         <header class="ov-hd">
           <div>
             <h3>数据服务 / 指标</h3>
-            <p>{{ availability.metrics ? '指标来自 /lh/metric' : '尚未接入治理统计' }}</p>
+            <p>
+              {{
+                availability.serviceCalls
+                  ? '服务来自 /lh/dataapi/overview · 指标来自 /lh/metric'
+                  : availability.metrics
+                    ? '指标来自 /lh/metric'
+                    : '尚未接入治理统计'
+              }}
+            </p>
           </div>
+          <button v-if="availability.serviceCalls" type="button" class="ov-link" @click="go('/dataservice')">详情</button>
         </header>
         <div class="ov-na-grid">
-          <div class="ov-na">
+          <div class="ov-na" :class="{ clickable: availability.serviceCalls }" @click="availability.serviceCalls && go('/dataservice')">
             <b>服务调用量</b>
-            <span>暂无</span>
-            <small>数据服务：SQLREST 构建 / APISIX 发布</small>
+            <template v-if="availability.serviceCalls">
+              <span>{{ serviceStats.calls24h != null ? serviceStats.calls24h : '—' }}</span>
+              <small>
+                近窗调用
+                <template v-if="serviceStats.avgLatencyMs != null"> · 均延迟 {{ Math.round(serviceStats.avgLatencyMs) }} ms</template>
+              </small>
+            </template>
+            <template v-else>
+              <span>暂无</span>
+              <small>数据服务 overview 未返回</small>
+            </template>
           </div>
-          <div class="ov-na">
+          <div class="ov-na" :class="{ clickable: availability.apiPublish }" @click="availability.apiPublish && go('/dataservice')">
             <b>API 发布状态</b>
-            <span>暂无</span>
-            <small>无后端 API 生命周期统计</small>
+            <template v-if="availability.apiPublish">
+              <span>{{ serviceStats.published }}</span>
+              <small>
+                已发布
+                <template v-if="serviceStats.draft"> · 草稿 {{ serviceStats.draft }}</template>
+                <template v-if="serviceStats.sqlrestOnline != null"> · SQLREST 上线 {{ serviceStats.sqlrestOnline }}</template>
+              </small>
+            </template>
+            <template v-else>
+              <span>暂无</span>
+              <small>无后端 API 生命周期统计</small>
+            </template>
           </div>
           <div class="ov-na" :class="{ clickable: availability.metrics }" @click="availability.metrics && go('/metrics')">
             <b>指标构成</b>
@@ -730,7 +762,7 @@ const rangeLabel = computed(() => {
           </div>
         </div>
         <p v-if="!availability.serviceCalls" class="ov-na-hint">
-          数据服务调用量仍待接入；指标目录已可在「指标中心」查看与维护。
+          数据服务调用量待 overview 可用；指标目录已可在「指标中心」查看与维护。
         </p>
       </section>
     </div>
