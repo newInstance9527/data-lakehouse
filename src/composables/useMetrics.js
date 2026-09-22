@@ -8,6 +8,7 @@ import {
   fetchMetricDetail,
   fetchMetricList,
   fetchMetricOverview,
+  materializeMetric,
   queryMetric,
   trialMetric,
   transitionMetric,
@@ -202,6 +203,10 @@ export function useMetrics() {
     return trialMetric(code, payload)
   }
 
+  async function runMaterialize(code, payload = {}) {
+    return materializeMetric(code, payload)
+  }
+
   const liveKpis = computed(() => {
     const ov = overview.value
     const all = catalog.value
@@ -210,6 +215,8 @@ export function useMetrics() {
     const derive = ov?.deriveCount ?? all.filter((r) => r.type === '衍生').length
     const composite = ov?.compositeCount ?? all.filter((r) => r.type === '复合').length
     const enabled = ov?.activeCount ?? all.filter((r) => r.status === 'active').length
+    const matOk = ov?.materializeReconOk
+    const matBlocked = ov?.materializeBlocked
     return [
       {
         icon: '📊',
@@ -248,13 +255,16 @@ export function useMetrics() {
         trendUp: true,
       },
       {
-        icon: '✅',
-        color: 'green',
+        icon: matBlocked > 0 ? '⚠️' : '✅',
+        color: matBlocked > 0 ? 'orange' : 'green',
         value: String(enabled),
         unit: '个',
         label: '已启用',
-        trend: '可被报表 / API 引用',
-        trendUp: true,
+        trend:
+          matOk != null
+            ? `看板就绪物化 ${matOk} · 未对账 ${matBlocked ?? 0}`
+            : '可被报表 / API 引用',
+        trendUp: !(matBlocked > 0),
       },
     ]
   })
@@ -277,5 +287,6 @@ export function useMetrics() {
     runCompile,
     runQuery,
     runTrial,
+    runMaterialize,
   }
 }

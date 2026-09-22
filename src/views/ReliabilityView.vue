@@ -1,8 +1,10 @@
 <script setup>
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
 import { useToast } from '@/composables/useToast'
 import { pageGuideOf } from '@/data/pageGuides'
+import { fetchMetricBoard, fetchReconPartition, runReconPartition } from '@/api/metric'
 import {
   COMPACTION_TABLES,
   HA_COMPONENTS,
@@ -19,6 +21,90 @@ import {
 const router = useRouter()
 const { showToast } = useToast()
 const guide = pageGuideOf('reliability')
+
+const reconRows = ref([])
+const reconSummary = ref({ passCount: 0, failCount: 0 })
+const boardCards = ref([])
+const boardReady = ref(0)
+const boardBlocked = ref(0)
+const reconLoading = ref(false)
+
+const liveHistory = computed(() => {
+  if (!reconRows.value.length) return REL_RECONCILE_HISTORY
+  return reconRows.value.map((r) => {
+    const lake = r.lakeMetric?.rows ?? '—'
+    const ck = r.ckMetric?.rows ?? '—'
+    const ok = r.pass || r.status === 'pass'
+    return {
+      time: formatCheckedAt(r.checkedAt),
+      table: r.ckTable || r.lakeTable || r.metricCode || '—',
+      rule: '分区对账',
+      diff: ok ? '0' : String(r.diffRatio ?? 'fail'),
+      ok,
+      drillDetail: [
+        `metric=${r.metricCode || '—'}`,
+        `partition=${r.partitionKey}`,
+        `Iceberg rows=${lake}`,
+        `ClickHouse rows=${ck}`,
+        `status=${r.status}`,
+        r.traceId ? `trace=${r.traceId}` : '',
+      ]
+        .filter(Boolean)
+        .join('\n'),
+    }
+  })
+})
+
+const delistHint = computed(() => {
+  const fails = boardCards.value.filter((c) => !c.ready)
+  if (!fails.length) {
+    return { title: '当前无摘牌指标', desc: '核心看板分区对账均通过', tone: 'ok' }
+  }
+  const first = fails[0]
+  return {
+    title: `数据未就绪：${first.metricCode}`,
+    desc: first.reason || '分区对账未通过，禁止进核心看板热路径',
+    tone: 'warn',
+  }
+})
+
+function formatCheckedAt(t) {
+  if (!t) return '—'
+  if (typeof t === 'string') return t.length > 16 ? t.slice(0, 16).replace('T', ' ') : t
+  try {
+    return new Date(t).toISOString().slice(0, 16).replace('T', ' ')
+  } catch {
+    return String(t)
+  }
+}
+
+async function loadReconBoard() {
+  reconLoading.value = true
+  try {
+    const [recon, board] = await Promise.all([
+      fetchReconPartition({ limit: 30 }).catch(() => null),
+      fetchMetricBoard().catch(() => null),
+    ])
+    if (recon) {
+      reconRows.value = recon.records || []
+      reconSummary.value = {
+        passCount: recon.passCount ?? 0,
+        failCount: recon.failCount ?? 0,
+      }
+    }
+    if (board) {
+      boardCards.value = board.cards || []
+      boardReady.value = board.readyCount ?? 0
+      boardBlocked.value = board.blockedCount ?? 0
+    }
+  } finally {
+    reconLoading.value = false
+  }
+}
+
+onMounted(() => {
+  loadReconBoard()
+})
 
 function degradeDrill() {
   showToast('🎭 Gravitino 降级演练 · 模拟 Catalog 挂 → 只读缓存 → 验证查询不中断', 'info')
@@ -40,8 +126,15 @@ function newReconcileRule() {
   showToast('＋ 新建对账规则（演示）· 选表 → 规则类型 → 阈值 → 绑 DS 作业', 'info')
 }
 
-function rerunReconcile() {
-  showToast('↻ 重跑对账已提交 · job.reconcile.gmv.amt · 以 Iceberg 为准重导 CK', 'success')
+async function rerunReconcile() {
+  try {
+    const code = boardCards.value.find((c) => c.metricCode)?.metricCode || 'M-0001'
+    await runReconPartition({ metricCode: code })
+    showToast(`↻ 已登记分区对账 · ${code}`, 'success')
+    await loadReconBoard()
+  } catch (e) {
+    showToast(e?.message || '对账登记失败', 'warning')
+  }
 }
 
 function drillDiff(row) {
@@ -228,7 +321,7 @@ function forceReimport() {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="(h, i) in REL_RECONCILE_HISTORY" :key="i">
+          <tr v-for="(h, i) in liveHistory" :key="i">
                 <td style="font-size: 11px">{{ h.time }}</td>
                 <td><code>{{ h.table }}</code></td>
                 <td>{{ h.rule }}</td>
@@ -256,7 +349,9 @@ function forceReimport() {
       <div class="card rel-delist-card">
         <div class="card-header">
           <div class="card-title">🚦 摘牌与恢复闭环 · §33.3 <span class="tip">· 以 Iceberg 为准</span></div>
-          <span class="tag tag-red">1 表摘牌中</span>
+          <span class="tag" :class="boardBlocked > 0 ? 'tag-red' : 'tag-green'">
+            {{ reconLoading ? '…' : boardBlocked > 0 ? `${boardBlocked} 未就绪` : '全部就绪' }}
+          </span>
         </div>
         <div class="card-body rel-delist-body">
           <div class="flow-chain rel-flow">
@@ -272,17 +367,19 @@ function forceReimport() {
             </template>
           </div>
           <div class="rel-delist-alert">
-            <div class="rel-delist-title">当前摘牌：ads_gmv_board</div>
-            <div class="rel-delist-desc">
-              原因：金额差异 1,248 元 · 重导作业 job.reconcile.gmv.amt 执行中（预计 8min）
-            </div>
+            <div class="rel-delist-title">{{ delistHint.title }}</div>
+            <div class="rel-delist-desc">{{ delistHint.desc }}</div>
             <div class="rel-delist-hint">
-              看板已显示「数据未就绪」· 连续 3 次失败将升级 P0 + 人工介入
+              看板就绪 {{ boardReady }} · 阻断 {{ boardBlocked }} · 近窗对账 pass
+              {{ reconSummary.passCount }} / fail {{ reconSummary.failCount }}
             </div>
           </div>
           <div style="margin-top: 8px">
             <button type="button" class="btn btn-sm btn-primary" @click="forceReimport">
               🔧 强制重导 CK
+            </button>
+            <button type="button" class="btn btn-sm" style="margin-left: 6px" @click="rerunReconcile">
+              ↻ 重跑对账
             </button>
           </div>
         </div>

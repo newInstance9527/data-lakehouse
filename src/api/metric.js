@@ -66,6 +66,26 @@ export function rerunMetricSample(ws) {
   return http.post(`${M}/anomaly/rerun`, null, { params: { ws } })
 }
 
+export function fetchMetricBoard(ws) {
+  return http.get(`${M}/board`, { ws })
+}
+
+export function fetchMetricMaterialize(code, ws) {
+  return http.get(`${M}/${encodeURIComponent(code)}/materialize`, { ws })
+}
+
+export function materializeMetric(code, payload = {}) {
+  return http.post(`${M}/${encodeURIComponent(code)}/materialize`, payload)
+}
+
+export function fetchReconPartition({ metricCode, status, limit } = {}) {
+  return http.get('/lh/recon/partition', { metricCode, status, limit })
+}
+
+export function runReconPartition(payload = {}) {
+  return http.post('/lh/recon/partition/run', payload)
+}
+
 function toUpsertBody(payload = {}) {
   return {
     metricCode: payload.metricCode || payload.id,

@@ -38,6 +38,7 @@ const {
   saveMetric,
   runTransition,
   runTrial,
+  runMaterialize,
 } = useMetrics()
 
 const { currentWs, wsScope, listWs, setScope } = useWsListScope()
@@ -226,6 +227,24 @@ async function doTrial() {
     showToast(e?.message || '试跑失败', 'warning')
   } finally {
     trialBusy.value = false
+  }
+}
+
+async function doMaterialize() {
+  const row = active.value
+  if (!row) return
+  if (row.status !== 'active' && row.status !== 'review') {
+    showToast('仅待发布/已启用可登记物化', 'warning')
+    return
+  }
+  try {
+    const res = await runMaterialize(row.id, { engine: 'clickhouse', launch: true })
+    showToast(
+      `物化已登记 · job_ref=${res?.jobRef || '—'} · recon_ok=${res?.reconOk ? 1 : 0}`,
+      res?.launch?.degraded ? 'warning' : 'success',
+    )
+  } catch (e) {
+    showToast(e?.message || '物化登记失败', 'warning')
   }
 }
 
@@ -783,6 +802,15 @@ async function refresh() {
             @click="doTrial"
           >
             {{ trialBusy ? '试跑中…' : '▶ 试跑 Trino' }}
+          </button>
+          <button
+            v-if="active.status === 'active' || active.status === 'review'"
+            type="button"
+            class="btn btn-sm"
+            :disabled="saving"
+            @click="doMaterialize"
+          >
+            📦 物化作业
           </button>
           <label class="met-trial-dt tip">
             dt
