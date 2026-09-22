@@ -19,6 +19,7 @@ import {
   holdDelRequest,
   releaseDelHold,
   restrictDelRequest,
+  revealDelSubjectPlain,
   scheduleDelRequest,
   submitDelRequest,
   upsertDelSubjectMap,
@@ -266,6 +267,16 @@ export function useCompliance() {
     return evidence.value
   }
 
+  /** 二次授权查看明文；不刷新列表（避免详情默认带回明文） */
+  async function revealSubjectPlain({ reqId, confirmReqNo, reason } = {}) {
+    actionBusy.value = true
+    try {
+      return await revealDelSubjectPlain({ reqId, confirmReqNo, reason })
+    } finally {
+      actionBusy.value = false
+    }
+  }
+
   async function loadSubjectMaps(filters = {}) {
     subjectMaps.value = await fetchDelSubjectMaps(filters)
     return subjectMaps.value
@@ -318,6 +329,7 @@ export function useCompliance() {
     release,
     abort,
     loadEvidence,
+    revealSubjectPlain,
     loadSubjectMaps,
     saveSubjectMap,
   }

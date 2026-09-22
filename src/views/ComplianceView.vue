@@ -51,6 +51,7 @@ const {
   loadEvidence,
   loadSubjectMaps,
   saveSubjectMap,
+  revealSubjectPlain,
 } = useCompliance()
 
 const view = ref('requests')
@@ -67,6 +68,14 @@ const excludeReason = ref('')
 const restrictReason = ref('法定保存期未届满')
 const holdReason = ref('')
 const abortReason = ref('')
+
+/** 明文二次授权弹窗 */
+const revealOpen = ref(false)
+const revealConfirmNo = ref('')
+const revealReason = ref('')
+const revealPlain = ref('')
+const revealError = ref('')
+const revealAt = ref('')
 
 const filtered = computed(() => {
   const s = query.value.trim().toLowerCase()
@@ -147,9 +156,57 @@ async function show(reqId) {
     drawerTab.value = 'overview'
     confirmNo.value = ''
     excludeId.value = ''
+    closeReveal()
     detailOpen.value = true
   } catch (e) {
     showToast(`详情读取失败：${e.message}`, 'warning')
+  }
+}
+
+function openReveal() {
+  if (!detail.value) return
+  revealConfirmNo.value = ''
+  revealReason.value = ''
+  revealPlain.value = ''
+  revealError.value = ''
+  revealAt.value = ''
+  revealOpen.value = true
+}
+
+function closeReveal() {
+  revealOpen.value = false
+  revealPlain.value = ''
+  revealError.value = ''
+  revealConfirmNo.value = ''
+  revealReason.value = ''
+  revealAt.value = ''
+}
+
+async function doReveal() {
+  if (!detail.value) return
+  revealError.value = ''
+  if (revealConfirmNo.value.trim() !== detail.value.reqNo) {
+    revealError.value = `请回填请求号 ${detail.value.reqNo}`
+    return
+  }
+  if (revealReason.value.trim().length < 4) {
+    revealError.value = '请填写查看用途（至少 4 字）'
+    return
+  }
+  try {
+    const res = await revealSubjectPlain({
+      reqId: detail.value.id,
+      confirmReqNo: revealConfirmNo.value.trim(),
+      reason: revealReason.value.trim(),
+    })
+    revealPlain.value = res?.subjectId || ''
+    revealAt.value = fmt(res?.revealedAt)
+    showToast('已二次授权并写审计（明文仅本次展示）', 'success')
+    // 刷新详情以带上 subject.reveal 流水
+    await openDetail(detail.value.id).catch(() => {})
+  } catch (e) {
+    revealError.value = e?.message || String(e)
+    showToast(`✕ ${revealError.value}`, 'warning')
   }
 }
 
@@ -548,7 +605,10 @@ function exportList() {
             </div>
             <div class="cp-drawer-sub">
               {{ detail.reqTypeLabel }} · <code class="cp-mask">{{ detail.subjectMasked }}</code>
-              <span class="tip"> · 明文仅在 Vault，库内只存 HMAC</span>
+              <button type="button" class="btn-link" :disabled="actionBusy || degraded" @click="openReveal">
+                查看明文
+              </button>
+              <span class="tip"> · 明文仅在 Vault，库内只存 HMAC；查看须二次授权</span>
             </div>
           </div>
           <button type="button" class="btn btn-sm" @click="detailOpen = false">关闭</button>
@@ -825,6 +885,65 @@ function exportList() {
         </div>
       </div>
     </AppDrawer>
+
+    <Teleport to="body">
+      <div v-if="revealOpen" class="modal-mask" @click.self="closeReveal">
+        <div class="modal cp-reveal-modal" role="dialog" aria-modal="true" aria-labelledby="cp-reveal-title">
+          <div class="modal-header">
+            <div>
+              <div id="cp-reveal-title" class="modal-title">查看主体 ID 明文</div>
+              <div class="modal-sub">须二次授权：回填请求号 + 用途；写入审计流水，明文不落库</div>
+            </div>
+            <button type="button" class="btn btn-sm" :disabled="actionBusy" @click="closeReveal">✕</button>
+          </div>
+          <div class="modal-body">
+            <div class="cp-kv-row">
+              <span>当前掩码</span>
+              <div><code class="cp-mask">{{ detail?.subjectMasked || '—' }}</code></div>
+            </div>
+            <label class="form-field">
+              <span class="form-label">回填请求号</span>
+              <input
+                v-model="revealConfirmNo"
+                class="input"
+                type="text"
+                autocomplete="off"
+                :placeholder="detail?.reqNo || 'DEL-YYYY-NNNN'"
+                :disabled="actionBusy || !!revealPlain"
+              />
+            </label>
+            <label class="form-field">
+              <span class="form-label">查看用途（审计必填）</span>
+              <input
+                v-model="revealReason"
+                class="input"
+                type="text"
+                autocomplete="off"
+                placeholder="例：核对法务来源单号"
+                :disabled="actionBusy || !!revealPlain"
+                @keydown.enter.prevent="doReveal"
+              />
+            </label>
+            <div v-if="revealError" class="cp-warn">{{ revealError }}</div>
+            <div v-if="revealPlain" class="cp-reveal-result">
+              <div class="cp-sec-title">明文（仅本次）</div>
+              <code class="cp-reveal-plain">{{ revealPlain }}</code>
+              <div class="tip">授权时间 {{ revealAt || '—' }} · 已写 subject.reveal 审计</div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-sm" :disabled="actionBusy" @click="closeReveal">关闭</button>
+            <button
+              v-if="!revealPlain"
+              type="button"
+              class="btn btn-sm btn-primary"
+              :disabled="actionBusy"
+              @click="doReveal"
+            >{{ actionBusy ? '授权中…' : '二次授权并查看' }}</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -1168,5 +1287,33 @@ function exportList() {
   margin-top: 16px;
   padding-top: 12px;
   border-top: 1px solid var(--border);
+}
+
+.cp-reveal-modal {
+  width: 440px;
+}
+.cp-reveal-modal .form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.cp-reveal-modal .form-label {
+  font-size: 12px;
+  color: var(--text-3);
+}
+.cp-reveal-result {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: var(--bg-2, #f7f8fa);
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+.cp-reveal-plain {
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+  word-break: break-all;
+  margin: 4px 0 8px;
 }
 </style>
