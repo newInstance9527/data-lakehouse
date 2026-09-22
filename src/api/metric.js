@@ -58,6 +58,14 @@ export function fetchMetricLineage(code, ws) {
   return http.get(`${M}/${encodeURIComponent(code)}/lineage`, { ws })
 }
 
+export function fetchMetricAnomaly(code, { ws, days } = {}) {
+  return http.get(`${M}/${encodeURIComponent(code)}/anomaly`, { ws, days })
+}
+
+export function rerunMetricSample(ws) {
+  return http.post(`${M}/anomaly/rerun`, null, { params: { ws } })
+}
+
 function toUpsertBody(payload = {}) {
   return {
     metricCode: payload.metricCode || payload.id,
