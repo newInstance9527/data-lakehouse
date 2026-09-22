@@ -1186,6 +1186,11 @@ async function approveTicket(id) {
   ) {
     try {
       const res = await apiApproveTicket(ticket.serverId || ticket.id)
+      if (res?.awaitingSecurity || res?.status === 'pending_security') {
+        showToast(`✅ Owner 已签 ${ticket.ticketNo || id} · 待安全岗加签后生效`, 'success')
+        await syncApplyBoard()
+        return
+      }
       const issued = res?.issuedKey || res?.data?.issuedKey
       if (ticket.type === 'api' && issued?.token) {
         const gw = issued.publicPath || ticket.apiPath || ''
@@ -1382,6 +1387,11 @@ async function approveTicket(id) {
     try {
       const r = await approveExportOnBoard(ticket)
       const ticketNo = r?.ticketNo || ticket.ticketNo || ticket.id
+      if (r?.awaitingSecurity) {
+        showToast(`✅ Owner 已签 ${ticketNo} · 待安全岗加签后签发 EXP`, 'success', { duration: 8000 })
+        await syncApplyBoard().catch(() => {})
+        return
+      }
       try {
         navigator.clipboard?.writeText?.(ticketNo)
       } catch {
@@ -1755,6 +1765,8 @@ function openExternal(url) {
 }
 
 function approveBtnLabel(w) {
+  if (w.awaitingSecurity) return '安全加签通过'
+  if (w.requiresSecurityCosign && w.side === 'pending') return 'Owner 通过（待安全加签）'
   if (w.type === 'api') return '通过并签发调用 Key'
   if (w.type === 'api_publish') return '通过并自动发布'
   if (w.type === 'metric') {

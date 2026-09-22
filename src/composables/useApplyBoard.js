@@ -59,6 +59,9 @@ export function mapServerTicket(t, sideHint) {
                 : t.ticketType || 'perm'
   const status = t.status || sideHint || 'pending'
   const side = status === 'approved' ? 'approved' : status === 'rejected' ? 'rejected' : 'pending'
+  const awaitingSecurity = status === 'pending_security' || payload.approvalStep === 'security'
+  const requiresSecurityCosign = Boolean(payload.requiresSecurityCosign) || awaitingSecurity
+  const sensitivity = payload.sensitivity || ''
   const tableLabel = payload.exportTable || payload.assetCode || t.title || t.ticketNo
   const targetLabel = payload.exportTarget || '—'
   const expireLabel = payload.expireLabel || '—'
@@ -75,6 +78,9 @@ export function mapServerTicket(t, sideHint) {
       ticketNo,
       type: 'export',
       side,
+      awaitingSecurity,
+      requiresSecurityCosign,
+      sensitivity,
       asset: tableLabel,
       target: targetLabel,
       purpose: purposeText,
@@ -85,26 +91,47 @@ export function mapServerTicket(t, sideHint) {
         src: String(tableLabel).replace(/^(ads|dwd|dws)\./, '').replace(/^[\w]+\./, '') || tableLabel,
         target: targetLabel,
         purpose: String(purposeText).slice(0, 40),
-        freq: side === 'approved' ? '审批通过' : '待审批',
+        freq: side === 'approved' ? '审批通过' : awaitingSecurity ? '待安全加签' : '待 Owner',
         mask: '待配置',
         expire: expireLabel,
         status: side === 'approved' ? 'ok' : 'warn',
       },
     }
     if (side === 'pending') {
+      const statusTag = awaitingSecurity
+        ? '待安全加签'
+        : requiresSecurityCosign
+          ? '待 Owner → 安全加签'
+          : '待 Owner'
       return {
         ...base,
         titleHtml: `<span class="tag tag-purple">出湖</span> ${base.applicant} 申请 ${tableLabel} → ${targetLabel}`,
-        statusTag: '待安全+域负责人',
+        statusTag,
         statusCls: 'tag-orange',
         time: t.createTime || nowLabel(),
-        desc: `链路 J：${tableLabel} → ${targetLabel} · 时效 ${expireLabel} · 用途：${purposeText} · 单号 ${ticketNo}`,
-        timeline: [
-          { label: '✓ 提交', cls: 'done' },
-          { label: '● 安全/域负责人', cls: 'current' },
-          { label: '脱敏配置', cls: '' },
-          { label: '作业上线', cls: '' },
-        ],
+        desc: `链路 J：${tableLabel} → ${targetLabel} · 时效 ${expireLabel} · 用途：${purposeText} · 单号 ${ticketNo}${
+          sensitivity ? ` · 敏感级 ${sensitivity}` : ''
+        }`,
+        timeline: awaitingSecurity
+          ? [
+              { label: '✓ 提交', cls: 'done' },
+              { label: '✓ Owner', cls: 'done' },
+              { label: '● 安全加签', cls: 'current' },
+              { label: '作业上线', cls: '' },
+            ]
+          : requiresSecurityCosign
+            ? [
+                { label: '✓ 提交', cls: 'done' },
+                { label: '● Owner', cls: 'current' },
+                { label: '安全加签', cls: '' },
+                { label: '作业上线', cls: '' },
+              ]
+            : [
+                { label: '✓ 提交', cls: 'done' },
+                { label: '● Owner', cls: 'current' },
+                { label: '脱敏配置', cls: '' },
+                { label: '作业上线', cls: '' },
+              ],
       }
     }
     return {
@@ -114,7 +141,7 @@ export function mapServerTicket(t, sideHint) {
       desc: `已批准出湖 · 单号 ${ticketNo}（填回 ETL sink ticketNo）· 目标 ${targetLabel} · 时效 ${expireLabel}`,
       timeline: [
         { label: '✓ 提交', cls: 'done' },
-        { label: '✓ 安全/域负责人', cls: 'done' },
+        { label: requiresSecurityCosign ? '✓ Owner + 安全加签' : '✓ Owner', cls: 'done' },
         { label: '✓ 可配置脱敏/作业', cls: 'done' },
         { label: `✓ ticketNo ${ticketNo}`, cls: 'done' },
       ],
@@ -409,6 +436,13 @@ export function mapServerTicket(t, sideHint) {
 
   // table_read / perm
   const assetLabel = payload.assetCode || payload.assetId || t.title || id
+  const permStatusTag = (() => {
+    if (side === 'approved') return '已授权'
+    if (side === 'rejected') return '已驳回·请重改'
+    if (awaitingSecurity) return '待安全加签'
+    if (requiresSecurityCosign) return '待 Owner → 安全加签'
+    return '待 Owner'
+  })()
   return {
     id,
     serverId: t.id,
@@ -416,12 +450,16 @@ export function mapServerTicket(t, sideHint) {
     ticketNo,
     type: 'perm',
     side,
+    awaitingSecurity,
+    requiresSecurityCosign,
+    sensitivity,
     asset: assetLabel,
     purpose: purposeText,
     expire: expireLabel,
     remark: rejectRemark,
     columns: payload.columns || '',
     permMode: payload.privilege === 'SELECT' ? 'read' : payload.privilege || 'read',
+    permLevel: sensitivity || undefined,
     applicant: t.applicant || '我',
     titleHtml:
       side === 'approved'
@@ -429,31 +467,44 @@ export function mapServerTicket(t, sideHint) {
         : side === 'rejected'
           ? `<span class="tag tag-red">已驳回</span> ${assetLabel} · 表读权限`
           : `<span class="tag tag-orange">处理中</span> 我申请 ${assetLabel} 读权限`,
-    statusTag: side === 'pending' ? '待 Owner' : side === 'approved' ? '已授权' : '已驳回·请重改',
+    statusTag: permStatusTag,
     statusCls: side === 'approved' ? 'tag-green' : side === 'rejected' ? 'tag-red' : 'tag-orange',
     time: t.createTime || nowLabel(),
     desc:
       side === 'rejected'
         ? `驳回意见：${rejectRemark || '请修改后重提'} · 单号 ${ticketNo}`
         : purposeText || t.title,
-    timeline:
-      side === 'approved'
+    timeline: side === 'approved'
+      ? [
+          { label: '✓ 提交', cls: 'done' },
+          { label: requiresSecurityCosign ? '✓ Owner + 安全加签' : '✓ 审批', cls: 'done' },
+          { label: '✓ sec_auth_grant', cls: 'done' },
+        ]
+      : side === 'rejected'
         ? [
             { label: '✓ 提交', cls: 'done' },
-            { label: '✓ 审批', cls: 'done' },
-            { label: '✓ sec_auth_grant', cls: 'done' },
+            { label: '✗ 已驳回', cls: 'done' },
+            { label: '改后重提', cls: 'current' },
           ]
-        : side === 'rejected'
+        : awaitingSecurity
           ? [
               { label: '✓ 提交', cls: 'done' },
-              { label: '✗ 已驳回', cls: 'done' },
-              { label: '改后重提', cls: 'current' },
-            ]
-          : [
-              { label: '✓ 提交', cls: 'done' },
-              { label: '● 审批中', cls: 'current' },
+              { label: '✓ Owner', cls: 'done' },
+              { label: '● 安全加签', cls: 'current' },
               { label: '写 grant', cls: '' },
-            ],
+            ]
+          : requiresSecurityCosign
+            ? [
+                { label: '✓ 提交', cls: 'done' },
+                { label: '● Owner', cls: 'current' },
+                { label: '安全加签', cls: '' },
+                { label: '写 grant', cls: '' },
+              ]
+            : [
+                { label: '✓ 提交', cls: 'done' },
+                { label: '● Owner', cls: 'current' },
+                { label: '写 grant', cls: '' },
+              ],
   }
 }
 
@@ -598,7 +649,7 @@ export async function pushExportApply({
   }
 }
 
-/** 审批通过出湖单：优先后端，再回写看板 */
+/** 审批通过出湖单：优先后端，再回写看板；机密明文可能仅推进到待安全加签 */
 export async function approveExportOnBoard(ticket) {
   if (!ticket || ticket.type !== 'export') return null
   const ticketNo = ticket.ticketNo || ticket.id
@@ -606,16 +657,22 @@ export async function approveExportOnBoard(ticket) {
     try {
       const res = await approveTicket(ticket.serverId || ticket.id)
       const approvedNo = res?.ticketNo || res?.ticket?.ticketNo || ticketNo
+      if (res?.awaitingSecurity || res?.status === 'pending_security') {
+        const mid = mapServerTicket(res.ticket || { ...ticket, status: 'pending_security', ticketNo: approvedNo })
+        await hydrateApplyBoardFromServer().catch(() => {})
+        return { ticketNo: approvedNo, awaitingSecurity: true, approved: mid, fromServer: true }
+      }
       const approved = {
         ...ticket,
         side: 'approved',
+        awaitingSecurity: false,
         ticketNo: approvedNo,
         titleHtml: `<span class="tag tag-green">已通过</span> ${ticket.asset || '—'} 出湖 → ${ticket.target || '—'} · ${approvedNo}`,
         time: nowLabel(),
         desc: `已批准出湖 · 单号 ${approvedNo}（填回 ETL sink ticketNo）· 目标 ${ticket.target || '—'} · 时效 ${ticket.expire || '—'}`,
         timeline: [
           { label: '✓ 提交', cls: 'done' },
-          { label: '✓ 安全/域负责人', cls: 'done' },
+          { label: '✓ Owner + 安全加签', cls: 'done' },
           { label: '✓ 可配置脱敏/作业', cls: 'done' },
           { label: `✓ ticketNo ${approvedNo}`, cls: 'done' },
         ],
