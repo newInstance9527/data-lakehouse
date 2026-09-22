@@ -505,6 +505,17 @@ export const AI_MODEL_FORM = {
       hideWhen: { key: 'priceUnit', value: 'free' },
     },
     { key: 'use', label: '用途 / 角色', type: 'text', default: 'SQL 生成 / 知识问答', wide: true },
+    {
+      key: 'egressApproved',
+      label: '外发安全标记',
+      type: 'select',
+      options: [
+        { value: '0', label: '未评估（外发不可进生产路由）' },
+        { value: '1', label: '安全岗已标记（允许外发）' },
+      ],
+      default: '0',
+      wide: true,
+    },
   ],
 }
 
@@ -574,6 +585,17 @@ export const AI_MODEL_EDIT_FORM = {
       hideWhen: { key: 'priceUnit', value: 'free' },
     },
     { key: 'use', label: '用途 / 角色', type: 'text', wide: true },
+    {
+      key: 'egressApproved',
+      label: '外发安全标记',
+      type: 'select',
+      options: [
+        { value: '0', label: '未评估（外发不可进生产路由）' },
+        { value: '1', label: '安全岗已标记（允许外发）' },
+      ],
+      default: '0',
+      wide: true,
+    },
   ],
 }
 

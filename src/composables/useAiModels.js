@@ -67,6 +67,8 @@ export function normalizeAiModel(row) {
     litellmSyncOk: row.litellmSyncOk,
     litellmSyncSkipped: row.litellmSyncSkipped,
     litellmSyncMessage: row.litellmSyncMessage,
+    egressKind: row.egressKind || 'egress',
+    egressApproved: row.egressApproved === true || row.egressApproved === 1 || row.egressKind === 'local',
   }
 }
 
@@ -184,6 +186,7 @@ export function useAiModels() {
       roleLabel: payload.use,
       kind: payload.kind || 'chat',
       ws: payload.ws,
+      egressApproved: payload.egressApproved === true || payload.egressApproved === 1 || payload.egressApproved === '1',
     })
     const n = normalizeAiModel(saved)
     models.value.unshift(n)
@@ -203,6 +206,7 @@ export function useAiModels() {
       outputRate: payload.outputRate,
       roleLabel: payload.use,
       kind: payload.kind || 'chat',
+      egressApproved: payload.egressApproved === true || payload.egressApproved === 1 || payload.egressApproved === '1',
     })
     const n = normalizeAiModel(saved)
     const idx = models.value.findIndex((x) => x.id === id)

@@ -183,6 +183,7 @@ const editInitial = computed(() => {
     inputRate: m.inputRate ?? 0,
     outputRate: m.outputRate ?? 0,
     use: m.role || '',
+    egressApproved: m.egressApproved || m.egressKind === 'local' ? '1' : '0',
   }
 })
 
@@ -402,6 +403,21 @@ watch(forceDemo, (v) => {
                 <div class="mc-name">
                   {{ m.name }}
                   <span class="tag" :class="modelStatusTag(m).cls">{{ modelStatusTag(m).text }}</span>
+                  <span
+                    v-if="m.egressKind === 'local'"
+                    class="tag tag-green"
+                    title="内网/自建模型"
+                  >内网</span>
+                  <span
+                    v-else-if="m.egressApproved"
+                    class="tag tag-blue"
+                    title="外发已安全岗标记"
+                  >外发·已评</span>
+                  <span
+                    v-else
+                    class="tag tag-orange"
+                    title="外发未评估，不可进生产路由"
+                  >外发·未评</span>
                 </div>
                 <div class="mc-vendor">{{ m.vendor }} · {{ m.role }}</div>
               </div>

@@ -21,6 +21,8 @@ export const AI_MODELS = [
     calls: '8.6万',
     cost: '¥1,240',
     role: '默认·强推理',
+    egressKind: 'egress',
+    egressApproved: true,
   },
   {
     id: 'm_claude35',
@@ -42,6 +44,8 @@ export const AI_MODELS = [
     calls: '2.4万',
     cost: '¥480',
     role: '代码擅长',
+    egressKind: 'egress',
+    egressApproved: true,
   },
   {
     id: 'm_qwen',
@@ -63,6 +67,8 @@ export const AI_MODELS = [
     calls: '1.2万',
     cost: '¥86',
     role: '本地化',
+    egressKind: 'egress',
+    egressApproved: true,
   },
   {
     id: 'm_deepseek',
@@ -84,6 +90,8 @@ export const AI_MODELS = [
     calls: '0.6万',
     cost: '¥36',
     role: '性价比·Key 将过期',
+    egressKind: 'egress',
+    egressApproved: true,
   },
   {
     id: 'm_local',
@@ -105,6 +113,8 @@ export const AI_MODELS = [
     calls: '0',
     cost: '¥0',
     role: '备用·内网部署',
+    egressKind: 'local',
+    egressApproved: true,
   },
 ]
 
