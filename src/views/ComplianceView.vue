@@ -201,7 +201,14 @@ function doConfirmLineage(t) {
 
 async function doDryRun() {
   const res = await guarded(() => dryRun(detail.value.id))
-  if (res) showToast(`🧮 试算命中 ${res.rowsEstTotal} 行 · ${res.targets?.length ?? 0} 个载体`, 'success')
+  if (res) {
+    const eng = res.engineCounted ?? 0
+    const stub = res.stubCounted ?? 0
+    showToast(
+      `🧮 试算命中 ${res.rowsEstTotal} 行 · 引擎 ${eng} / 占位 ${stub}`,
+      res.estimated ? 'info' : 'success',
+    )
+  }
 }
 
 function doSubmit() {
@@ -622,7 +629,12 @@ function exportList() {
 
           <div v-if="lastDryRun" class="cp-dryrun">
             <div class="cp-sec-title">试算结果</div>
-            <div>命中 <b>{{ lastDryRun.rowsEstTotal }}</b> 行 / {{ lastDryRun.targets?.length ?? 0 }} 个载体</div>
+            <div>
+              命中 <b>{{ lastDryRun.rowsEstTotal }}</b> 行 / {{ lastDryRun.targets?.length ?? 0 }} 个载体
+              <span v-if="!lastDryRun.estimated" class="tag tag-green">引擎 COUNT</span>
+              <span v-else class="tag tag-gray">含占位</span>
+            </div>
+            <div v-if="lastDryRun.source" class="tip">{{ lastDryRun.source }}</div>
             <div class="cp-warn">{{ lastDryRun.snapshotNotice }}</div>
           </div>
         </div>
