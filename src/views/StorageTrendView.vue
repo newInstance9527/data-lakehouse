@@ -26,6 +26,7 @@ const {
   adviceCards,
   tableRows,
   showbackRows,
+  showbackCostNote,
   collectBanner,
   chartFoot,
   loadAll,
@@ -327,17 +328,21 @@ const RANGES = ['7d', '30d', '90d']
       <div class="card-header">
         <div class="card-title">
           🏢 按空间 showback
-          <span class="tip">· 配额读 gov_ws_quota · 与工作空间同源</span>
+          <span class="tip">· 配额读 gov_ws_quota · 金额引 §24.3 同源单价</span>
         </div>
         <button type="button" class="btn btn-sm" @click="goQuerygov()">去查询治理成本 →</button>
       </div>
       <div class="card-body" style="padding: 0; overflow-x: auto">
+        <p v-if="showbackCostNote" style="padding: 10px 16px 0; margin: 0; font-size: 12px; color: var(--text-3)">
+          {{ showbackCostNote }}
+        </p>
         <table v-if="showbackRows.length" class="table">
           <thead>
             <tr>
               <th>空间</th>
               <th>活跃</th>
               <th>物理</th>
+              <th>估算成本</th>
               <th>配额</th>
               <th>占比</th>
               <th>净增</th>
@@ -354,6 +359,7 @@ const RANGES = ['7d', '30d', '90d']
               </td>
               <td>{{ row.active }}</td>
               <td>{{ row.total }}</td>
+              <td>{{ row.storageCost }}</td>
               <td>{{ row.quota }}</td>
               <td>{{ row.quotaPct }}</td>
               <td>{{ row.netGrowth }}</td>

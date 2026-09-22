@@ -276,9 +276,22 @@ export function useStorageTrend() {
       quota: humanBytes(r.quotaBytes),
       quotaPct: r.quotaPct != null ? `${r.quotaPct}%` : '—',
       netGrowth: humanBytes(r.netGrowthBytes),
+      storageCost: r.storageCostLabel || (r.storageCost != null ? `¥${Number(r.storageCost).toFixed(2)}` : '—'),
       owner: r.owner || '—',
       warn: r.status === 'QUOTA_WARN',
     }))
+  })
+
+  const showbackCostNote = computed(() => {
+    const sb = showback.value
+    if (!sb) return null
+    const rate = sb.rates?.storagePerTbMonth
+    const total = sb.totalStorageCost
+    const parts = []
+    if (rate != null) parts.push(`单价 ¥${rate}/TB·月`)
+    if (total != null) parts.push(`合计 ${typeof total === 'number' ? `¥${total.toFixed(2)}` : total}`)
+    if (sb.note) parts.push(String(sb.note).split('；')[0])
+    return parts.length ? parts.join(' · ') : null
   })
 
   const collectBanner = computed(() => {
@@ -402,6 +415,7 @@ export function useStorageTrend() {
     adviceCards,
     tableRows,
     showbackRows,
+    showbackCostNote,
     collectBanner,
     chartFoot,
     loadAll,
