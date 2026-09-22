@@ -1,11 +1,12 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
 import { useToast } from '@/composables/useToast'
 import { pageGuideOf } from '@/data/pageGuides'
 import {
   fetchCatalogMaps,
+  fetchQueryGovCosts,
   fetchQueryGovOverview,
   fetchQuerySurface,
   formatScanBytes,
@@ -23,12 +24,19 @@ import {
 } from '@/data/querygov'
 
 const router = useRouter()
+const route = useRoute()
 const { showToast } = useToast()
 const guide = pageGuideOf('querygov')
 
 const loading = ref(false)
+const costsLoading = ref(false)
 const live = ref(false)
+const costsLive = ref(false)
 const overview = ref(null)
+const costsPayload = ref(null)
+
+const costRange = ref(typeof route.query.range === 'string' ? route.query.range : '30d')
+const costWs = ref(typeof route.query.ws === 'string' ? route.query.ws : '')
 
 const surface = ref(null)
 const catalogMaps = ref([])
@@ -97,14 +105,32 @@ const rules = computed(() => {
   }))
 })
 
-const costRows = computed(() =>
-  COST_DOMAINS.map((d) => ({
+const costRows = computed(() => {
+  const items = costsPayload.value?.items
+  if (Array.isArray(items) && items.length) {
+    return items.map((d) => ({
+      name: d.name || d.ws || d.key,
+      ws: d.ws,
+      cost: d.totalLabel || formatCny(d.totalCost),
+      detail: [
+        d.storageCost != null ? `存 ¥${Number(d.storageCost).toFixed(0)}` : null,
+        d.computeCost != null ? `算 ¥${Number(d.computeCost).toFixed(0)}` : null,
+        d.aiCost != null ? `AI ¥${Number(d.aiCost).toFixed(0)}` : null,
+      ]
+        .filter(Boolean)
+        .join(' · '),
+      trend: d.trend || '',
+      pct: Math.min(100, Number(d.pct) || 0),
+    }))
+  }
+  return COST_DOMAINS.map((d) => ({
     name: d.domain,
     cost: d.total,
+    detail: '',
     trend: d.trend,
     pct: Math.min(100, Math.round((Number(String(d.total).replace(/[^\d]/g, '')) || 0) / 200)),
-  })),
-)
+  }))
+})
 
 const audits = computed(() => {
   const list = overview.value?.audits
@@ -131,6 +157,11 @@ const surfaceChips = computed(() => {
   }
 })
 
+function formatCny(v) {
+  if (v == null || Number.isNaN(Number(v))) return '¥0'
+  return `¥${Number(v).toFixed(2)}`
+}
+
 async function loadOverview() {
   loading.value = true
   try {
@@ -146,6 +177,25 @@ async function loadOverview() {
     showToast(e?.message || '治理总览拉取失败，展示演示数据', 'warning')
   } finally {
     loading.value = false
+  }
+}
+
+async function loadCosts() {
+  costsLoading.value = true
+  try {
+    const data = await fetchQueryGovCosts({
+      range: costRange.value || '30d',
+      group: 'ws',
+      ws: costWs.value || undefined,
+    })
+    costsPayload.value = data || null
+    costsLive.value = !!(data && Array.isArray(data.items))
+  } catch (e) {
+    costsPayload.value = null
+    costsLive.value = false
+    showToast(e?.message || '成本卡拉取失败，展示演示分摊', 'warning')
+  } finally {
+    costsLoading.value = false
   }
 }
 
@@ -211,7 +261,34 @@ function newQueryRule() {
 }
 
 function exportCostReport() {
-  showToast('成本报表（FinOps）P1：当前可导出审计 CSV 从即席历史', 'info')
+  const items = costsPayload.value?.items
+  if (!Array.isArray(items) || !items.length) {
+    showToast('暂无成本数据可导出；请先刷新成本卡', 'warning')
+    return
+  }
+  const header = ['ws', 'name', 'storageCost', 'computeCost', 'aiCost', 'totalCost', 'scanBytes', 'queryCount']
+  const lines = [header.join(',')]
+  for (const r of items) {
+    lines.push(
+      [
+        r.ws,
+        JSON.stringify(r.name || ''),
+        r.storageCost,
+        r.computeCost,
+        r.aiCost,
+        r.totalCost,
+        r.scanBytes,
+        r.queryCount,
+      ].join(','),
+    )
+  }
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' })
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = `querygov-costs-ws-${costRange.value || '30d'}.csv`
+  a.click()
+  URL.revokeObjectURL(a.href)
+  showToast('已导出成本分摊 CSV（group=ws）', 'success')
 }
 
 function goQuery() {
@@ -226,9 +303,26 @@ function openAudit(a) {
   }
 }
 
+function applyCostFilters() {
+  const q = { ...route.query, range: costRange.value || '30d' }
+  if (costWs.value) q.ws = costWs.value
+  else delete q.ws
+  router.replace({ query: q })
+  loadCosts()
+}
+
+watch(
+  () => [route.query.ws, route.query.range],
+  ([ws, range]) => {
+    if (typeof ws === 'string') costWs.value = ws
+    if (typeof range === 'string') costRange.value = range
+  },
+)
+
 onMounted(() => {
   loadOverview()
   loadFederation()
+  loadCosts()
 })
 </script>
 
@@ -474,17 +568,44 @@ onMounted(() => {
 
     <div class="card qg-section">
       <div class="card-header">
-        <div class="card-title">💰 成本分摊（演示）</div>
+        <div class="card-title">
+          💰 成本分摊
+          <span class="tip">· group=ws · 存储+扫描+AI</span>
+        </div>
+        <div class="cost-filters">
+          <select v-model="costRange" class="cost-select" @change="applyCostFilters">
+            <option value="7d">7d</option>
+            <option value="30d">30d</option>
+            <option value="90d">90d</option>
+          </select>
+          <input
+            v-model="costWs"
+            class="cost-ws"
+            type="text"
+            placeholder="ws（空=全部）"
+            @keyup.enter="applyCostFilters"
+          />
+          <button type="button" class="btn btn-sm" :disabled="costsLoading" @click="applyCostFilters">
+            {{ costsLoading ? '…' : '刷新成本' }}
+          </button>
+        </div>
       </div>
       <div class="card-body">
+        <div v-if="costsLive" class="tip cost-live">
+          已接真 /lh/observability/costs?group=ws · range={{ costsPayload?.range || costRange }}
+          <template v-if="costsPayload?.totals?.totalCost != null">
+            · 合计 {{ formatCny(costsPayload.totals.totalCost) }}
+          </template>
+        </div>
+        <div v-else class="tip cost-live">未连通时展示按域演示；连通后按空间聚合</div>
         <div class="cost-grid">
-          <div v-for="d in costRows" :key="d.name" class="cost-item">
-            <div class="cost-name">{{ d.name }}</div>
+          <div v-for="d in costRows" :key="d.ws || d.name" class="cost-item">
+            <div class="cost-name">{{ d.name }}<code v-if="d.ws" class="cost-ws-tag">{{ d.ws }}</code></div>
             <div class="cost-bar">
               <div class="cost-fill" :style="{ width: d.pct + '%' }" />
             </div>
             <div class="cost-meta">
-              <span>{{ d.cost }}</span>
+              <span>{{ d.cost }}<span v-if="d.detail" class="cost-detail"> · {{ d.detail }}</span></span>
               <span :class="costTrendClass(d.trend)">{{ d.trend }}</span>
             </div>
           </div>
@@ -556,7 +677,25 @@ onMounted(() => {
 .rule-desc { font-size: 12px; color: var(--text-3); margin-top: 4px; }
 .cost-grid { display: flex; flex-direction: column; gap: 10px; }
 .cost-item { font-size: 12px; }
-.cost-name { font-weight: 600; margin-bottom: 4px; }
+.cost-name { font-weight: 600; margin-bottom: 4px; display: flex; gap: 8px; align-items: center; }
+.cost-ws-tag {
+  font-weight: 400;
+  font-size: 10px;
+  padding: 0 4px;
+  background: var(--bg-2);
+  border-radius: 3px;
+}
+.cost-filters { display: flex; gap: 8px; align-items: center; }
+.cost-select, .cost-ws {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-1);
+  font-size: 12px;
+}
+.cost-ws { width: 120px; }
+.cost-live { margin-bottom: 10px; }
+.cost-detail { color: var(--text-3); font-weight: 400; }
 .cost-bar {
   height: 6px;
   background: var(--bg-2);

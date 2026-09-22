@@ -980,18 +980,18 @@ export const PAGE_GUIDES = {
       heading: '模块功能',
       type: 'text',
       content: [
-        'Trino 队列管理、扫描限额、查询审计 Top、FinOps 按域分摊与无主资产归档规则。',
+        'Trino 队列管理、扫描限额、查询审计 Top、FinOps 按空间（group=ws）分摊存储/扫描/AI 成本。',
       ],
     },
     {
       heading: '适用场景',
       type: 'list',
-      items: ['阻断无分区全表扫描', 'adhoc 限并发限扫描', '按域看月成本'],
+      items: ['阻断无分区全表扫描', 'adhoc 限并发限扫描', '按 ws 看成本与用量'],
     },
     {
       heading: '使用示例',
       type: 'steps',
-      items: ['查看 dashboard/adhoc/etl 队列', '审计超限查询', '导出成本报表'],
+      items: ['查看 dashboard/adhoc/etl 队列', '审计超限查询', '成本卡选 range/ws 后导出 CSV'],
     },
     {
       heading: '相关模块',

@@ -200,6 +200,11 @@ export function fetchQueryGovOverview() {
   return http.get(`${Q}/gov/overview`)
 }
 
+/** 查询治理成本卡（group=ws；旁路 /lh/compute/query/gov/costs） */
+export function fetchQueryGovCosts({ range = '30d', group = 'ws', ws } = {}) {
+  return http.get(`${Q}/gov/costs`, { range, group, ws })
+}
+
 /** 本地探测 :name / ${name}（与后端 CpQueryParamBinder 对齐） */
 export function detectParamNamesLocal(sql) {
   if (!sql) return []
