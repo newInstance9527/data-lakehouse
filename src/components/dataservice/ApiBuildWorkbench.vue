@@ -13,6 +13,8 @@ import { parseDataapiParams, fetchSqlrestOptions, buildDataapi, publishDataapi, 
 import { createApplyTicket, pageMyTickets } from '@/api/apply.js'
 import { compileMetric, fetchMetricList } from '@/api/metric.js'
 import { fetchAssetPage, fetchAssetSchema, fetchAssetSources } from '@/api/catalog.js'
+import { streamAiChat } from '@/api/ai.js'
+import { useSession } from '@/composables/useSession'
 import { bindTableKeyOf } from '@/data/metricBindAssets.js'
 import {
   applyPgParamTextCasts,
@@ -34,6 +36,7 @@ const props = defineProps({
 const emit = defineEmits(['close', 'publish'])
 
 const { showToast } = useToast()
+const { currentWs } = useSession()
 const { sqlrestDs, ensureLoaded, openDetail, runTrial, embed } = useDataservice()
 
 const TAB_IDS = [
@@ -142,6 +145,17 @@ const tplPreview = ref('')
 const tplHint = ref('')
 const tplPortalDsId = ref('')
 
+/** D6/D11：AI NL2SQL → 当前 SQL 窗口（左树 schema linking） */
+const aiOpen = ref(false)
+const aiPrompt = ref('')
+const aiGenerating = ref(false)
+const aiPreview = ref('')
+const aiHint = ref('共用助手 nl2sql；结果只写入当前窗口，不自动执行、不旁路 ACL。')
+const aiError = ref('')
+let aiAbort = null
+/** @type {import('vue').Ref<{ schema: string, table: string, columns: { name: string, type?: string }[] } | null>} */
+const metaSel = ref(null)
+
 const projectedDs = computed(() =>
   (sqlrestDs.value || []).filter((d) => d.projected || d.sqlrestDatasourceId),
 )
@@ -184,6 +198,8 @@ watch(
     debugOpen.value = false
     moreOpen.value = false
     closeTplPicker()
+    closeAiSql()
+    metaSel.value = null
     try {
       options.value = { ...options.value, ...((await fetchSqlrestOptions()) || {}) }
       if (form.moduleId == null && options.value.defaultModuleId != null) {
@@ -422,6 +438,7 @@ function asNameList(raw) {
 async function loadObjects(dsId) {
   metaLoading.value = true
   objectNodes.value = []
+  metaSel.value = null
   const ds = projectedDs.value.find((d) => d.id === dsId) || null
   const schema = metaSchemaArg(ds)
   try {
@@ -643,6 +660,214 @@ function onDblclickNode(node) {
   } else if (node.kind === 'column') {
     insertText(quoteIdentSafe(node.name))
   }
+}
+
+function tableSelKey(schema, table) {
+  return `${schema || ''}::${table || ''}`
+}
+
+function isTableSelected(node) {
+  if (!metaSel.value || !node) return false
+  return tableSelKey(metaSel.value.schema, metaSel.value.table) === tableSelKey(node.schema, node.name)
+}
+
+function isColSelected(col) {
+  if (!metaSel.value || !col) return false
+  if (tableSelKey(metaSel.value.schema, metaSel.value.table) !== tableSelKey(col.schema, col.table)) {
+    return false
+  }
+  return (metaSel.value.columns || []).some((c) => c.name === col.name)
+}
+
+async function selectMetaTable(node) {
+  if (!node || (node.kind !== 'table' && node.kind !== 'view')) return
+  if (isTableSelected(node)) {
+    metaSel.value = null
+    return
+  }
+  if (!node.children?.length) {
+    try {
+      await loadColumnsForTable(node.schema || '', node.name)
+    } catch {
+      /* soft：无列则 * */
+    }
+  }
+  const cols = (node.children || [])
+    .filter((c) => c.kind === 'column')
+    .map((c) => ({ name: c.name, type: c.type }))
+  metaSel.value = {
+    schema: node.schema || '',
+    table: node.name,
+    columns: cols,
+  }
+}
+
+function toggleMetaColumn(col) {
+  if (!col || col.kind !== 'column') return
+  const schema = col.schema || ''
+  const table = col.table || ''
+  if (!metaSel.value || tableSelKey(metaSel.value.schema, metaSel.value.table) !== tableSelKey(schema, table)) {
+    metaSel.value = { schema, table, columns: [{ name: col.name, type: col.type }] }
+    return
+  }
+  const exists = (metaSel.value.columns || []).some((c) => c.name === col.name)
+  if (exists) {
+    metaSel.value = {
+      ...metaSel.value,
+      columns: metaSel.value.columns.filter((c) => c.name !== col.name),
+    }
+  } else {
+    metaSel.value = {
+      ...metaSel.value,
+      columns: [...(metaSel.value.columns || []), { name: col.name, type: col.type }],
+    }
+  }
+}
+
+function schemaContextOf() {
+  if (!metaSel.value?.table) return []
+  return [
+    {
+      schema: metaSel.value.schema || '',
+      table: metaSel.value.table,
+      columns: (metaSel.value.columns || []).map((c) => ({
+        name: c.name,
+        type: c.type || undefined,
+      })),
+    },
+  ]
+}
+
+function metaSelLabel() {
+  const ctx = schemaContextOf()[0]
+  if (!ctx) return '未选表/列（将按自然语言草案生成）'
+  const fqn = ctx.schema ? `${ctx.schema}.${ctx.table}` : ctx.table
+  const cols = (ctx.columns || []).map((c) => c.name).filter(Boolean)
+  return cols.length ? `${fqn}（${cols.slice(0, 8).join(', ')}${cols.length > 8 ? '…' : ''}）` : `${fqn}（*）`
+}
+
+function extractSqlFromAi({ actions, html }) {
+  for (const a of actions || []) {
+    if (a?.type === 'apply_sql' && a.sql) return String(a.sql).trim()
+    if (a?.sql) return String(a.sql).trim()
+  }
+  const m = String(html || '').match(/```sql\s*([\s\S]*?)```/i)
+  return m ? m[1].trim() : ''
+}
+
+function closeAiSql() {
+  if (aiAbort) {
+    try {
+      aiAbort.abort()
+    } catch {
+      /* ignore */
+    }
+    aiAbort = null
+  }
+  aiOpen.value = false
+  aiGenerating.value = false
+  aiPrompt.value = ''
+  aiPreview.value = ''
+  aiError.value = ''
+  aiHint.value = '共用助手 nl2sql；结果只写入当前窗口，不自动执行、不旁路 ACL。'
+}
+
+function openAiSql() {
+  moreOpen.value = false
+  if (form.engine !== 'SQL') {
+    showToast('AI 生成 SQL 仅支持 SQL 引擎；请先切换到 SQL 语句', 'warning')
+    return
+  }
+  aiOpen.value = true
+  aiPreview.value = ''
+  aiError.value = ''
+  aiHint.value = `上下文：${metaSelLabel()} · 写入当前窗口后可自行试跑`
+  if (!aiPrompt.value.trim()) {
+    const ctx = schemaContextOf()[0]
+    if (ctx) {
+      const fqn = ctx.schema ? `${ctx.schema}.${ctx.table}` : ctx.table
+      aiPrompt.value = `基于表 ${fqn} 生成只读查询 SQL，LIMIT 100`
+    }
+  }
+}
+
+async function runAiSqlGen() {
+  const text = aiPrompt.value.trim()
+  if (!text) {
+    showToast('请先描述要生成的 SQL', 'warning')
+    return
+  }
+  if (aiGenerating.value) return
+  aiGenerating.value = true
+  aiPreview.value = ''
+  aiError.value = ''
+  const actions = []
+  let html = ''
+  try {
+    await new Promise((resolve, reject) => {
+      aiAbort = streamAiChat(
+        {
+          ws: currentWs.value || 'default',
+          text,
+          scene: 'nl2sql',
+          schemaContext: schemaContextOf(),
+        },
+        {
+          onEvent({ event, data }) {
+            if (event === 'token') {
+              const t = typeof data === 'string' ? data : data?.text || data?.token || ''
+              html += t
+            }
+            if (event === 'action') {
+              const list = Array.isArray(data) ? data : data ? [data] : []
+              actions.push(...list)
+            }
+            if (event === 'done' && data?.content && !html) {
+              html = data.content
+            }
+            if (event === 'done' && data?.error) {
+              aiError.value = String(data.error)
+            }
+          },
+          onError(e) {
+            reject(e)
+          },
+          onDone() {
+            resolve()
+          },
+        },
+      )
+    })
+    const sql = extractSqlFromAi({ actions, html })
+    if (!sql) {
+      aiError.value = aiError.value || '未解析到 SQL；可改描述或先在左树选表/列'
+      showToast(aiError.value, 'warning')
+      return
+    }
+    aiPreview.value = toSqlrestPlaceholders(sql)
+    aiHint.value = '已生成草案（未执行）；确认后写入当前 SQL 窗口'
+  } catch (e) {
+    aiError.value = e?.message || String(e)
+    showToast(`AI 生成失败：${aiError.value}`, 'warning')
+  } finally {
+    aiGenerating.value = false
+    aiAbort = null
+  }
+}
+
+function applyAiSql() {
+  const sql = String(aiPreview.value || '').trim()
+  if (!sql) {
+    showToast('请先生成预览', 'warning')
+    return
+  }
+  if (form.engine !== 'SQL') setEngine('SQL')
+  activeSql.value = sql.endsWith('\n') ? sql : `${sql}\n`
+  tab.value = 'sql'
+  dirty.value = true
+  closeAiSql()
+  showToast('已写入当前 SQL 窗口（未执行）', 'success')
+  parseParams({ quiet: true }).catch(() => {})
 }
 
 function quoteIdentSafe(name) {
@@ -1894,6 +2119,7 @@ async function applyTpl() {
               <div v-if="moreOpen" class="wb-more-menu" @click.stop>
                 <button type="button" class="wb-more-item" @click="openTplPicker('metric')">从指标生成 SQL</button>
                 <button type="button" class="wb-more-item" @click="openTplPicker('asset')">从资产生成 SQL</button>
+                <button type="button" class="wb-more-item" @click="openAiSql">AI 生成 SQL</button>
               </div>
             </div>
             <button type="button" class="btn btn-sm" @click="doGatewayProbe">Gateway 探针</button>
@@ -1931,6 +2157,10 @@ async function applyTpl() {
               当前库 <code>{{ selectedDs.database || selectedDs.databaseName || '连接默认' }}</code>
               · 方言 <code>{{ sqlDialect.family ? `${sqlDialect.label}（${sqlDialect.family}）` : sqlDialect.label }}</code>
             </p>
+            <p v-if="metaSel?.table" class="meta-bound meta-sel-hint">
+              AI 上下文 <code>{{ metaSelLabel() }}</code>
+              <button type="button" class="btn-link btn-sm" @click="metaSel = null">清除</button>
+            </p>
             <div v-if="metaLoading" class="meta-empty">加载表和视图…</div>
             <ul v-else-if="objectNodes.length" class="meta-tree">
               <li v-for="folder in objectNodes" :key="folder.name">
@@ -1945,11 +2175,18 @@ async function applyTpl() {
                     <button
                       type="button"
                       class="meta-row"
+                      :class="{ 'is-picked': isTableSelected(tb) }"
                       @click="toggleTable(tb)"
                       @dblclick.stop="onDblclickNode(tb)"
+                      @contextmenu.prevent="selectMetaTable(tb)"
                     >
                       <span>{{ tb.expanded ? '▾' : '▸' }}</span>
                       <span>{{ tb.name }}</span>
+                      <span
+                        class="meta-pick"
+                        :title="isTableSelected(tb) ? '取消 AI 上下文' : '选为 AI 上下文'"
+                        @click.stop="selectMetaTable(tb)"
+                      >{{ isTableSelected(tb) ? '✓' : '+' }}</span>
                       <span v-if="tb.loading" class="meta-hint">…</span>
                     </button>
                     <ul v-if="tb.expanded && tb.children" class="meta-children">
@@ -1957,9 +2194,10 @@ async function applyTpl() {
                         <button
                           type="button"
                           class="meta-row col"
-                          :class="{ 'is-sensitive': col.sensitive }"
+                          :class="{ 'is-sensitive': col.sensitive, 'is-picked': isColSelected(col) }"
                           :title="col.maskedHint || undefined"
-                          @dblclick="onDblclickNode(col)"
+                          @click="toggleMetaColumn(col)"
+                          @dblclick.stop="onDblclickNode(col)"
                         >
                           {{ col.name }}<span class="meta-type">({{ col.type }})</span>
                           <span v-if="col.sensitive" class="meta-sensitive">敏感</span>
@@ -2513,6 +2751,51 @@ async function applyTpl() {
         </div>
       </div>
     </div>
+
+    <div v-if="aiOpen" class="tpl-mask" @click.self="closeAiSql">
+      <div class="tpl-modal" role="dialog" aria-modal="true">
+        <div class="tpl-hd">
+          <div>
+            <div class="tpl-title">AI 生成 SQL</div>
+            <div class="tpl-sub">{{ aiHint }}</div>
+          </div>
+          <button type="button" class="btn btn-sm" @click="closeAiSql">关闭</button>
+        </div>
+        <div class="tpl-bd">
+          <label class="form-field">
+            <span class="form-label">自然语言需求</span>
+            <textarea
+              v-model="aiPrompt"
+              class="input ai-prompt"
+              rows="3"
+              placeholder="例：查近一天订单明细，按金额降序，LIMIT 100"
+              :disabled="aiGenerating"
+            />
+          </label>
+          <p class="tip">左树上下文：{{ metaSelLabel() }}（表行点 + / 列单击选用）</p>
+          <div v-if="aiPreview" class="tpl-preview">
+            <div class="tpl-preview-label">SQL 预览（未执行）</div>
+            <pre>{{ aiPreview }}</pre>
+          </div>
+          <p v-else-if="aiGenerating" class="tip">生成中…</p>
+          <p v-else-if="aiError" class="tip tip-warn">{{ aiError }}</p>
+        </div>
+        <div class="tpl-ft">
+          <button type="button" class="btn btn-sm" @click="closeAiSql">取消</button>
+          <button type="button" class="btn btn-sm" :disabled="aiGenerating" @click="runAiSqlGen">
+            {{ aiGenerating ? '生成中…' : '生成预览' }}
+          </button>
+          <button
+            type="button"
+            class="btn btn-sm btn-primary"
+            :disabled="aiGenerating || !aiPreview"
+            @click="applyAiSql"
+          >
+            写入当前 SQL 窗口
+          </button>
+        </div>
+      </div>
+    </div>
   </Teleport>
 </template>
 
@@ -2754,6 +3037,35 @@ async function applyTpl() {
 }
 .meta-hint {
   opacity: 0.5;
+}
+.meta-row.is-picked {
+  background: color-mix(in srgb, var(--primary, #2563eb) 12%, transparent);
+  border-radius: 4px;
+}
+.meta-pick {
+  margin-left: auto;
+  font-size: 11px;
+  opacity: 0.55;
+  padding: 0 4px;
+}
+.meta-pick:hover {
+  opacity: 1;
+  color: var(--primary, #2563eb);
+}
+.meta-sel-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.ai-prompt {
+  width: 100%;
+  resize: vertical;
+  min-height: 72px;
+  font-family: inherit;
+}
+.tip-warn {
+  color: var(--warn, #b45309);
 }
 .wb-main {
   min-width: 0;
