@@ -86,7 +86,12 @@ const timeline = computed(() => detail.value?.timeline || [])
 const plan = computed(() => detail.value?.planSummary || {})
 
 const canAssess = computed(() => ['assessing', 'pending_approval', 'restricted'].includes(detail.value?.status))
-const canSubmit = computed(() => detail.value?.status === 'assessing' && (plan.value.included || 0) > 0)
+const canSubmit = computed(
+  () =>
+    detail.value?.status === 'assessing' &&
+    (plan.value.included || 0) > 0 &&
+    !(plan.value.pendingConfirm > 0),
+)
 const canSchedule = computed(() => detail.value?.status === 'pending_approval' && detail.value?.ticketNo)
 const canExecute = computed(() => ['scheduled', 'pending_approval', 'partial_failed'].includes(detail.value?.status))
 const canVerify = computed(() => ['verifying', 'executing', 'partial_failed'].includes(detail.value?.status))
@@ -174,7 +179,24 @@ async function onSaveMap(payload) {
 }
 
 function doAssess() {
-  guarded(() => assess(detail.value.id), '🔍 已重新展开删除计划')
+  guarded(async () => {
+    const r = await assess(detail.value.id)
+    const pc = r?.planSummary?.pendingConfirm || 0
+    showToast(
+      pc > 0
+        ? `🔍 已展开计划 · ${pc} 项推断血缘待确认`
+        : `🔍 已重新展开删除计划（含 lineage.expand 下游）`,
+      pc > 0 ? 'warning' : 'success',
+    )
+    return r
+  })
+}
+
+function doConfirmLineage(t) {
+  guarded(
+    () => editPlan({ reqId: detail.value.id, confirmIds: [t.id] }),
+    `✅ 已确认推断血缘 ${t.objectFqn}`,
+  )
 }
 
 async function doDryRun() {
@@ -579,13 +601,21 @@ function exportList() {
             <span class="tag tag-green">已删 {{ plan.done ?? 0 }}</span>
             <span class="tag tag-orange">待处理 {{ plan.pending ?? 0 }}</span>
             <span class="tag tag-orange">限制处理 {{ plan.restricted ?? 0 }}</span>
+            <span v-if="plan.pendingConfirm" class="tag tag-gray">推断待确认 {{ plan.pendingConfirm }}</span>
             <span class="tag tag-gray">预估 {{ plan.rowsEst ?? 0 }} 行</span>
           </div>
 
           <div class="cp-drawer-acts">
             <button v-if="canAssess" type="button" class="btn btn-sm" :disabled="actionBusy" @click="doAssess">🔍 重新评估</button>
             <button type="button" class="btn btn-sm" :disabled="actionBusy" @click="doDryRun">🧮 试算</button>
-            <button v-if="canSubmit" type="button" class="btn btn-sm btn-primary" :disabled="actionBusy" @click="doSubmit">📮 提交审批</button>
+            <button
+              v-if="detail?.status === 'assessing' && (plan.included || 0) > 0"
+              type="button"
+              class="btn btn-sm btn-primary"
+              :disabled="actionBusy || !canSubmit"
+              :title="plan.pendingConfirm ? `尚 ${plan.pendingConfirm} 项推断血缘待确认` : ''"
+              @click="doSubmit"
+            >📮 提交审批</button>
             <button v-if="canSchedule" type="button" class="btn btn-sm btn-primary" :disabled="actionBusy" @click="doSchedule">🕑 排期</button>
             <button v-if="canVerify" type="button" class="btn btn-sm" :disabled="actionBusy" @click="doVerify">✅ 验证残留</button>
           </div>
@@ -599,11 +629,15 @@ function exportList() {
 
         <!-- 计划（载体矩阵） -->
         <div v-else-if="drawerTab === 'plan'">
+          <div v-if="plan.pendingConfirm" class="cp-warn">
+            推断血缘 {{ plan.pendingConfirm }} 项标灰，须人工确认后才能提交审批。
+          </div>
           <table class="table cp-mini">
             <thead>
               <tr>
                 <th>载体</th>
                 <th>对象</th>
+                <th>血缘</th>
                 <th>方式</th>
                 <th>预估</th>
                 <th>状态</th>
@@ -611,11 +645,32 @@ function exportList() {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="t in targets" :key="t.id">
+              <tr
+                v-for="t in targets"
+                :key="t.id"
+                :class="{ 'cp-row-inferred': t.needsConfirm }"
+              >
                 <td>{{ t.carrierLabel }}</td>
                 <td>
                   <button type="button" class="btn-link" @click="goLineage(t.objectFqn)">{{ t.objectFqn }}</button>
                   <div v-if="t.scopeExpr" class="tip">{{ t.scopeExpr }}</div>
+                  <div v-if="t.owner || t.sensitivity || t.lineageLayer" class="tip">
+                    <span v-if="t.lineageLayer">{{ t.lineageLayer }}</span>
+                    <span v-if="t.owner"> · {{ t.owner }}</span>
+                    <span v-if="t.sensitivity"> · {{ t.sensitivity }}</span>
+                    <span v-if="t.hasSubjectCol === false"> · 无主体列</span>
+                    <span v-else-if="t.hasSubjectCol"> · 有主体列</span>
+                  </div>
+                </td>
+                <td style="font-size: 11px">
+                  <span
+                    v-if="t.lineageConfidence"
+                    class="tag"
+                    :class="t.lineageConfidence === 'inferred' ? 'tag-gray' : 'tag-green'"
+                  >{{ t.lineageConfidence }}</span>
+                  <span v-else class="tip">索引</span>
+                  <span v-if="t.lineageHop != null" class="tip"> hop {{ t.lineageHop }}</span>
+                  <span v-if="t.lineageConfirmed" class="tag tag-green">已确认</span>
                 </td>
                 <td style="font-size: 11px">{{ t.modeLabel }}</td>
                 <td style="font-size: 11px">
@@ -627,6 +682,13 @@ function exportList() {
                   <div v-if="t.excludeReason" class="tip">{{ t.excludeReason }}</div>
                 </td>
                 <td class="cp-acts">
+                  <button
+                    v-if="t.needsConfirm"
+                    type="button"
+                    class="btn-link"
+                    :disabled="actionBusy"
+                    @click="doConfirmLineage(t)"
+                  >确认推断</button>
                   <button
                     v-if="!['done', 'excluded'].includes(t.status)"
                     type="button"
@@ -646,7 +708,7 @@ function exportList() {
                 </td>
               </tr>
               <tr v-if="!targets.length">
-                <td colspan="6" class="cp-empty">计划为空，请先评估</td>
+                <td colspan="7" class="cp-empty">计划为空，请先评估</td>
               </tr>
             </tbody>
           </table>
@@ -962,6 +1024,14 @@ function exportList() {
   flex-wrap: wrap;
   gap: 6px;
   margin-bottom: 12px;
+}
+
+.cp-row-inferred td {
+  color: var(--text-3);
+  background: color-mix(in srgb, var(--bg-2) 80%, transparent);
+}
+.cp-row-inferred .btn-link:not(.danger) {
+  color: var(--text-2);
 }
 
 .cp-sec-title {
