@@ -70,8 +70,8 @@ async function confirmDeepLink() {
   const p = pendingDeepLink.value
   if (!p) return
   pendingDeepLink.value = null
-  if (p.action === 'compact') await onRunCompaction(p.table)
-  else if (p.action === 'expire') await onExpireSnapshot(p.table)
+  if (p.action === 'compact') await onRunCompaction(p.table, p.adviceId)
+  else if (p.action === 'expire') await onExpireSnapshot(p.table, p.adviceId)
   router.replace({ path: '/lifecycle', query: {} })
 }
 
@@ -115,25 +115,43 @@ function goCompliance() {
   router.push('/compliance')
 }
 
-async function onExpireSnapshot(table) {
+async function onExpireSnapshot(table, adviceId) {
   try {
-    const run = await expireTable(table)
+    const run = await expireTable(table, undefined, adviceId || undefined)
     showToast(
       `快照过期已提交 DS · ${table} · ${run.status} · ${run.dsTaskId || run.runId}`,
       run.status === 'failed' ? 'warning' : 'success',
     )
+    if (run.runId && run.status === 'running') {
+      setTimeout(async () => {
+        try {
+          await syncRun(run.runId)
+        } catch {
+          /* ignore */
+        }
+      }, 8000)
+    }
   } catch (e) {
     showToast(`过期失败：${e.message || e}`, 'error')
   }
 }
 
-async function onRunCompaction(table) {
+async function onRunCompaction(table, adviceId) {
   try {
-    const run = await compactTable(table)
+    const run = await compactTable(table, undefined, adviceId || undefined)
     showToast(
       `⚡ 合并已提交 DS · ${table} · ${run.status} · ${run.dsTaskId || run.runId}`,
       run.status === 'failed' ? 'warning' : 'success',
     )
+    if (run.runId && run.status === 'running') {
+      setTimeout(async () => {
+        try {
+          await syncRun(run.runId)
+        } catch {
+          /* ignore */
+        }
+      }, 8000)
+    }
   } catch (e) {
     showToast(`合并失败：${e.message || e}`, 'error')
   }
@@ -273,7 +291,7 @@ async function submitPolicy() {
 
       <div class="card">
         <div class="card-header">
-          <div class="card-title">📊 各表存储与策略 <span class="tip">· 分层 / 快照 / 合并策略</span></div>
+          <div class="card-title">📊 各表存储与策略 <span class="tip">· 物理口径 / 增速同源 storage/tables</span></div>
           <button type="button" class="btn btn-sm" @click="showStorageTrend">增速趋势 →</button>
         </div>
         <div class="card-body" style="padding: 0">
@@ -282,7 +300,8 @@ async function submitPolicy() {
               <tr>
                 <th>表</th>
                 <th>层</th>
-                <th>存储</th>
+                <th>存储（物理）</th>
+                <th>增速</th>
                 <th>文件数</th>
                 <th>策略</th>
               </tr>
@@ -294,6 +313,7 @@ async function submitPolicy() {
                 </td>
                 <td><span class="tag tag-blue" style="font-size: 10px">{{ row.layer }}</span></td>
                 <td><b>{{ row.size }}</b></td>
+                <td style="font-size: 11px" :style="row.status === 'warn' ? { color: 'var(--danger, #c0392b)' } : {}">{{ row.growth }}</td>
                 <td style="font-size: 11px">{{ row.files }}</td>
                 <td><span class="tag tag-gray" style="font-size: 10px">{{ row.policy }}</span></td>
               </tr>

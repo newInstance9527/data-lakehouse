@@ -33,12 +33,12 @@ export function upsertLcPolicy(payload) {
   return http.put(`${L}/policies`, payload)
 }
 
-export function triggerLcCompact({ tableFqn, ws, remark } = {}) {
-  return http.post(`${L}/compact`, { tableFqn, ws, remark })
+export function triggerLcCompact({ tableFqn, ws, remark, adviceId } = {}) {
+  return http.post(`${L}/compact`, { tableFqn, ws, remark, adviceId })
 }
 
-export function triggerLcExpire({ tableFqn, ws, remark } = {}) {
-  return http.post(`${L}/expire`, { tableFqn, ws, remark })
+export function triggerLcExpire({ tableFqn, ws, remark, adviceId } = {}) {
+  return http.post(`${L}/expire`, { tableFqn, ws, remark, adviceId })
 }
 
 export function scanLcOrphan({ ws, bucket, dryRun = true } = {}) {

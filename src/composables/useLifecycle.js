@@ -6,8 +6,8 @@ import {
   fetchLcJobsLatest,
   fetchLcOverview,
   fetchLcPolicies,
+  fetchLcStorageTables,
   fetchLcStorageTrend,
-  fetchLcTopStorage,
   runLcJobsNow,
   scanLcOrphan,
   syncLcRun,
@@ -136,6 +136,12 @@ export function useLifecycle() {
     const ov = overview.value
     if (!ov) return LC_KPIS
     const hot = ov.hotWarmCold || {}
+    const reclaim = ov.reclaimableBytes != null ? humanSizeSimple(ov.reclaimableBytes) : null
+    const active = ov.activeBytes != null ? humanSizeSimple(ov.activeBytes) : null
+    const caliberHint =
+      ov.storageCaliber === 'physical' || reclaim
+        ? `物理口径${active ? ` · 活跃 ${active}` : ''}${reclaim ? ` · 可回收 ${reclaim}` : ''}`
+        : `热 ${hot.hotTb ?? '—'} / 温 ${hot.warmTb ?? '—'} / 冷 ${hot.coldTb ?? '—'}`
     return [
       {
         icon: '💾',
@@ -143,7 +149,7 @@ export function useLifecycle() {
         value: String(ov.totalStorageTb ?? '—'),
         unit: 'TB',
         label: '总存储',
-        trend: `热 ${hot.hotTb ?? '—'} / 温 ${hot.warmTb ?? '—'} / 冷 ${hot.coldTb ?? '—'}`,
+        trend: caliberHint,
       },
       {
         icon: '🧹',
@@ -205,13 +211,13 @@ export function useLifecycle() {
     }))
   })
 
-  // topStorage 现由 storage/tables 委托，字段含三口径
+  // 各表存储列：读 /lh/lifecycle/storage/tables（物理 + 窗口增速）
   const storageRows = computed(() => {
     if (!topStorage.value.length) return LC_STORAGE
     return topStorage.value.map((r) => ({
       table: r.fqtn || r.tableFqn,
       layer: r.layer || '—',
-      size: r.sizeLabel || humanSizeSimple(r.activeBytes ?? r.totalBytes ?? r.sizeBytes),
+      size: r.sizeLabel || humanSizeSimple(r.totalBytes ?? r.activeBytes ?? r.sizeBytes),
       files: r.fileCount ?? '—',
       policy: r.policyLabel || '—',
       status: r.anomaly ? 'warn' : r.status || 'ok',
@@ -432,25 +438,36 @@ export function useLifecycle() {
     loading.value = true
     lastError.value = null
     try {
-      const [ov, jobs, top, pols, trend] = await Promise.all([
+      const [ov, jobs, tablesPage, pols, trend] = await Promise.all([
         fetchLcOverview(ws),
         fetchLcJobsLatest(ws),
-        fetchLcTopStorage(ws, 20),
+        fetchLcStorageTables({
+          ws,
+          range: '30d',
+          sort: 'totalBytes',
+          order: 'desc',
+          page: 1,
+          size: 20,
+        }),
         fetchLcPolicies(ws),
         fetchLcStorageTrend(ws, '30d').catch(() => null),
       ])
       overview.value = ov
       jobsLatest.value = jobs
-      topStorage.value = (top || []).map((r) => ({
+      const list = Array.isArray(tablesPage)
+        ? tablesPage
+        : tablesPage?.list || tablesPage?.records || []
+      topStorage.value = list.map((r) => ({
         ...r,
         tableFqn: r.fqtn || r.tableFqn,
-        sizeLabel: humanSizeSimple(r.activeBytes ?? r.totalBytes ?? r.sizeBytes),
+        // 主台「存储」列用物理口径，与 KPI 总存储同源
+        sizeLabel: humanSizeSimple(r.totalBytes ?? r.activeBytes ?? r.sizeBytes),
         growth7dPct: r.growthPct ?? r.growth7dPct,
       }))
       policies.value = pols || []
       storageTrend.value = trend
       loaded.value = true
-      return { overview: ov, jobs, top, policies: pols, trend }
+      return { overview: ov, jobs, top: list, policies: pols, trend }
     } catch (e) {
       lastError.value = e
       console.error('[lifecycle] load failed', e)
@@ -478,19 +495,19 @@ export function useLifecycle() {
     }
   }
 
-  async function compactTable(tableFqn, ws) {
+  async function compactTable(tableFqn, ws, adviceId) {
     actionBusy.value = true
     try {
-      return await triggerLcCompact({ tableFqn, ws })
+      return await triggerLcCompact({ tableFqn, ws, adviceId })
     } finally {
       actionBusy.value = false
     }
   }
 
-  async function expireTable(tableFqn, ws) {
+  async function expireTable(tableFqn, ws, adviceId) {
     actionBusy.value = true
     try {
-      return await triggerLcExpire({ tableFqn, ws })
+      return await triggerLcExpire({ tableFqn, ws, adviceId })
     } finally {
       actionBusy.value = false
     }

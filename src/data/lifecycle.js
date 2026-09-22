@@ -7,7 +7,7 @@ export const LC_KPIS = [
     value: '4.2',
     unit: 'TB',
     label: '总存储',
-    trend: '热 1.1 / 温 2.8 / 冷 0.3',
+    trend: '物理口径 · 热 1.1 / 温 2.8 / 冷 0.3',
   },
   {
     icon: '🧹',
