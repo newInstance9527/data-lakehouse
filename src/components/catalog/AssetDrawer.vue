@@ -560,6 +560,17 @@ function fmtCell(v) {
   if (typeof v === 'boolean') return v ? 'true' : 'false'
   return v
 }
+
+/** Grav 列名与 Trino 行键大小写可能不一致 */
+function cellAt(row, col) {
+  if (!row || col == null) return undefined
+  if (Object.prototype.hasOwnProperty.call(row, col)) return row[col]
+  const want = String(col).toLowerCase()
+  for (const k of Object.keys(row)) {
+    if (k.toLowerCase() === want) return row[k]
+  }
+  return undefined
+}
 </script>
 
 <template>
@@ -814,7 +825,7 @@ function fmtCell(v) {
                 <tbody>
                   <tr v-for="(row, ri) in previewRows" :key="ri">
                     <td v-for="c in previewCols" :key="c.enName">
-                      {{ fmtCell(row[c.enName]) }}
+                      {{ fmtCell(cellAt(row, c.enName)) }}
                     </td>
                   </tr>
                 </tbody>

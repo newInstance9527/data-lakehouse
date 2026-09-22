@@ -11,7 +11,7 @@ const props = defineProps({
   open: { type: Boolean, default: false },
   task: { type: Object, default: null },
 })
-const emit = defineEmits(['close', 'rerun', 'select-node'])
+const emit = defineEmits(['close', 'rerun', 'select-node', 'refresh-runs'])
 
 const router = useRouter()
 const { showToast } = useToast()
@@ -29,9 +29,68 @@ const nodeLogMeta = ref(null)
 const nodeLogLoading = ref(false)
 const nodeLogError = ref('')
 const nodeLogLineNum = ref(0)
+/** 是否定时续拉 DS 日志；默认关闭，避免一直刷 */
+const nodeLogAutoRefresh = ref(false)
+/** 新日志到达时是否滚到底 */
 const nodeLogAutoFollow = ref(true)
 const nodeLogPreRef = ref(null)
 let nodeLogPollTimer = null
+/** 执行记录 / 运行详情自动刷新（有 RUNNING 才轮询） */
+let runStatusPollTimer = null
+const RUN_POLL_MS = 4000
+const LOG_POLL_MS = 3000
+
+function isRunStatusActive(st) {
+  const s = String(st || '').toUpperCase()
+  return s === 'RUNNING' || s === 'SUBMITTED' || s === 'PENDING'
+}
+
+function isNodeStatusActive(st) {
+  const s = String(st || '').toLowerCase()
+  return s === 'running' || s === 'submitted' || s === 'pending'
+}
+
+function mapApiRunStatus(st) {
+  const s = String(st || '').toLowerCase()
+  if (s === 'success' || s === 'done') return 'SUCCESS'
+  if (s === 'failed' || s === 'error' || s === 'blocked') return 'ERROR'
+  if (s === 'running' || s === 'submitted' || s === 'pending') return 'RUNNING'
+  return String(st || 'PENDING').toUpperCase()
+}
+
+function applyRunDetailToCache(runId, d) {
+  if (!runId || !d) return
+  detailCache.value = {
+    ...detailCache.value,
+    [runId]: {
+      ...(detailCache.value[runId] || {}),
+      note: d.message || detailCache.value[runId]?.note || '',
+      status: mapApiRunStatus(d.status),
+      env: d.env || detailCache.value[runId]?.env,
+      trigger: d.trigger || d.triggerType || detailCache.value[runId]?.trigger,
+      runNodes: d.nodes || detailCache.value[runId]?.runNodes || [],
+      opsPath: d.opsPath || d.alert?.opsPath || detailCache.value[runId]?.opsPath,
+      alert: d.alert || detailCache.value[runId]?.alert,
+      start: d.startedAt
+        ? String(d.startedAt).replace('T', ' ').slice(0, 19)
+        : detailCache.value[runId]?.start,
+      end: d.finishedAt
+        ? String(d.finishedAt).replace('T', ' ').slice(0, 19)
+        : detailCache.value[runId]?.end,
+      duration:
+        detailCache.value[runId]?.duration ||
+        (mapApiRunStatus(d.status) === 'RUNNING' ? '进行中' : detailCache.value[runId]?.duration),
+    },
+  }
+  // 同步列表行状态（props.task.logs 可变引用）
+  const row = props.task?.logs?.find((l) => l.run === runId)
+  if (row) {
+    row.status = mapApiRunStatus(d.status)
+    if (d.message) row.note = d.message
+    if (d.finishedAt) row.end = String(d.finishedAt).replace('T', ' ').slice(0, 19)
+    if (d.nodes) row.runNodes = d.nodes
+  }
+}
 
 /** 目标表结果预览（试跑成功核对） */
 const RESULT_PREVIEW_TYPES = new Set(['sink_iceberg', 'sink_ck', 'sink_rdb'])
@@ -118,6 +177,66 @@ function stopNodeLogPoll() {
   }
 }
 
+function stopRunStatusPoll() {
+  if (runStatusPollTimer) {
+    clearInterval(runStatusPollTimer)
+    runStatusPollTimer = null
+  }
+}
+
+function hasActiveRuns() {
+  const list = props.task?.logs || []
+  if (list.some((l) => isRunStatusActive(l.status))) return true
+  const active = activeLogRow.value
+  if (active && isRunStatusActive(active.status)) return true
+  return false
+}
+
+async function refreshActiveRunDetail() {
+  const runId = activeRun.value || activeLogRow.value?.run
+  if (!runId) return null
+  try {
+    const d = await fetchEtlRunDetail(runId)
+    applyRunDetailToCache(runId, d)
+    return d
+  } catch {
+    return null
+  }
+}
+
+async function tickRunStatusRefresh() {
+  if (!props.open) {
+    stopRunStatusPoll()
+    return
+  }
+  try {
+    emit('refresh-runs')
+    // 父级 refresh 异步；本抽屉再拉一次当前 run 详情保证节点时间线更新
+    await refreshActiveRunDetail()
+  } catch {
+    /* soft-fail */
+  }
+  if (!hasActiveRuns()) {
+    stopRunStatusPoll()
+    // 节点已终态则停日志轮询
+    if (!isNodeStatusActive(activeNode.value?.status || nodeLogMeta.value?.status)) {
+      stopNodeLogPoll()
+      if (nodeLogAutoRefresh.value) nodeLogAutoRefresh.value = false
+    }
+  }
+}
+
+function startRunStatusPollIfNeeded() {
+  if (!props.open || !hasActiveRuns()) {
+    stopRunStatusPoll()
+    return
+  }
+  if (runStatusPollTimer) return
+  runStatusPollTimer = setInterval(() => {
+    tickRunStatusRefresh()
+  }, RUN_POLL_MS)
+}
+
 function resetNodeLog() {
   stopNodeLogPoll()
   nodeLogText.value = ''
@@ -157,13 +276,22 @@ async function loadNodeLog({ append = false } = {}) {
       status: d?.status || activeNode.value?.status,
       message: d?.message || '',
     }
-    if (d?.ok === false && d?.message) {
-      nodeLogError.value = String(d.message)
+    if (d?.ok === false && (d?.message || d?.code)) {
+      const code = String(d.code || '')
+      nodeLogError.value =
+        code === 'no_ds_task_instance'
+          ? String(d.content || d.message || '暂无 DS 任务实例，无法拉实时日志')
+          : String(d.message || d.content || '拉取节点日志失败')
     }
     if (nodeLogAutoFollow.value) {
       await nextTick()
       const el = nodeLogPreRef.value
       if (el) el.scrollTop = el.scrollHeight
+    }
+    // 节点已结束：关掉自动刷新
+    if (!isNodeStatusActive(nodeLogMeta.value?.status || activeNode.value?.status)) {
+      stopNodeLogPoll()
+      if (nodeLogAutoRefresh.value) nodeLogAutoRefresh.value = false
     }
   } catch (e) {
     nodeLogError.value = e?.message || '拉取节点日志失败'
@@ -173,20 +301,38 @@ async function loadNodeLog({ append = false } = {}) {
 }
 
 function startNodeLogPollIfNeeded() {
-  stopNodeLogPoll()
-  const st = String(activeNode.value?.status || nodeLogMeta.value?.status || '').toLowerCase()
-  const running = st === 'running' || st === 'submitted' || st === 'pending'
-  if (!running || detailTab.value !== 'nodes' || !props.open) return
-  nodeLogPollTimer = setInterval(() => {
-    loadNodeLog({ append: true })
-  }, 3000)
+  if (!nodeLogAutoRefresh.value) {
+    stopNodeLogPoll()
+    return
+  }
+  const st = activeNode.value?.status || nodeLogMeta.value?.status
+  if (!isNodeStatusActive(st) || detailTab.value !== 'nodes' || !props.open) {
+    stopNodeLogPoll()
+    return
+  }
+  if (nodeLogPollTimer) return
+  nodeLogPollTimer = setInterval(async () => {
+    await loadNodeLog({ append: true })
+    const now = activeNode.value?.status || nodeLogMeta.value?.status
+    // 节点结束后不再持续刷新
+    if (!isNodeStatusActive(now)) {
+      stopNodeLogPoll()
+      nodeLogAutoRefresh.value = false
+    }
+  }, LOG_POLL_MS)
 }
+
+watch(nodeLogAutoRefresh, (on) => {
+  if (on) startNodeLogPollIfNeeded()
+  else stopNodeLogPoll()
+})
 
 watch(
   () => [props.open, props.task?.id],
-  () => {
+  async () => {
     if (!props.open) {
       resetNodeLog()
+      stopRunStatusPoll()
       return
     }
     activeRun.value = props.task?.logs?.[0]?.run || ''
@@ -197,6 +343,9 @@ watch(
     triggerFilter.value = 'ALL'
     resetNodeLog()
     closeResultPreview()
+    emit('refresh-runs')
+    await refreshActiveRunDetail()
+    startRunStatusPollIfNeeded()
   },
 )
 
@@ -209,32 +358,13 @@ watch(detail, (d) => {
 watch(activeRun, async (runId) => {
   if (!runId || !props.open) return
   resetNodeLog()
-  if (detailCache.value[runId]?.runNodes) return
   try {
     const d = await fetchEtlRunDetail(runId)
-    if (!d) return
-    detailCache.value = {
-      ...detailCache.value,
-      [runId]: {
-        note: d.message || '',
-        status:
-          d.status === 'success'
-            ? 'SUCCESS'
-            : d.status === 'failed'
-              ? 'ERROR'
-              : d.status === 'running' || d.status === 'submitted'
-                ? 'RUNNING'
-                : String(d.status || '').toUpperCase(),
-        env: d.env,
-        trigger: d.trigger || d.triggerType,
-        runNodes: d.nodes || [],
-        opsPath: d.opsPath || d.alert?.opsPath,
-        alert: d.alert,
-      },
-    }
+    if (d) applyRunDetailToCache(runId, d)
   } catch {
     /* soft-fail：抽屉仍用列表摘要 */
   }
+  startRunStatusPollIfNeeded()
 })
 
 watch(
@@ -245,11 +375,29 @@ watch(
       return
     }
     await loadNodeLog({ append: false })
-    startNodeLogPollIfNeeded()
+    const st = activeNode.value?.status || nodeLogMeta.value?.status
+    if (isNodeStatusActive(st) && nodeLogAutoRefresh.value) {
+      startNodeLogPollIfNeeded()
+    } else {
+      stopNodeLogPoll()
+    }
   },
 )
 
-onUnmounted(() => stopNodeLogPoll())
+/** 列表里出现 RUNNING 时自动开状态轮询；全终态则停 */
+watch(
+  () => (props.task?.logs || []).map((l) => `${l.run}:${l.status}`).join('|'),
+  () => {
+    if (!props.open) return
+    if (hasActiveRuns()) startRunStatusPollIfNeeded()
+    else stopRunStatusPoll()
+  },
+)
+
+onUnmounted(() => {
+  stopNodeLogPoll()
+  stopRunStatusPoll()
+})
 
 function openRun(run) {
   activeRun.value = run
@@ -553,7 +701,11 @@ checkpoint: {{ detail.app.checkpoint }}</pre>
               <div class="trd-node-log-head">
                 <span>节点日志 · {{ activeNode.name }}</span>
                 <div class="trd-node-log-actions">
-                  <label class="trd-follow">
+                  <label class="trd-follow" title="仅在节点运行中每 3 秒续拉">
+                    <input v-model="nodeLogAutoRefresh" type="checkbox" />
+                    自动刷新
+                  </label>
+                  <label class="trd-follow" title="新日志追加后滚到底部">
                     <input v-model="nodeLogAutoFollow" type="checkbox" />
                     跟随滚动
                   </label>

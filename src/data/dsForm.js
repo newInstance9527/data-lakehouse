@@ -519,9 +519,9 @@ export const DS_TYPE_FIELDS = {
     },
     {
       "n": "database",
-      "l": "命名空间",
+      "l": "默认命名空间",
       "t": "text",
-      "ph": "hms",
+      "ph": "log（Iceberg namespace，非 HMS 库名）",
       "def": ""
     },
     {

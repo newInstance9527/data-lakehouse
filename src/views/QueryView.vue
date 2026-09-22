@@ -984,7 +984,8 @@ function cellClass(col, row) {
         </div>
         <div class="cat-body">
           <div v-if="apiOnline && !catalog.length" class="cat-empty">
-            暂无可用表：需为资产拥有者或已获 SELECT，且表已挂接并进入查询面（默认仅 iceberg；登记名 ds_* 不可直接即席）
+            暂无可用表：需为资产拥有者（或已获 SELECT），且已挂接 Grav 指针并进入查询面（默认仅
+            <code>iceberg</code>）。MySQL 等登记 catalog <code>ds_*</code> 不会出现在即席目录——请登记湖表资产。
           </div>
           <template v-for="ds in catalog" :key="ds.id">
             <button

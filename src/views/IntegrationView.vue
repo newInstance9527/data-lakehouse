@@ -292,9 +292,14 @@ function onCompleteConnect(toId) {
   showToast(ok ? '✓ 已连线' : '连线失败（可能已存在）', ok ? 'success' : 'warning')
 }
 
-function onMoveNode(id, pos) {
+function onMoveNode(id, x, y) {
   if (!assertEditOrGuide('编辑图')) return
-  moveNode(id, pos)
+  // DagCanvas emit('move', id, x, y)；兼容旧调用传 { x, y }
+  if (x != null && typeof x === 'object') {
+    moveNode(id, x.x, x.y)
+    return
+  }
+  moveNode(id, x, y)
 }
 
 function onUpdateTask(patch) {
@@ -696,6 +701,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
       @close="runsDrawerOpen = false"
       @rerun="onTrialRun"
       @select-node="onSelectRunNode"
+      @refresh-runs="() => current && refreshRuns(current.id)"
     />
   </div>
 </template>

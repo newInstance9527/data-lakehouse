@@ -15,9 +15,7 @@ import {
   dsCategory,
   endpointOf,
   groupTypesByCategory,
-  sortTypesByCategory,
   statusMeta,
-  typeCategoryKey,
 } from '@/data/datasources'
 import { schemaSummary, tablesToSchema } from '@/utils/schemaList'
 import { pageGuideOf } from '@/data/pageGuides'
@@ -116,20 +114,11 @@ const list = computed(() => {
       .toLowerCase()
       .includes(kw)
   })
-  const typeOrder = sortTypesByCategory([...new Set(filtered.map((s) => s.type))])
-  const typeIdx = Object.fromEntries(typeOrder.map((t, i) => [t, i]))
   return filtered.slice().sort((a, b) => {
-    const ca = typeCategoryKey(a.type)
-    const cb = typeCategoryKey(b.type)
-    if (ca !== cb) {
-      const ia = DS_CAT_OPTIONS.findIndex((c) => c.value === ca)
-      const ib = DS_CAT_OPTIONS.findIndex((c) => c.value === cb)
-      return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib)
-    }
-    const ta = typeIdx[a.type] ?? 999
-    const tb = typeIdx[b.type] ?? 999
-    if (ta !== tb) return ta - tb
-    return String(a.name).localeCompare(String(b.name), 'zh')
+    const ta = Date.parse(a.createTime || a.create_time || '') || 0
+    const tb = Date.parse(b.createTime || b.create_time || '') || 0
+    if (tb !== ta) return tb - ta
+    return String(b.id || '').localeCompare(String(a.id || ''))
   })
 })
 

@@ -120,13 +120,15 @@ function normalizeNode(n) {
     }
   }
   if (!conf || typeof conf !== 'object' || Array.isArray(conf)) conf = {}
+  const x = Number(n.x ?? n.posX ?? 0)
+  const y = Number(n.y ?? n.posY ?? 0)
   return {
     id,
     type,
     name: n.name || NODE_TYPES[type]?.label || id,
     meta: n.meta || '',
-    x: Number(n.x ?? n.posX ?? 0),
-    y: Number(n.y ?? n.posY ?? 0),
+    x: Number.isFinite(x) ? x : 0,
+    y: Number.isFinite(y) ? y : 0,
     status: n.status || 'pending',
     conf: mergeConfDefaults(type, conf),
     resolvedEngine: n.resolvedEngine,
@@ -464,8 +466,11 @@ export function useEtl() {
     if (!t) return
     const n = t.nodes.find((x0) => x0.id === id)
     if (!n) return
-    n.x = Math.max(0, x)
-    n.y = Math.max(0, y)
+    const nx = Number(x)
+    const ny = Number(y)
+    if (!Number.isFinite(nx) || !Number.isFinite(ny)) return
+    n.x = Math.max(0, Math.round(nx))
+    n.y = Math.max(0, Math.round(ny))
     markDirty()
   }
 
