@@ -4,7 +4,13 @@ import { useRouter } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
 import { useToast } from '@/composables/useToast'
 import { pageGuideOf } from '@/data/pageGuides'
-import { fetchQueryGovOverview, formatScanBytes } from '@/api/query'
+import {
+  fetchCatalogMaps,
+  fetchQueryGovOverview,
+  fetchQuerySurface,
+  formatScanBytes,
+  upsertCatalogMap,
+} from '@/api/query'
 import {
   COST_DOMAINS,
   QG_KPIS,
@@ -23,6 +29,21 @@ const guide = pageGuideOf('querygov')
 const loading = ref(false)
 const live = ref(false)
 const overview = ref(null)
+
+const surface = ref(null)
+const catalogMaps = ref([])
+const surfaceLoading = ref(false)
+const mapSaving = ref(false)
+const mapForm = ref({
+  ws: 'default',
+  gravCatalog: 'clickhouse',
+  trinoCatalog: 'clickhouse',
+  kind: 'federated',
+  enabled: true,
+  remark: '',
+})
+const lastChecklist = ref([])
+const lastMapMessage = ref('')
 
 const kpis = computed(() => {
   const list = overview.value?.kpis
@@ -99,18 +120,89 @@ const audits = computed(() => {
   }))
 })
 
+const surfaceChips = computed(() => {
+  const s = surface.value
+  if (!s) return null
+  return {
+    whitelist: Array.isArray(s.whitelist) ? s.whitelist : [],
+    live: Array.isArray(s.liveCatalogs) ? s.liveCatalogs : [],
+    queryable: Array.isArray(s.queryable) ? s.queryable : [],
+    liveError: s.liveError || '',
+  }
+})
+
 async function loadOverview() {
   loading.value = true
   try {
     const data = await fetchQueryGovOverview()
     overview.value = data || null
     live.value = !!data
+    if (data?.querySurface) {
+      surface.value = data.querySurface
+    }
   } catch (e) {
     overview.value = null
     live.value = false
     showToast(e?.message || '治理总览拉取失败，展示演示数据', 'warning')
   } finally {
     loading.value = false
+  }
+}
+
+async function loadFederation() {
+  surfaceLoading.value = true
+  try {
+    const [surf, maps] = await Promise.all([
+      fetchQuerySurface().catch(() => null),
+      fetchCatalogMaps({ ws: mapForm.value.ws }).catch(() => []),
+    ])
+    if (surf) surface.value = surf
+    catalogMaps.value = Array.isArray(maps) ? maps : []
+  } catch (e) {
+    showToast(e?.message || '查询面/映射拉取失败', 'warning')
+  } finally {
+    surfaceLoading.value = false
+  }
+}
+
+async function saveCatalogMap() {
+  const f = mapForm.value
+  if (!f.gravCatalog?.trim() || !f.trinoCatalog?.trim()) {
+    showToast('gravCatalog / trinoCatalog 不能为空', 'warning')
+    return
+  }
+  mapSaving.value = true
+  lastChecklist.value = []
+  lastMapMessage.value = ''
+  try {
+    const res = await upsertCatalogMap({
+      ws: f.ws || 'default',
+      gravCatalog: f.gravCatalog.trim(),
+      trinoCatalog: f.trinoCatalog.trim(),
+      kind: f.kind || 'federated',
+      enabled: !!f.enabled,
+      remark: f.remark || undefined,
+    })
+    lastChecklist.value = Array.isArray(res?.checklist) ? res.checklist : []
+    lastMapMessage.value = res?.message || (res?.queryable ? '已开通' : '已保存')
+    showToast(lastMapMessage.value, res?.queryable ? 'success' : 'info')
+    await loadFederation()
+  } catch (e) {
+    showToast(e?.message || '联邦开通失败（须先在 Trino 挂载 catalog）', 'error')
+  } finally {
+    mapSaving.value = false
+  }
+}
+
+function fillMapFromRow(row) {
+  if (!row) return
+  mapForm.value = {
+    ws: row.ws || 'default',
+    gravCatalog: row.gravCatalog || '',
+    trinoCatalog: row.trinoCatalog || '',
+    kind: row.kind || 'federated',
+    enabled: row.enabled !== false,
+    remark: row.remark || '',
   }
 }
 
@@ -134,7 +226,10 @@ function openAudit(a) {
   }
 }
 
-onMounted(loadOverview)
+onMounted(() => {
+  loadOverview()
+  loadFederation()
+})
 </script>
 
 <template>
@@ -158,6 +253,110 @@ onMounted(loadOverview)
       {{ formatScanBytes(overview?.scanDefaultBytes) }} / 硬顶
       {{ formatScanBytes(overview?.scanHardBytes) }} · adhoc 在途
       {{ overview?.adhocConcurrent }}/{{ overview?.adhocMaxConcurrent }}
+    </div>
+
+    <div class="card qg-section">
+      <div class="card-header">
+        <div class="card-title">
+          🔗 查询面与联邦源
+          <span class="tip">· whitelist ∩ SHOW CATALOGS · POST catalog-map</span>
+        </div>
+        <button type="button" class="btn btn-sm" :disabled="surfaceLoading" @click="loadFederation">
+          {{ surfaceLoading ? '…' : '刷新查询面' }}
+        </button>
+      </div>
+      <div class="card-body">
+        <div v-if="surfaceChips" class="fed-chips">
+          <div class="fed-chip-row">
+            <span class="fed-label">白名单</span>
+            <code v-for="c in surfaceChips.whitelist" :key="'w-' + c" class="fed-tag">{{ c }}</code>
+            <span v-if="!surfaceChips.whitelist.length" class="tip">（空）</span>
+          </div>
+          <div class="fed-chip-row">
+            <span class="fed-label">实况</span>
+            <code v-for="c in surfaceChips.live" :key="'l-' + c" class="fed-tag live">{{ c }}</code>
+            <span v-if="!surfaceChips.live.length" class="tip">（不可达或空）</span>
+          </div>
+          <div class="fed-chip-row">
+            <span class="fed-label">可查</span>
+            <code v-for="c in surfaceChips.queryable" :key="'q-' + c" class="fed-tag ok">{{ c }}</code>
+            <span v-if="!surfaceChips.queryable.length" class="tip">（无交集）</span>
+          </div>
+          <div v-if="surfaceChips.liveError" class="fed-err">{{ surfaceChips.liveError }}</div>
+        </div>
+        <div v-else class="tip">尚未拉到 query-surface；后端连通后刷新。</div>
+
+        <div class="fed-grid">
+          <div class="fed-form">
+            <div class="fed-form-title">联邦开通</div>
+            <label class="fed-field">
+              <span>ws</span>
+              <input v-model="mapForm.ws" type="text" />
+            </label>
+            <label class="fed-field">
+              <span>gravCatalog</span>
+              <input v-model="mapForm.gravCatalog" type="text" placeholder="clickhouse 或 ds_*" />
+            </label>
+            <label class="fed-field">
+              <span>trinoCatalog</span>
+              <input v-model="mapForm.trinoCatalog" type="text" placeholder="真实 Trino 名，如 clickhouse" />
+            </label>
+            <label class="fed-field">
+              <span>kind</span>
+              <input v-model="mapForm.kind" type="text" />
+            </label>
+            <label class="fed-check">
+              <input v-model="mapForm.enabled" type="checkbox" />
+              enabled
+            </label>
+            <label class="fed-field">
+              <span>remark</span>
+              <input v-model="mapForm.remark" type="text" />
+            </label>
+            <button
+              type="button"
+              class="btn btn-sm btn-primary"
+              :disabled="mapSaving"
+              @click="saveCatalogMap"
+            >
+              {{ mapSaving ? '保存中…' : '开通 / 更新映射' }}
+            </button>
+            <p v-if="lastMapMessage" class="fed-msg">{{ lastMapMessage }}</p>
+            <ul v-if="lastChecklist.length" class="fed-check-list">
+              <li v-for="(line, i) in lastChecklist" :key="i">{{ line }}</li>
+            </ul>
+          </div>
+          <div class="fed-maps">
+            <div class="fed-form-title">已登记映射</div>
+            <table v-if="catalogMaps.length" class="table">
+              <thead>
+                <tr>
+                  <th>Grav</th>
+                  <th>Trino</th>
+                  <th>kind</th>
+                  <th>启用</th>
+                  <th>可查</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="m in catalogMaps"
+                  :key="m.id || m.gravCatalog"
+                  class="audit-row"
+                  @click="fillMapFromRow(m)"
+                >
+                  <td><code>{{ m.gravCatalog }}</code></td>
+                  <td><code>{{ m.trinoCatalog }}</code></td>
+                  <td>{{ m.kind || '—' }}</td>
+                  <td>{{ m.enabled ? '是' : '否' }}</td>
+                  <td>{{ m.inQueryable ? '✓' : '○' }}</td>
+                </tr>
+              </tbody>
+            </table>
+            <div v-else class="tip">暂无映射（或未连通）。一期目标：clickhouse 自映射。</div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <div class="kpi-grid qg-kpi">
@@ -373,5 +572,79 @@ onMounted(loadOverview)
   justify-content: space-between;
   margin-top: 4px;
   color: var(--text-3);
+}
+.fed-chips { margin-bottom: 14px; }
+.fed-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  font-size: 12px;
+}
+.fed-label {
+  min-width: 48px;
+  color: var(--text-3);
+  font-weight: 600;
+}
+.fed-tag {
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: var(--bg-2);
+  font-size: 11px;
+}
+.fed-tag.live { background: #e6f4ff; }
+.fed-tag.ok { background: #f6ffed; }
+.fed-err {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--danger, #cf1322);
+}
+.fed-grid {
+  display: grid;
+  grid-template-columns: 1fr 1.2fr;
+  gap: 16px;
+}
+@media (max-width: 900px) {
+  .fed-grid { grid-template-columns: 1fr; }
+}
+.fed-form-title {
+  font-weight: 600;
+  margin-bottom: 10px;
+  font-size: 13px;
+}
+.fed-field {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+.fed-field input {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-1);
+}
+.fed-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  margin: 8px 0;
+}
+.fed-msg { font-size: 12px; margin-top: 8px; color: var(--text-2); }
+.fed-check-list {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
 }
 </style>
