@@ -10,7 +10,7 @@ import { useToast } from '@/composables/useToast'
 import { confirmDelete } from '@/composables/useConfirmDelete'
 import { APPLY_EXPIRE_OPTIONS } from '@/data/apply'
 import { formatDataType, yesNo } from '@/utils/fieldSchema'
-import { lineagePath, qualityPath } from '@/utils/moduleLinks'
+import { lineagePath, qualityPath, standardMapping } from '@/utils/moduleLinks'
 import { displayUser } from '@/utils/displayUser'
 
 const props = defineProps({
@@ -52,10 +52,19 @@ let grantFetchedFor = null
 
 const qualityExtra = computed(() => props.asset?.extras?.quality || null)
 const lineageExtra = computed(() => props.asset?.extras?.lineage || null)
+const standardExtra = computed(() => props.asset?.extras?.standard || null)
 const failRules = computed(() => qualityExtra.value?.failRules || [])
 const goldExtra = computed(() => props.asset?.extras?.gold || null)
 const omMeta = computed(() => props.asset?.extras?.omMeta || null)
 const canEditOmMeta = computed(() => !!props.asset?.omFqn)
+
+function goStandard() {
+  const a = props.asset
+  const path =
+    standardExtra.value?.path ||
+    standardMapping(a?.objectName || a?.tableName || a?.name)
+  go(path)
+}
 
 function syncMetaEditFromAsset() {
   const om = props.asset?.extras?.omMeta
@@ -730,6 +739,45 @@ function cellAt(row, col) {
                   <div class="info-label">黄金认证</div>
                   <div class="info-value">{{ asset.isGold ? '⭐ 已认证' : '待认证 / 已摘牌' }}</div>
                 </div>
+                <div>
+                  <div class="info-label">标准覆盖率</div>
+                  <div class="info-value">
+                    <template v-if="standardExtra?.available && standardExtra?.coveragePct != null">
+                      {{ standardExtra.coveragePct }}%
+                      <span class="muted">
+                        · {{ standardExtra.coveredCount ?? 0 }}/{{ standardExtra.columnCount ?? 0 }} 列
+                      </span>
+                    </template>
+                    <template v-else-if="standardExtra?.available">
+                      {{ standardExtra.hint || '—' }}
+                      <span v-if="standardExtra.mappingCount" class="muted">
+                        · 映射 {{ standardExtra.mappingCount }}
+                      </span>
+                    </template>
+                    <template v-else>{{ standardExtra?.degraded ? '降级' : '—' }}</template>
+                    <span
+                      v-if="standardExtra?.detectFailCount"
+                      class="muted"
+                      style="margin-left: 4px"
+                    >· 检测失败 {{ standardExtra.detectFailCount }}</span>
+                  </div>
+                </div>
+              </div>
+              <div
+                v-if="standardExtra?.gaps?.length"
+                style="margin-bottom: 10px"
+              >
+                <div class="detail-section-title">未覆盖列（预览）</div>
+                <div style="font-size: 12px; color: var(--text-2)">
+                  <code
+                    v-for="g in standardExtra.gaps"
+                    :key="g"
+                    style="margin-right: 8px"
+                  >{{ g }}</code>
+                  <span v-if="standardExtra.gapCount > standardExtra.gaps.length" class="muted">
+                    …共 {{ standardExtra.gapCount }}
+                  </span>
+                </div>
               </div>
               <div
                 v-if="lineageExtra?.downPreview?.length"
@@ -764,9 +812,10 @@ function cellAt(row, col) {
                   >上溯血缘</button>
                 </div>
               </div>
-              <div style="display: flex; gap: 8px">
+              <div style="display: flex; gap: 8px; flex-wrap: wrap">
                 <button class="btn btn-sm" @click="goQuality">→ 数据质量</button>
                 <button class="btn btn-sm" @click="goLineage">→ 字段血缘</button>
+                <button class="btn btn-sm" @click="goStandard">→ 数据标准</button>
               </div>
             </div>
           </div>
