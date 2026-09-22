@@ -148,6 +148,11 @@ export function saveQueryDataset(payload) {
   return http.post(`${Q}/datasets`, payload)
 }
 
+/** 读取已保存数据集（含抽样行；优先对象存储） */
+export function fetchQueryDataset(id) {
+  return http.get(`${Q}/datasets/${encodeURIComponent(id)}`)
+}
+
 export function fetchQueryDatasets(params = {}) {
   return http.get(`${Q}/datasets`, {
     ws: params.ws,

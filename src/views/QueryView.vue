@@ -556,9 +556,11 @@ function onSaveDataset() {
         scanBytes: lastMeta.value.scanBytes,
       })
       apiOnline.value = true
+      const storage = data?.sampleStorage === 'object' ? '对象存储' : '门户降级'
+      const uriHint = data?.sampleUri ? ` · ${data.sampleUri}` : ''
       showToast(
-        `已保存数据集 ${data?.name || name}（${data?.rowCount ?? Math.min(resultRows.value.length, 200)} 行抽样）`,
-        'success',
+        `已保存数据集 ${data?.name || name}（${data?.rowCount ?? Math.min(resultRows.value.length, 200)} 行抽样 · ${storage}${uriHint}）`,
+        data?.sampleDegraded ? 'warning' : 'success',
       )
     } catch (e) {
       showToast(e?.message || '保存数据集失败', 'error')
