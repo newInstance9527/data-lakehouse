@@ -7,6 +7,7 @@ import {
   abortDelRequest,
   assessDelRequest,
   createDelRequest,
+  downloadDelEvidence,
   dryRunDelRequest,
   editDelPlan,
   executeDelRequest,
@@ -277,6 +278,16 @@ export function useCompliance() {
     }
   }
 
+  /** 二次授权下载证据包 ZIP（base64）；写审计 */
+  async function downloadEvidencePackage({ reqId, confirmReqNo, reason } = {}) {
+    actionBusy.value = true
+    try {
+      return await downloadDelEvidence({ reqId, confirmReqNo, reason })
+    } finally {
+      actionBusy.value = false
+    }
+  }
+
   async function loadSubjectMaps(filters = {}) {
     subjectMaps.value = await fetchDelSubjectMaps(filters)
     return subjectMaps.value
@@ -330,6 +341,7 @@ export function useCompliance() {
     abort,
     loadEvidence,
     revealSubjectPlain,
+    downloadEvidencePackage,
     loadSubjectMaps,
     saveSubjectMap,
   }

@@ -52,6 +52,7 @@ const {
   loadSubjectMaps,
   saveSubjectMap,
   revealSubjectPlain,
+  downloadEvidencePackage,
 } = useCompliance()
 
 const view = ref('requests')
@@ -76,6 +77,13 @@ const revealReason = ref('')
 const revealPlain = ref('')
 const revealError = ref('')
 const revealAt = ref('')
+
+/** 证据包二次授权下载弹窗 */
+const dlOpen = ref(false)
+const dlConfirmNo = ref('')
+const dlReason = ref('')
+const dlError = ref('')
+const dlBusy = ref(false)
 
 const filtered = computed(() => {
   const s = query.value.trim().toLowerCase()
@@ -207,6 +215,69 @@ async function doReveal() {
   } catch (e) {
     revealError.value = e?.message || String(e)
     showToast(`✕ ${revealError.value}`, 'warning')
+  }
+}
+
+function openDownload() {
+  dlConfirmNo.value = ''
+  dlReason.value = ''
+  dlError.value = ''
+  dlOpen.value = true
+}
+
+function closeDownload() {
+  dlOpen.value = false
+  dlConfirmNo.value = ''
+  dlReason.value = ''
+  dlError.value = ''
+}
+
+function saveBase64Zip(fileName, b64) {
+  const bin = atob(b64)
+  const bytes = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+  const blob = new Blob([bytes], { type: 'application/zip' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = fileName || 'evidence.zip'
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+}
+
+async function doDownloadEvidence() {
+  if (!detail.value) return
+  dlError.value = ''
+  if (dlConfirmNo.value.trim() !== detail.value.reqNo) {
+    dlError.value = `请回填请求号 ${detail.value.reqNo}`
+    return
+  }
+  if (dlReason.value.trim().length < 4) {
+    dlError.value = '请填写下载用途（至少 4 字）'
+    return
+  }
+  dlBusy.value = true
+  try {
+    const res = await downloadEvidencePackage({
+      reqId: detail.value.id,
+      confirmReqNo: dlConfirmNo.value.trim(),
+      reason: dlReason.value.trim(),
+    })
+    if (!res?.contentBase64) {
+      throw new Error('响应缺少证据包内容')
+    }
+    saveBase64Zip(res.fileName || `${detail.value.reqNo}-evidence.zip`, res.contentBase64)
+    showToast('已二次授权下载证据包并写审计', 'success')
+    closeDownload()
+    await loadEvidence(detail.value.id).catch(() => {})
+    await openDetail(detail.value.id).catch(() => {})
+  } catch (e) {
+    dlError.value = e?.message || String(e)
+    showToast(`✕ ${dlError.value}`, 'warning')
+  } finally {
+    dlBusy.value = false
   }
 }
 
@@ -831,10 +902,25 @@ function exportList() {
         <div v-else-if="drawerTab === 'evidence'">
           <div class="cp-drawer-acts">
             <button type="button" class="btn btn-sm" :disabled="actionBusy" @click="refreshEvidence">📦 生成 / 刷新证据包</button>
+            <button type="button" class="btn btn-sm btn-primary" :disabled="actionBusy || degraded" @click="openDownload">
+              ⬇ 二次授权下载
+            </button>
           </div>
           <div v-if="evidence">
-            <div class="cp-kv-row"><span>摘要 sha256</span><div><code>{{ evidence.sha256 }}</code></div></div>
-            <div class="cp-kv-row"><span>归档路径</span><div><code>{{ evidence.objectPath }}</code></div></div>
+            <div class="cp-kv-row"><span>ZIP sha256</span><div><code>{{ evidence.sha256 }}</code></div></div>
+            <div class="cp-kv-row"><span>归档路径</span><div><code>{{ evidence.objectPath || '（未落盘）' }}</code></div></div>
+            <div class="cp-kv-row">
+              <span>落盘 / WORM</span>
+              <div>
+                <span :class="evidence.stored ? 'ok' : 'miss'">{{ evidence.stored ? '已落盘' : '未落盘' }}</span>
+                ·
+                <span :class="evidence.wormApplied ? 'ok' : 'miss'">
+                  {{ evidence.wormApplied ? `WORM ${evidence.wormMode || ''}` : 'WORM 未生效' }}
+                </span>
+                <span v-if="evidence.retainUntil" class="tip"> · 至 {{ evidence.retainUntil }}</span>
+                <div v-if="evidence.wormNote" class="tip">{{ evidence.wormNote }}</div>
+              </div>
+            </div>
             <div class="cp-sec-title">完备性检查</div>
             <div v-for="c in evidence.checklist" :key="c.name" class="cp-check">
               <span :class="c.ok ? 'ok' : 'miss'">{{ c.ok ? '✓' : '✕' }}</span>
@@ -848,7 +934,7 @@ function exportList() {
               <div class="tip">{{ it.content }}</div>
             </div>
           </div>
-          <div v-else class="tip">点击上方按钮生成证据包快照。</div>
+          <div v-else class="tip">点击上方按钮生成证据包快照并尝试落对象存储。</div>
         </div>
 
         <!-- 兜底 -->
@@ -940,6 +1026,60 @@ function exportList() {
               :disabled="actionBusy"
               @click="doReveal"
             >{{ actionBusy ? '授权中…' : '二次授权并查看' }}</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <Teleport to="body">
+      <div v-if="dlOpen" class="modal-mask" @click.self="closeDownload">
+        <div class="modal cp-reveal-modal" role="dialog" aria-modal="true" aria-labelledby="cp-dl-title">
+          <div class="modal-header">
+            <div>
+              <div id="cp-dl-title" class="modal-title">下载证据包</div>
+              <div class="modal-sub">须二次授权：回填请求号 + 用途；从对象存储取 ZIP 并写审计</div>
+            </div>
+            <button type="button" class="btn btn-sm" :disabled="dlBusy" @click="closeDownload">✕</button>
+          </div>
+          <div class="modal-body">
+            <div class="cp-kv-row">
+              <span>请求</span>
+              <div><code>{{ detail?.reqNo || '—' }}</code></div>
+            </div>
+            <div v-if="evidence?.objectPath" class="cp-kv-row">
+              <span>对象路径</span>
+              <div><code>{{ evidence.objectPath }}</code></div>
+            </div>
+            <label class="form-field">
+              <span class="form-label">回填请求号</span>
+              <input
+                v-model="dlConfirmNo"
+                class="input"
+                type="text"
+                autocomplete="off"
+                :placeholder="detail?.reqNo || 'DEL-YYYY-NNNN'"
+                :disabled="dlBusy"
+              />
+            </label>
+            <label class="form-field">
+              <span class="form-label">下载用途（审计必填）</span>
+              <input
+                v-model="dlReason"
+                class="input"
+                type="text"
+                autocomplete="off"
+                placeholder="例：答复监管举证"
+                :disabled="dlBusy"
+                @keydown.enter.prevent="doDownloadEvidence"
+              />
+            </label>
+            <div v-if="dlError" class="cp-warn">{{ dlError }}</div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-sm" :disabled="dlBusy" @click="closeDownload">关闭</button>
+            <button type="button" class="btn btn-sm btn-primary" :disabled="dlBusy" @click="doDownloadEvidence">
+              {{ dlBusy ? '下载中…' : '二次授权并下载' }}
+            </button>
           </div>
         </div>
       </div>

@@ -76,6 +76,11 @@ export function fetchDelEvidence(reqId) {
   return http.get(`${C}/evidence`, { reqId })
 }
 
+/** 二次授权下载证据包 ZIP：须回填 reqNo + 用途；写审计；返回 contentBase64 */
+export function downloadDelEvidence({ reqId, confirmReqNo, reason } = {}) {
+  return http.post(`${C}/evidence/download`, { reqId, confirmReqNo, reason })
+}
+
 /** 二次授权查看主体明文：须回填 reqNo + 用途；写审计 */
 export function revealDelSubjectPlain({ reqId, confirmReqNo, reason } = {}) {
   return http.post(`${C}/subject-plain`, { reqId, confirmReqNo, reason })
