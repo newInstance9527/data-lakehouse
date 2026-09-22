@@ -430,6 +430,17 @@ watch(
           (typeof route.query.target === 'string' && route.query.target) || emptyForm().exportTarget,
         purpose: typeof route.query.purpose === 'string' ? route.query.purpose : '',
       }
+    } else if (t === 'scan_elevate' || t === 'elevated' || t === 'scan_quota') {
+      activeTab.value = 'scan_elevate'
+      creating.value = true
+      form.value = {
+        ...emptyForm(),
+        type: 'scan_elevate',
+        purpose:
+          (typeof route.query.purpose === 'string' && route.query.purpose) ||
+          '即席查询需抬升扫描限额至平台硬顶 50GB',
+        expire: typeof route.query.expire === 'string' ? route.query.expire : emptyForm().expire,
+      }
     } else if (t === 'manage') {
       activeTab.value = 'ops'
       creating.value = true
@@ -575,7 +586,7 @@ function toggleCreate() {
   creating.value = !creating.value
   if (creating.value) {
     form.value = emptyForm()
-    if (['api', 'api_publish', 'metric', 'perm', 'table', 'publish', 'export'].includes(activeTab.value)) {
+    if (['api', 'api_publish', 'metric', 'perm', 'table', 'publish', 'export', 'scan_elevate'].includes(activeTab.value)) {
       form.value.type = activeTab.value
     }
     if (form.value.type === 'metric') syncMetricVersionDefaults()
@@ -594,6 +605,7 @@ function purposePlaceholder() {
   if (form.value.type === 'manage') return '申请操作权限事由：为何需改删该资源、使用期限'
   if (form.value.type === 'table') return '对账 / 分析 / 登记原因与下游消费方'
   if (form.value.type === 'export') return '出湖业务用途、下游系统、是否含 PII / 脱敏要求'
+  if (form.value.type === 'scan_elevate') return '为何需超过默认 10GB 扫描限额、预估扫描量、业务紧急度'
   if (form.value.type === 'publish') return '变更说明、影响范围、验证结果'
   return '业务背景、分析/加工场景、下游产物'
 }
@@ -676,6 +688,8 @@ async function submitApply() {
       showToast('请填写目标系统', 'warning')
       return
     }
+  } else if (form.value.type === 'scan_elevate') {
+    // 平台级抬额，无需选资产
   } else if (!form.value.asset?.trim()) {
     showToast('请填写申请资产', 'warning')
     return
@@ -830,6 +844,26 @@ async function submitApply() {
     }
     creating.value = false
     activeTab.value = 'export'
+    return
+  } else if (form.value.type === 'scan_elevate') {
+    try {
+      const server = await createApplyTicket({
+        ticketType: 'scan_elevate',
+        title: '扫描抬额 · 硬顶 50GB',
+        reason: purpose,
+        expireLabel: form.value.expire,
+      })
+      showToast(
+        `✅ 扫描抬额已提交：${server?.ticketNo || server?.id || ''}，审批通过后可勾选 elevated`,
+        'success',
+        { duration: 8000 },
+      )
+      await hydrateApplyBoardFromServer().catch(() => {})
+      activeTab.value = 'scan_elevate'
+    } catch (e) {
+      showToast(e?.message || '扫描抬额申请失败', 'danger')
+    }
+    creating.value = false
     return
   } else {
     mine.value.unshift({
@@ -1116,7 +1150,7 @@ async function approveTicket(id) {
 
   // perm / ops / publish / api(subscribe) / metric 均须打后端
   if (
-    (ticket.type === 'perm' || ticket.type === 'ops' || ticket.type === 'publish' || ticket.type === 'api_publish' || ticket.type === 'api' || ticket.type === 'metric') &&
+    (ticket.type === 'perm' || ticket.type === 'ops' || ticket.type === 'publish' || ticket.type === 'api_publish' || ticket.type === 'api' || ticket.type === 'metric' || ticket.type === 'scan_elevate') &&
     (ticket.fromServer || ticket.serverId)
   ) {
     try {
@@ -1708,6 +1742,7 @@ function approveBtnLabel(w) {
     return `通过并上线 ${w.publishEnv || ''}`.trim()
   }
   if (w.type === 'export') return '通过并签发出湖单号'
+  if (w.type === 'scan_elevate') return '通过并授予扫描抬额'
   return '通过'
 }
 
@@ -1722,7 +1757,7 @@ function displayToken() {
   <div class="apply-page">
     <PageHeader
       title="申请中心"
-      subtitle="权限 / 出湖 / API 发布 / API 调用 / 指标 · 统一工单"
+      subtitle="权限 / 出湖 / 扫描抬额 / API 发布 / API 调用 / 指标 · 统一工单"
       :guide="guide"
     >
       <button type="button" class="btn btn-sm" @click="exportTickets">📤 导出工单</button>
@@ -2038,7 +2073,7 @@ function displayToken() {
           </p>
         </template>
 
-        <label :class="{ wide: ['api', 'api_publish', 'metric', 'perm', 'table', 'publish', 'export'].includes(form.type) }">
+        <label :class="{ wide: ['api', 'api_publish', 'metric', 'perm', 'table', 'publish', 'export', 'scan_elevate'].includes(form.type) }">
           <span>使用用途</span>
           <textarea
             v-model="form.purpose"
@@ -2047,7 +2082,7 @@ function displayToken() {
           />
         </label>
         <label v-if="showExpireField">
-          <span>{{ form.type === 'api' ? '令牌时效' : form.type === 'export' ? '出湖时效' : form.type === 'publish' ? '发布窗口' : '权限时效' }}</span>
+          <span>{{ form.type === 'api' ? '令牌时效' : form.type === 'export' ? '出湖时效' : form.type === 'scan_elevate' ? '抬额时效' : form.type === 'publish' ? '发布窗口' : '权限时效' }}</span>
           <select v-model="form.expire" class="select">
             <option v-for="e in APPLY_EXPIRE_OPTIONS" :key="e" :value="e">{{ e }}</option>
           </select>
@@ -2063,6 +2098,10 @@ function displayToken() {
           <template v-if="form.metricKind === 'query'">查询权限通过后登记授权，可供看板 / 即席 / API 引用已启用指标。</template>
           <template v-else-if="form.metricKind === 'change'">口径变更发布须从指标中心发起；通过后自动启用新版本。</template>
           <template v-else>指标发布须从指标中心保存草稿后发起；通过后自动启用。</template>
+        </p>
+        <p v-else-if="form.type === 'scan_elevate'" class="apply-api-hint">
+          <strong>扫描抬额</strong>：审批通过后写入 <code>SCAN_ELEVATE</code> 授权；即席勾选「抬额至硬顶」才可将 session 扫描限额提至 50GB。默认可不经审批使用 10GB。
+          <button type="button" class="btn-link" @click="router.push('/query')">返回即席</button>
         </p>
         <p v-else-if="form.type === 'perm'" class="apply-api-hint">
           表/列权限通过后写入 Gravitino；敏感列明文需安全加签，且不可选「长期」。

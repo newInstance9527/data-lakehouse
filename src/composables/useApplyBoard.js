@@ -40,6 +40,8 @@ export function mapServerTicket(t, sideHint) {
   const isApiPublish = t.ticketType === 'api_publish' || t.ticketType === 'publish_api'
   const isApiSubscribe = t.ticketType === 'api_subscribe' || t.ticketType === 'subscribe'
   const isMetric = t.ticketType === 'metric' || t.ticketType === 'metric_publish'
+  const isScanElevate =
+    t.ticketType === 'scan_elevate' || t.ticketType === 'elevated' || t.ticketType === 'scan_quota'
   const type = isExport
     ? 'export'
     : isOps
@@ -50,9 +52,11 @@ export function mapServerTicket(t, sideHint) {
           ? 'api'
           : isMetric
             ? 'metric'
-            : t.ticketType === 'table_read'
-              ? 'perm'
-              : t.ticketType || 'perm'
+            : isScanElevate
+              ? 'scan_elevate'
+              : t.ticketType === 'table_read'
+                ? 'perm'
+                : t.ticketType || 'perm'
   const status = t.status || sideHint || 'pending'
   const side = status === 'approved' ? 'approved' : status === 'rejected' ? 'rejected' : 'pending'
   const tableLabel = payload.exportTable || payload.assetCode || t.title || t.ticketNo
@@ -353,6 +357,53 @@ export function mapServerTicket(t, sideHint) {
                   { label: '● 指标 Owner', cls: 'current' },
                   { label: '写入授权', cls: '' },
                 ],
+    }
+  }
+
+  if (type === 'scan_elevate') {
+    return {
+      id,
+      serverId: t.id,
+      fromServer: true,
+      ticketNo,
+      type: 'scan_elevate',
+      side,
+      purpose: purposeText,
+      expire: expireLabel,
+      remark: rejectRemark,
+      applicant: t.applicant || '我',
+      titleHtml:
+        side === 'approved'
+          ? `<span class="tag tag-green">扫描抬额</span> 硬顶 50GB · ${ticketNo}`
+          : side === 'rejected'
+            ? `<span class="tag tag-red">扫描抬额</span> 已驳回 · ${ticketNo}`
+            : `<span class="tag tag-orange">扫描抬额</span> 申请硬顶 50GB`,
+      statusTag:
+        side === 'pending' ? '待审批·通过后可 elevated' : side === 'approved' ? '已授 SCAN_ELEVATE' : '已驳回',
+      statusCls: side === 'approved' ? 'tag-green' : side === 'rejected' ? 'tag-red' : 'tag-orange',
+      time: t.createTime || nowLabel(),
+      desc:
+        side === 'rejected'
+          ? `驳回意见：${rejectRemark || '请修改后重提'} · 单号 ${ticketNo}`
+          : purposeText || `即席扫描抬额至平台硬顶 50GB · 时效 ${expireLabel} · ${ticketNo}`,
+      timeline:
+        side === 'approved'
+          ? [
+              { label: '✓ 提交', cls: 'done' },
+              { label: '✓ 审批', cls: 'done' },
+              { label: '✓ SCAN_ELEVATE', cls: 'done' },
+            ]
+          : side === 'rejected'
+            ? [
+                { label: '✓ 提交', cls: 'done' },
+                { label: '✗ 已驳回', cls: 'done' },
+                { label: '改后重提', cls: 'current' },
+              ]
+            : [
+                { label: '✓ 提交', cls: 'done' },
+                { label: '● 审批中', cls: 'current' },
+                { label: '写 SCAN_ELEVATE', cls: '' },
+              ],
     }
   }
 

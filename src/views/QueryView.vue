@@ -8,12 +8,14 @@ import { pageGuideOf } from '@/data/pageGuides'
 import { formatSql } from '@/utils/sqlFormat'
 import {
   ADHOC_SCAN_LIMIT_BYTES,
+  HARD_SCAN_LIMIT_BYTES,
   cancelQuery,
   detectParamNamesLocal,
   execQuery,
   execQueryStream,
   explainQuery,
   exportQueryAudit,
+  fetchQueryGovOverview,
   fetchQueryHistory,
   fetchQueryScripts,
   fetchSchemaTree,
@@ -92,6 +94,8 @@ const lastMeta = ref({
   stages: [],
 })
 const apiOnline = ref(false)
+const elevateScan = ref(false)
+const elevateAllowed = ref(false)
 let abortCtrl = null
 
 const activeTab = computed(() => tabs.value.find((t) => t.id === activeTabId.value) || null)
@@ -381,9 +385,19 @@ watch(
 )
 
 onMounted(async () => {
-  await Promise.all([loadSchemaTree(), loadHistory(), loadSavedScripts()])
+  await Promise.all([loadSchemaTree(), loadHistory(), loadSavedScripts(), loadElevateStatus()])
   applyDeepLink()
 })
+
+async function loadElevateStatus() {
+  try {
+    const ov = await fetchQueryGovOverview()
+    elevateAllowed.value = !!ov?.scanElevateAllowed
+    if (elevateAllowed.value) elevateScan.value = false
+  } catch {
+    elevateAllowed.value = false
+  }
+}
 
 watch(currentWs, () => {
   loadSavedScripts()
@@ -765,6 +779,17 @@ function goApplySelect(sql) {
   router.push({ path: '/apply', query })
 }
 
+function goApplyElevate() {
+  router.push({
+    path: '/apply',
+    query: {
+      type: 'scan_elevate',
+      from: 'query',
+      purpose: '即席查询需抬升扫描限额至平台硬顶 50GB',
+    },
+  })
+}
+
 function applyExecResult(data, sql) {
   const cols = Array.isArray(data.columnMeta) && data.columnMeta.length
     ? data.columnMeta.map((c) => ({
@@ -798,9 +823,13 @@ function applyExecResult(data, sql) {
     rowFilterDegraded: !!data.rowFilterDegraded,
     rowFilterMessage: data.rowFilterMessage || '',
     rowFilterPredicates: Array.isArray(data.rowFilterPredicates) ? data.rowFilterPredicates : [],
+    elevated: !!data.elevated,
     authHint: data.authHint || '',
     message: data.message || '',
     stages: Array.isArray(data.stages) ? data.stages : progressStages.value.slice(),
+  }
+  if (data.elevatedAllowed != null) {
+    elevateAllowed.value = !!data.elevatedAllowed
   }
 
   if (Array.isArray(data.stages) && data.stages.length) {
@@ -814,6 +843,11 @@ function applyExecResult(data, sql) {
         'Trino 代执行未开通：服务账号无法冒充映射主体。请配置 rules.json impersonation（与申请 SELECT 无关）',
         'warning',
       )
+    } else if (data.errorCode === 'ELEVATE_DENIED') {
+      const go = window.confirm(
+        '扫描抬额（硬顶 50GB）须先经申请中心审批。是否前往申请？',
+      )
+      if (go) goApplyElevate()
     } else if (data.errorCode === 'ACCESS_DENIED' || data.applyHint) {
       const go = window.confirm('未授权访问表/列。是否前往申请中心申请 SELECT？')
       if (go) goApplySelect(sql)
@@ -919,6 +953,7 @@ async function runQuery() {
     sql,
     ws: 'default',
     maxRows: 1000,
+    elevated: !!elevateScan.value,
     params: selParams.length ? Object.fromEntries(selParams.map((n) => [n, sqlParams[n]])) : undefined,
   }
 
@@ -1039,6 +1074,19 @@ function cellClass(col, row) {
       {{ catalogDegraded ? 'Schema 树为降级/演示数据；' : '' }}
       {{ apiOnline ? '' : '后端未连通时执行将走本地演示结果。' }}
       限额：adhoc 默认 10GB / 硬顶 50GB。
+    </div>
+
+    <div class="banner-soft query-elevate-bar">
+      扫描限额：默认 ≤10GB · 硬顶 50GB（须审批抬额）
+      <label class="query-elevate">
+        <input v-model="elevateScan" type="checkbox" />
+        抬额至硬顶 {{ formatScanBytes(HARD_SCAN_LIMIT_BYTES) }}
+        <template v-if="elevateAllowed">（已授权）</template>
+        <template v-else>
+          （未授权 ·
+          <button type="button" class="btn-link" @click.prevent="goApplyElevate">去申请</button>）
+        </template>
+      </label>
     </div>
 
     <div class="query-layout" :class="{ resizing: catResizing }" :style="{ '--cat-w': catWidth + 'px' }">
@@ -1781,6 +1829,28 @@ function cellClass(col, row) {
   color: #6b7a99;
 }
 .sql-status-acts { display: flex; gap: 8px; }
+.query-elevate-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+.query-elevate {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.query-elevate .btn-link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--primary);
+  cursor: pointer;
+  font-size: inherit;
+}
 .sql-dark-btn {
   background: #203050 !important;
   border-color: #2e4475 !important;
