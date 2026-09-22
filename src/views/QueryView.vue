@@ -82,6 +82,11 @@ const lastMeta = ref({
   maskSource: '',
   maskDegraded: false,
   maskMessage: '',
+  rowFilterApplied: false,
+  rowFilterSource: '',
+  rowFilterDegraded: false,
+  rowFilterMessage: '',
+  rowFilterPredicates: [],
   authHint: '',
   message: '',
   stages: [],
@@ -788,6 +793,11 @@ function applyExecResult(data, sql) {
     maskSource: data.maskSource || '',
     maskDegraded: !!data.maskDegraded,
     maskMessage: data.maskMessage || '',
+    rowFilterApplied: !!data.rowFilterApplied,
+    rowFilterSource: data.rowFilterSource || '',
+    rowFilterDegraded: !!data.rowFilterDegraded,
+    rowFilterMessage: data.rowFilterMessage || '',
+    rowFilterPredicates: Array.isArray(data.rowFilterPredicates) ? data.rowFilterPredicates : [],
     authHint: data.authHint || '',
     message: data.message || '',
     stages: Array.isArray(data.stages) ? data.stages : progressStages.value.slice(),
@@ -821,8 +831,12 @@ function applyExecResult(data, sql) {
     const maskNote = maskN
       ? ` · 脱敏 ${maskN} 列(${data.maskSource || 'policy'})`
       : (data.maskDegraded ? ' · 无引擎 mask 策略' : '')
+    const rfN = Array.isArray(data.rowFilterPredicates) ? data.rowFilterPredicates.length : 0
+    const rfNote = data.rowFilterApplied
+      ? ` · 行级 ${rfN} 表`
+      : (data.rowFilterDegraded ? ' · 无行级策略' : '')
     showToast(
-      `查询完成 query_id=${data.queryId || '—'}${maskNote} · Scan ${lastMeta.value.scan}`,
+      `查询完成 query_id=${data.queryId || '—'}${maskNote}${rfNote} · Scan ${lastMeta.value.scan}`,
       'success',
     )
   }
@@ -1225,7 +1239,22 @@ function cellClass(col, row) {
                 class="tag tag-gray"
                 :title="lastMeta.maskMessage || '无 Grav/Trino/门户列级 mask'"
               >无引擎 mask（未启发式打标）</span>
-              <span class="tag tag-blue">行级过滤生效</span>
+              <span
+                v-if="lastMeta.rowFilterApplied"
+                class="tag tag-blue"
+                :title="lastMeta.rowFilterMessage || '已注入 sec_auth_grant.row_filter'"
+              >
+                行级过滤生效
+                <template v-if="lastMeta.rowFilterPredicates?.length">
+                  · {{ lastMeta.rowFilterPredicates.length }} 表
+                </template>
+                <template v-if="lastMeta.rowFilterSource"> · {{ lastMeta.rowFilterSource }}</template>
+              </span>
+              <span
+                v-else-if="lastMeta.rowFilterDegraded"
+                class="tag tag-gray"
+                :title="lastMeta.rowFilterMessage || '无生效的行级策略'"
+              >无行级策略</span>
               <a
                 v-if="lastMeta.trinoUiUrl"
                 class="btn btn-sm"
