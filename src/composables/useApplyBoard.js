@@ -470,7 +470,7 @@ function upsertBoardCard(listRef, card, preferFront = true) {
 }
 
 /**
- * 从后端刷新 perm + export 列表（失败则保留本会话降级单）
+ * 从后端刷新申请看板（含 metric / api_publish 等；失败则保留本会话降级单）
  */
 export async function hydrateApplyBoardFromServer() {
   try {

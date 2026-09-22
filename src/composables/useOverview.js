@@ -3,7 +3,7 @@
  * 无后端能力的模块（数据服务调用量）标记 unavailable，由视图隐藏或「暂无」。
  */
 import { computed, ref, watch } from 'vue'
-import { pageMyTickets, pagePendingTickets } from '@/api/apply'
+import { pageMyTickets, pagePendingTickets, fetchApplyKpi } from '@/api/apply'
 import { fetchAssetPage, sensitivityToLevel } from '@/api/catalog'
 import { fetchDatasourceKpi, fetchDatasourcePage } from '@/api/datasource'
 import { fetchEtlDags, fetchEtlRuns } from '@/api/etl'
@@ -151,6 +151,7 @@ export function useOverview() {
         fetchLineageFields({}, { current: 1, size: 500 }),
         pagePendingTickets({ current: 1, size: 1 }),
         pageMyTickets({ current: 1, size: 1 }),
+        fetchApplyKpi().catch(() => null),
         fetchMetricOverview(),
         fetchDataapiOverview().catch(() => null),
       ])
@@ -343,13 +344,16 @@ export function useOverview() {
       // 申请单
       const pendingPage = val(11)
       const minePage = val(12)
+      const applyKpi = val(13)
       applyStats.value = {
-        pending: pageTotal(pendingPage),
-        mine: pageTotal(minePage),
+        pending: applyKpi?.pending != null ? Number(applyKpi.pending) : pageTotal(pendingPage),
+        mine: applyKpi?.mine != null ? Number(applyKpi.mine) : pageTotal(minePage),
+        monthApproved: applyKpi?.monthApproved != null ? Number(applyKpi.monthApproved) : null,
+        monthRejected: applyKpi?.monthRejected != null ? Number(applyKpi.monthRejected) : null,
       }
 
       // 指标
-      const metOv = val(13)
+      const metOv = val(14)
       if (metOv) {
         metricStats.value = {
           total: Number(metOv.total ?? 0),
@@ -361,7 +365,7 @@ export function useOverview() {
       }
 
       // 数据服务 overview（含 callStats 富化）
-      const dsOv = val(14)
+      const dsOv = val(15)
       if (dsOv) {
         serviceStats.value = {
           calls24h: dsOv.calls24h != null ? Number(dsOv.calls24h) : null,

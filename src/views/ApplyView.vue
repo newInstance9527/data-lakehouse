@@ -29,7 +29,7 @@ import {
   permModeLabel,
   tableKindLabel,
 } from '@/data/apply'
-import { createApplyTicket, approveTicket as apiApproveTicket, rejectTicket as apiRejectTicket } from '@/api/apply'
+import { createApplyTicket, approveTicket as apiApproveTicket, rejectTicket as apiRejectTicket, fetchApplyKpi } from '@/api/apply'
 import { fetchDatasourcePage } from '@/api/datasource'
 import { fetchDataapiApis, fetchDataapiDetail } from '@/api/dataapi'
 import { fetchEtlDags } from '@/api/etl'
@@ -45,12 +45,29 @@ const { showToast } = useToast()
 const guide = pageGuideOf('apply')
 const { pending, mine } = useApplyBoard()
 
+/** 服务端 KPI；失败时回落列表计数 */
+const kpiRemote = ref(null)
+
 const applyKpis = computed(() => {
-  const pend = pending.value.length
-  const my = mine.value.length
-  const approved = mine.value.filter((m) => m.side === 'approved').length
-  const rejected = mine.value.filter((m) => m.side === 'rejected').length
-  const processing = mine.value.filter((m) => m.side === 'pending').length
+  const remote = kpiRemote.value
+  const pend = remote?.pending != null ? Number(remote.pending) : pending.value.length
+  const my = remote?.mine != null ? Number(remote.mine) : mine.value.length
+  const approved =
+    remote?.monthApproved != null
+      ? Number(remote.monthApproved)
+      : mine.value.filter((m) => m.side === 'approved').length
+  const rejected =
+    remote?.monthRejected != null
+      ? Number(remote.monthRejected)
+      : mine.value.filter((m) => m.side === 'rejected').length
+  const processing =
+    remote?.minePending != null
+      ? Number(remote.minePending)
+      : mine.value.filter((m) => m.side === 'pending').length
+  const metricHint =
+    remote?.metricPending != null || remote?.metricMine != null
+      ? `指标待审 ${Number(remote.metricPending) || 0} · 我的指标单 ${Number(remote.metricMine) || 0}`
+      : ''
   return [
     {
       icon: '⏳',
@@ -68,36 +85,50 @@ const applyKpis = computed(() => {
       label: '我申请的',
       value: String(my),
       unit: '单',
-      trend: processing ? `${processing} 处理中` : '列表已同步',
+      trend: processing ? `${processing} 处理中` : metricHint || '已同步服务端',
       trendUp: processing > 0,
     },
     {
       icon: '✅',
       color: 'green',
-      label: '本页已通过',
+      label: '本月通过',
       value: String(approved),
       unit: '单',
-      trend: '来自「我的申请」列表',
+      trend: remote ? '按审批时间聚合' : '来自「我的申请」列表',
       trendUp: true,
     },
     {
       icon: '❌',
       color: 'red',
-      label: '本页驳回',
+      label: '本月驳回',
       value: String(rejected),
       unit: '单',
-      trend: '来自「我的申请」列表',
+      trend: remote ? '按审批时间聚合' : '来自「我的申请」列表',
       trendUp: false,
     },
   ]
 })
+
+async function refreshApplyKpi() {
+  try {
+    kpiRemote.value = await fetchApplyKpi()
+  } catch {
+    kpiRemote.value = null
+  }
+}
+
+/** 刷新看板列表 + KPI */
+async function syncApplyBoard() {
+  await hydrateApplyBoardFromServer().catch(() => false)
+  await refreshApplyKpi()
+}
 const { catalog: metricCatalog, ensureLoaded: ensureMetricsLoaded } = useMetrics()
 const { list: assetList, ensureLoaded: ensureAssetsLoaded } = useAssets()
 const assetsLive = ref(false)
 const assetsLoadError = ref('')
 
 onMounted(async () => {
-  await hydrateApplyBoardFromServer().catch(() => false)
+  await syncApplyBoard()
   const ticketQ = typeof route.query.ticket === 'string' ? route.query.ticket : ''
   if (ticketQ) {
     const hit =
@@ -720,7 +751,7 @@ async function submitApply() {
         'success',
         { duration: 8000 },
       )
-      await hydrateApplyBoardFromServer().catch(() => {})
+      await syncApplyBoard()
       creating.value = false
       activeTab.value = 'api'
       return
@@ -800,7 +831,7 @@ async function submitApply() {
         'success',
         { duration: 8000 },
       )
-      await hydrateApplyBoardFromServer().catch(() => {})
+      await syncApplyBoard()
     } catch (e) {
       showToast(e?.message || '操作权限申请提交失败', 'danger')
       return
@@ -858,7 +889,7 @@ async function submitApply() {
         'success',
         { duration: 8000 },
       )
-      await hydrateApplyBoardFromServer().catch(() => {})
+      await syncApplyBoard()
       activeTab.value = 'scan_elevate'
     } catch (e) {
       showToast(e?.message || '扫描抬额申请失败', 'danger')
@@ -908,7 +939,7 @@ async function submitMetricApply(id, now, purpose) {
       'success',
       { duration: 8000 },
     )
-    await hydrateApplyBoardFromServer().catch(() => {})
+    await syncApplyBoard()
     activeTab.value = 'metric'
   } catch (e) {
     showToast(e?.message || '指标权限申请提交失败，已落本地演示单', 'warning')
@@ -1190,7 +1221,7 @@ async function approveTicket(id) {
               : `✅ 已通过 ${ticket.ticketNo || id} · 已写 sec_auth_grant（门户生效）`
         showToast(tip, 'success')
       }
-      await hydrateApplyBoardFromServer().catch(() => false)
+      await syncApplyBoard()
       return
     } catch (e) {
       showToast(e?.message || '审批接口失败', 'danger')
@@ -1490,7 +1521,7 @@ async function confirmReject() {
   try {
     if (ticket.fromServer || ticket.serverId) {
       await apiRejectTicket(ticket.serverId || ticket.id, remark)
-      await hydrateApplyBoardFromServer().catch(() => false)
+      await syncApplyBoard()
       showToast(
         ticket.type === 'api_publish' || (ticket.type === 'metric' && ticket.metricKind !== 'query')
           ? `已退回重改 ${ticket.ticketNo || id} · 驳回意见已写入`

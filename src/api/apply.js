@@ -17,6 +17,11 @@ export function pagePendingTickets(params) {
   return http.get(`${BASE}/tickets/pending`, params)
 }
 
+/** 看板 KPI：待我审批 / 我申请的 / 本月通过 / 本月驳回 */
+export function fetchApplyKpi() {
+  return http.get(`${BASE}/kpi`)
+}
+
 /** 通过申请 → 写 sec_auth_grant（门户 SoT；不投影 Grav） */
 export function approveTicket(id, remark) {
   return http.post(`${BASE}/tickets/approve`, { id, remark })
