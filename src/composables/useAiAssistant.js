@@ -19,8 +19,11 @@ const lastError = ref(null)
 let abortCtrl = null
 
 export function useAiAssistant() {
-  async function init(ws) {
+  async function init(ws, { resetSession = false } = {}) {
     try {
+      if (resetSession) {
+        sessionId.value = ''
+      }
       const [summary, sessions] = await Promise.all([
         fetchAiContextSummary(ws).catch(() => null),
         fetchAiSessions(ws).catch(() => []),

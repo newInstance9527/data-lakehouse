@@ -1,15 +1,17 @@
 <script setup>
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
 import { useToast } from '@/composables/useToast'
 import { useStorageTrend } from '@/composables/useStorageTrend'
+import { useWsListScope } from '@/composables/useWsListScope'
 import { pageGuideOf } from '@/data/pageGuides'
 
 const router = useRouter()
 const route = useRoute()
 const { showToast } = useToast()
 const guide = pageGuideOf('storage-trend')
+const { currentWs, wsScope, listWs, setScope } = useWsListScope()
 
 const {
   loading,
@@ -23,6 +25,7 @@ const {
   topGrowth,
   adviceCards,
   tableRows,
+  showbackRows,
   collectBanner,
   chartFoot,
   loadAll,
@@ -36,23 +39,38 @@ const {
 const subtitle = computed(() => {
   const b = collectBanner.value
   const src = b?.source ? ' · ' + String(b.source).split(';')[0] : ''
-  return `三口径度量 · ${range.value} 窗口 · 建议只深链生命周期${src}`
+  const scope =
+    wsScope.value === 'team'
+      ? ` · 团队 ${currentWs.value || 'default'}`
+      : ' · 查看全部'
+  return `三口径度量 · ${range.value} 窗口 · 建议只深链生命周期${scope}${src}`
 })
+
+async function reload() {
+  await loadAll(listWs.value)
+}
 
 onMounted(async () => {
   if (route.query.range) {
     range.value = String(route.query.range)
   }
+  if (route.query.ws && typeof route.query.ws === 'string') {
+    setScope('team')
+  }
   try {
-    await loadAll()
+    await reload()
   } catch (e) {
     showToast(`存储趋势接口暂不可用，已用本地演示数据：${e.message || e}`, 'warning')
   }
 })
 
+watch(listWs, () => {
+  reload().catch(() => {})
+})
+
 async function onRange(next) {
   try {
-    await setRange(next)
+    await setRange(next, listWs.value)
     router.replace({ query: { ...route.query, range: next } })
   } catch (e) {
     showToast(`切换窗口失败：${e.message || e}`, 'error')
@@ -61,7 +79,7 @@ async function onRange(next) {
 
 async function onFilter(next) {
   try {
-    await setTableFilter(next)
+    await setTableFilter(next, listWs.value)
   } catch (e) {
     showToast(`筛选失败：${e.message || e}`, 'error')
   }
@@ -69,7 +87,7 @@ async function onFilter(next) {
 
 async function refreshMetrics() {
   try {
-    await loadAll()
+    await reload()
     showToast('🔄 已刷新存储趋势', 'success')
   } catch (e) {
     showToast(`刷新失败：${e.message || e}`, 'error')
@@ -82,6 +100,17 @@ function exportReport() {
 
 function goLifecycle(extra = {}) {
   router.push({ path: '/lifecycle', query: extra })
+}
+
+function goWorkspace(ws) {
+  router.push({ path: '/workspace', query: ws ? { ws } : {} })
+}
+
+function goQuerygov(ws) {
+  router.push({
+    path: '/querygov',
+    query: { ws: ws || currentWs.value || undefined, range: range.value },
+  })
 }
 
 /** 本页只读：合并/过期一律深链主台 */
@@ -130,6 +159,28 @@ const RANGES = ['7d', '30d', '90d']
       <button type="button" class="btn btn-sm" @click="exportReport">📄 导出日报</button>
       <button type="button" class="btn btn-sm btn-primary" @click="goLifecycle()">⏳ 去生命周期执行</button>
     </PageHeader>
+
+    <div class="ws-scope-tabs" style="margin: 0 0 12px" role="group" aria-label="归属筛选">
+      <button
+        type="button"
+        class="ws-scope-tab"
+        :class="{ active: wsScope === 'team' }"
+        @click="setScope('team')"
+      >
+        我的团队
+      </button>
+      <button
+        type="button"
+        class="ws-scope-tab"
+        :class="{ active: wsScope === 'all' }"
+        @click="setScope('all')"
+      >
+        查看全部
+      </button>
+      <span v-if="wsScope === 'team'" class="tip" style="align-self: center; margin-left: 8px">
+        当前 {{ currentWs || 'default' }}
+      </span>
+    </div>
 
     <p v-if="lastError && !loading" class="st-banner warn">
       接口异常时已回退本地演示数据；接通后端后刷新即可。
@@ -273,6 +324,50 @@ const RANGES = ['7d', '30d', '90d']
     </div>
 
     <div class="card st-section">
+      <div class="card-header">
+        <div class="card-title">
+          🏢 按空间 showback
+          <span class="tip">· 配额读 gov_ws_quota · 与工作空间同源</span>
+        </div>
+        <button type="button" class="btn btn-sm" @click="goQuerygov()">去查询治理成本 →</button>
+      </div>
+      <div class="card-body" style="padding: 0; overflow-x: auto">
+        <table v-if="showbackRows.length" class="table">
+          <thead>
+            <tr>
+              <th>空间</th>
+              <th>活跃</th>
+              <th>物理</th>
+              <th>配额</th>
+              <th>占比</th>
+              <th>净增</th>
+              <th>Owner</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="row in showbackRows" :key="row.ws" :class="{ warn: row.warn }">
+              <td>
+                <button type="button" class="btn-link" @click="goWorkspace(row.ws)">
+                  <code>{{ row.ws }}</code>
+                </button>
+                <span v-if="row.warn" class="tag tag-red" style="margin-left: 6px">≥80%</span>
+              </td>
+              <td>{{ row.active }}</td>
+              <td>{{ row.total }}</td>
+              <td>{{ row.quota }}</td>
+              <td>{{ row.quotaPct }}</td>
+              <td>{{ row.netGrowth }}</td>
+              <td style="font-size: 12px; color: var(--text-2)">{{ row.owner }}</td>
+            </tr>
+          </tbody>
+        </table>
+        <p v-else style="padding: 16px; color: var(--text-3); margin: 0">
+          暂无 showback 数据（接通 /storage/showback 后展示）
+        </p>
+      </div>
+    </div>
+
+    <div class="card st-section">
       <div class="card-header st-table-hd">
         <div class="card-title">
           ⚠️ 表级画像
@@ -297,6 +392,7 @@ const RANGES = ['7d', '30d', '90d']
           <thead>
             <tr>
               <th>表</th>
+              <th>空间</th>
               <th>分层</th>
               <th>活跃</th>
               <th>物理</th>
@@ -307,8 +403,19 @@ const RANGES = ['7d', '30d', '90d']
             </tr>
           </thead>
           <tbody>
-            <tr v-for="row in tableRows" :key="row.table">
+            <tr v-for="row in tableRows" :key="row.table + (row.ws || '')">
               <td><code>{{ row.table }}</code></td>
+              <td>
+                <button
+                  v-if="row.ws && row.ws !== '—'"
+                  type="button"
+                  class="btn-link"
+                  @click="goWorkspace(row.ws)"
+                >
+                  {{ row.ws }}
+                </button>
+                <span v-else>—</span>
+              </td>
               <td><span class="tag tag-blue">{{ row.layer }}</span></td>
               <td>{{ row.active || row.size }}</td>
               <td>{{ row.total || '—' }}</td>
@@ -324,7 +431,7 @@ const RANGES = ['7d', '30d', '90d']
               </td>
             </tr>
             <tr v-if="!tableRows.length">
-              <td colspan="8" style="text-align: center; color: var(--text-3); padding: 24px">
+              <td colspan="9" style="text-align: center; color: var(--text-3); padding: 24px">
                 当前筛选无数据
               </td>
             </tr>

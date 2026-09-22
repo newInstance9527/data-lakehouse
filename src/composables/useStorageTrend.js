@@ -6,6 +6,7 @@ import { computed, ref } from 'vue'
 import {
   fetchLcStorageAdvice,
   fetchLcStorageBuckets,
+  fetchLcStorageShowback,
   fetchLcStorageSummary,
   fetchLcStorageTables,
   fetchLcStorageTrend,
@@ -103,6 +104,7 @@ export function useStorageTrend() {
   const tablesPage = ref(null)
   const buckets = ref([])
   const advice = ref([])
+  const showback = ref(null)
 
   const kpis = computed(() => {
     const s = summary.value
@@ -246,6 +248,7 @@ export function useStorageTrend() {
       const kind = a.suggestedAction || 'catalog'
       return {
         table: a.fqtn || a.tableFqn,
+        ws: a.ws || '—',
         layer: a.layer || '—',
         active: humanBytes(a.activeBytes),
         total: humanBytes(a.totalBytes),
@@ -261,6 +264,21 @@ export function useStorageTrend() {
         deepLink: a.deepLink,
       }
     })
+  })
+
+  const showbackRows = computed(() => {
+    const list = showback.value?.list
+    if (!list?.length) return []
+    return list.map((r) => ({
+      ws: r.ws,
+      active: humanBytes(r.activeBytes),
+      total: humanBytes(r.totalBytes),
+      quota: humanBytes(r.quotaBytes),
+      quotaPct: r.quotaPct != null ? `${r.quotaPct}%` : '—',
+      netGrowth: humanBytes(r.netGrowthBytes),
+      owner: r.owner || '—',
+      warn: r.status === 'QUOTA_WARN',
+    }))
   })
 
   const collectBanner = computed(() => {
@@ -293,7 +311,7 @@ export function useStorageTrend() {
     lastError.value = null
     const r = range.value
     try {
-      const [sum, tr, tables, bucks, adv] = await Promise.all([
+      const [sum, tr, tables, bucks, adv, sb] = await Promise.all([
         fetchLcStorageSummary(ws, r),
         fetchLcStorageTrend(ws, r),
         fetchLcStorageTables({
@@ -307,14 +325,16 @@ export function useStorageTrend() {
         }),
         fetchLcStorageBuckets(ws),
         fetchLcStorageAdvice(ws),
+        fetchLcStorageShowback(ws, r, 'ws').catch(() => null),
       ])
       summary.value = sum
       trend.value = tr
       tablesPage.value = tables
       buckets.value = bucks || []
       advice.value = adv || []
+      showback.value = sb
       loaded.value = true
-      return { summary: sum, trend: tr, tables, buckets: bucks, advice: adv }
+      return { summary: sum, trend: tr, tables, buckets: bucks, advice: adv, showback: sb }
     } catch (e) {
       lastError.value = e
       console.error('[storage-trend] load failed', e)
@@ -323,6 +343,7 @@ export function useStorageTrend() {
       tablesPage.value = null
       buckets.value = []
       advice.value = []
+      showback.value = null
       loaded.value = true
       throw e
     } finally {
@@ -380,6 +401,7 @@ export function useStorageTrend() {
     topGrowth,
     adviceCards,
     tableRows,
+    showbackRows,
     collectBanner,
     chartFoot,
     loadAll,

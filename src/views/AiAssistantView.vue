@@ -46,8 +46,11 @@ onMounted(async () => {
     const s = assistant.contextSummary.value
     if (s) {
       headSub.value = `已加载当前空间 ${s.ws || currentWs.value} · ${s.assetCount ?? '—'} 张表 · ${s.metricCount ?? '—'} 指标 · 知识库 ${s.kbCount ?? '—'} 篇`
+      const preferHint = s.softPrefer
+        ? '（软偏好，执行仍经 Grav）'
+        : ''
       contextItems.value = [
-        { icon: '🗂️', label: `空间：${s.ws || currentWs.value}` },
+        { icon: '🗂️', label: `空间：${s.ws || currentWs.value}${preferHint}` },
         { icon: '📋', label: `表：${s.assetCount ?? '—'}`, to: '/catalog' },
         { icon: '🎯', label: `指标：${s.metricCount ?? '—'}`, to: '/metrics' },
         { icon: '📖', label: `知识库：${s.kbCount ?? '—'} 篇`, to: '/knowledge' },
@@ -68,12 +71,19 @@ watch(
   async (ws) => {
     if (!ws || !useLive.value) return
     try {
-      await assistant.init(ws)
+      await assistant.init(ws, { resetSession: true })
       const s = assistant.contextSummary.value
       if (s) {
         headSub.value = `已加载当前空间 ${s.ws || ws} · ${s.assetCount ?? '—'} 张表 · ${s.metricCount ?? '—'} 指标 · 知识库 ${s.kbCount ?? '—'} 篇`
+        const preferHint = s.softPrefer ? '（软偏好，执行仍经 Grav）' : ''
+        contextItems.value = [
+          { icon: '🗂️', label: `空间：${s.ws || ws}${preferHint}` },
+          { icon: '📋', label: `表：${s.assetCount ?? '—'}`, to: '/catalog' },
+          { icon: '🎯', label: `指标：${s.metricCount ?? '—'}`, to: '/metrics' },
+          { icon: '📖', label: `知识库：${s.kbCount ?? '—'} 篇`, to: '/knowledge' },
+        ]
       }
-      showToast(`已切换协作空间：${ws}`, 'info')
+      showToast(`已切换协作空间偏好：${ws}`, 'info')
     } catch {
       /* ignore */
     }
