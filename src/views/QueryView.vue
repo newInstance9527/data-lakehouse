@@ -79,6 +79,9 @@ const lastMeta = ref({
   scanLimitBytes: ADHOC_SCAN_LIMIT_BYTES,
   scanOverLimit: false,
   maskCols: [],
+  maskSource: '',
+  maskDegraded: false,
+  maskMessage: '',
   authHint: '',
   message: '',
   stages: [],
@@ -782,6 +785,9 @@ function applyExecResult(data, sql) {
     scanLimitBytes: data.scanLimitBytes || ADHOC_SCAN_LIMIT_BYTES,
     scanOverLimit: !!data.scanOverLimit || data.status === 'blocked',
     maskCols: data.maskCols || [],
+    maskSource: data.maskSource || '',
+    maskDegraded: !!data.maskDegraded,
+    maskMessage: data.maskMessage || '',
     authHint: data.authHint || '',
     message: data.message || '',
     stages: Array.isArray(data.stages) ? data.stages : progressStages.value.slice(),
@@ -812,8 +818,11 @@ function applyExecResult(data, sql) {
     showToast(data.message || '查询失败', 'error')
   } else {
     const maskN = (data.maskCols || []).length
+    const maskNote = maskN
+      ? ` · 脱敏 ${maskN} 列(${data.maskSource || 'policy'})`
+      : (data.maskDegraded ? ' · 无引擎 mask 策略' : '')
     showToast(
-      `查询完成 query_id=${data.queryId || '—'}${maskN ? ` · 脱敏 ${maskN} 列` : ''} · Scan ${lastMeta.value.scan}`,
+      `查询完成 query_id=${data.queryId || '—'}${maskNote} · Scan ${lastMeta.value.scan}`,
       'success',
     )
   }
@@ -1209,7 +1218,13 @@ function cellClass(col, row) {
             <div class="result-stat-right">
               <span v-if="lastMeta.maskCols?.length" class="tag tag-orange">
                 已脱敏 {{ lastMeta.maskCols.length }} 列
+                <template v-if="lastMeta.maskSource"> · {{ lastMeta.maskSource }}</template>
               </span>
+              <span
+                v-else-if="lastMeta.maskDegraded"
+                class="tag tag-gray"
+                :title="lastMeta.maskMessage || '无 Grav/Trino/门户列级 mask'"
+              >无引擎 mask（未启发式打标）</span>
               <span class="tag tag-blue">行级过滤生效</span>
               <a
                 v-if="lastMeta.trinoUiUrl"
