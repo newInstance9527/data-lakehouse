@@ -182,11 +182,11 @@ export function useEtl() {
     return t.nodes.find((n) => n.id === selNodeId.value) || null
   })
 
-  async function loadList() {
+  async function loadList(filters = {}) {
     loading.value = true
     lastError.value = null
     try {
-      const page = await fetchEtlDags({}, { current: 1, size: 100 })
+      const page = await fetchEtlDags(filters, { current: 1, size: 100 })
       const records = (page?.records || []).map(normalizeDag).filter(Boolean)
       const prevId = currentId.value
       const byId = new Map(tasks.value.map((t) => [t.id, t]))
@@ -284,6 +284,7 @@ export function useEtl() {
       defaultEngine: payload.engine || 'flink',
       sla: payload.sla || '06:00',
       env: payload.env || 'dev',
+      ws: payload.ws || undefined,
     })
     const row = normalizeDag(saved)
     row.nodes = []

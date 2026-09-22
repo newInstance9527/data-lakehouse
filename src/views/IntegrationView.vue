@@ -11,6 +11,7 @@ import { useDatasources } from '@/composables/useDatasources'
 import { useAssets } from '@/composables/useAssets'
 import { useDsSchema } from '@/composables/useDsSchema'
 import { useSession, isNeedOwnerApplyError } from '@/composables/useSession'
+import { useWsListScope } from '@/composables/useWsListScope'
 import { pageGuideOf } from '@/data/pageGuides'
 import { TASK_STATUS_META } from '@/data/etl'
 import {
@@ -88,7 +89,7 @@ const {
   publishCurrent,
   saveCurrent,
   refreshRuns,
-  ensureLoaded,
+  loadList,
   loading,
   saving,
   lastError,
@@ -100,12 +101,22 @@ const {
   deleteCurrent,
 } = useEtl()
 
+const { currentWs, wsScope, listWs, setScope } = useWsListScope()
+
 const canEditCurrent = computed(() => canEditEtl(current.value))
 const canDeleteCurrent = computed(() => canDeleteEtl(current.value))
 const needApplyOps = computed(() => !!current.value && !canEditCurrent.value && !canDeleteCurrent.value)
 
 const taskKw = ref('')
 const runsDrawerOpen = ref(false)
+
+async function reloadEtlList() {
+  await loadList({ ws: listWs.value })
+}
+
+watch(listWs, () => {
+  reloadEtlList().catch((e) => showToast(e?.message || 'ETL 列表加载失败', 'error'))
+})
 
 const leftWidth = ref(loadNum('etl-left-w', 220))
 const rightWidth = ref(loadNum('etl-right-w', 300))
@@ -250,7 +261,7 @@ function startResize(side, e) {
 
 async function onNewTask() {
   try {
-    const t = await createTask()
+    const t = await createTask({ ws: currentWs.value || 'default' })
     showToast(`✅ 已创建任务 ${t.name}`, 'success')
   } catch (e) {
     showToast(e.message || '创建失败', 'error')
@@ -540,7 +551,7 @@ function onKey(e) {
 onMounted(async () => {
   window.addEventListener('keydown', onKey)
   try {
-    await Promise.all([ensureLoaded(), loadSources().catch(() => {})])
+    await Promise.all([reloadEtlList(), loadSources().catch(() => {})])
     if (lastError.value) {
       showToast(lastError.value.message || 'ETL 列表加载失败', 'warning')
     }
@@ -593,6 +604,20 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
         <div class="dag-col-head">
           <span>任务</span>
           <button type="button" class="btn btn-sm dag-collapse-btn" title="折叠" @click="toggleLeft">⟨</button>
+        </div>
+        <div class="ws-scope-tabs" style="margin: 0 10px 8px" role="group" aria-label="归属筛选">
+          <button
+            type="button"
+            class="ws-scope-tab"
+            :class="{ active: wsScope === 'team' }"
+            @click="setScope('team')"
+          >我的团队</button>
+          <button
+            type="button"
+            class="ws-scope-tab"
+            :class="{ active: wsScope === 'all' }"
+            @click="setScope('all')"
+          >查看全部</button>
         </div>
         <input v-model="taskKw" class="input input-sm" style="margin: 0 10px 8px; width: calc(100% - 20px)" placeholder="搜索任务…" />
         <div class="dag-task-list">

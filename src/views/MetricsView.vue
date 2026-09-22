@@ -8,6 +8,7 @@ import ListPager from '@/components/common/ListPager.vue'
 import { useToast } from '@/composables/useToast'
 import { usePager } from '@/composables/usePager'
 import { useMetrics } from '@/composables/useMetrics'
+import { useWsListScope } from '@/composables/useWsListScope'
 import { enrichMetricBindPayload, warmMetricBindAssets } from '@/data/metricBindAssets'
 import { METRIC_CREATE_FORM } from '@/data/createForms'
 import { pageGuideOf } from '@/data/pageGuides'
@@ -39,6 +40,8 @@ const {
   runTrial,
 } = useMetrics()
 
+const { currentWs, wsScope, listWs, setScope } = useWsListScope()
+
 const domainTab = ref('all')
 const typeTab = ref('all')
 const statusTab = ref('all')
@@ -53,6 +56,14 @@ const trialResult = ref(null)
 const trialDt = ref('')
 /** metricCode → 最近发布单 { ticketNo, status, remark } */
 const publishTickets = ref({})
+
+async function reloadMetrics() {
+  await loadAll({ ws: listWs.value })
+}
+
+watch(listWs, () => {
+  reloadMetrics().catch((e) => showToast(e?.message || '加载指标目录失败', 'error'))
+})
 
 const TYPE_TABS = [
   { id: 'all', label: '全部类型' },
@@ -141,7 +152,7 @@ async function refreshPublishTickets() {
 
 onMounted(async () => {
   try {
-    await Promise.all([loadAll(), warmMetricBindAssets().catch(() => {}), refreshPublishTickets()])
+    await Promise.all([reloadMetrics(), warmMetricBindAssets().catch(() => {}), refreshPublishTickets()])
     const q = typeof route.query.q === 'string' ? route.query.q.trim() : ''
     if (q) {
       const hit = catalog.value.find((r) => r.id === q || r.name?.includes(q))
@@ -160,7 +171,12 @@ function newMetric() {
 async function onCreateMetric(payload) {
   saving.value = true
   try {
-    const row = await addMetric(enrichMetricBindPayload(payload))
+    const row = await addMetric(
+      enrichMetricBindPayload({
+        ...payload,
+        ws: currentWs.value || 'default',
+      }),
+    )
     resetPage()
     showToast(`✅ 已保存草稿 ${row.id} ${row.name} · 可「申请发布」`, 'success')
     createOpen.value = false
@@ -296,7 +312,7 @@ async function submitPublishApply(row, kind = 'create') {
       expireLabel: '长期',
     })
     const ticketNo = t?.ticketNo || t?.data?.ticketNo || ''
-    await Promise.all([loadAll(), refreshPublishTickets()])
+    await Promise.all([reloadMetrics(), refreshPublishTickets()])
     showToast(
       ticketNo
         ? `已申请发布 ${ticketNo}（待审核）。通过后将自动启用，驳回则按意见重改`
@@ -396,7 +412,7 @@ function stageState(row, stageId) {
 
 async function refresh() {
   try {
-    await Promise.all([loadAll(), refreshPublishTickets()])
+    await Promise.all([reloadMetrics(), refreshPublishTickets()])
     showToast('已刷新指标目录', 'success')
   } catch (e) {
     showToast(e?.message || '刷新失败', 'warning')
@@ -443,6 +459,20 @@ async function refresh() {
     />
 
     <div class="met-domain-tabs">
+      <div class="ws-scope-tabs" role="group" aria-label="归属筛选">
+        <button
+          type="button"
+          class="ws-scope-tab"
+          :class="{ active: wsScope === 'team' }"
+          @click="setScope('team')"
+        >我的团队</button>
+        <button
+          type="button"
+          class="ws-scope-tab"
+          :class="{ active: wsScope === 'all' }"
+          @click="setScope('all')"
+        >查看全部</button>
+      </div>
       <button
         v-for="t in METRIC_DOMAIN_TABS"
         :key="t.id"
@@ -453,6 +483,9 @@ async function refresh() {
       >
         {{ t.label }}
       </button>
+      <span v-if="wsScope === 'team'" class="tip" style="align-self: center; margin-left: 4px">
+        当前 {{ currentWs || 'default' }}
+      </span>
     </div>
 
     <div class="kpi-grid met-kpi">

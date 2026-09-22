@@ -25,6 +25,7 @@ import {
   saveQueryScript,
 } from '@/api/query'
 import { useSession } from '@/composables/useSession'
+import { useWsListScope } from '@/composables/useWsListScope'
 import {
   QUERY_CATALOG,
   QUERY_HISTORY,
@@ -34,6 +35,7 @@ import {
 
 const { showToast } = useToast()
 const { currentWs } = useSession()
+const { wsScope, listWs, setScope } = useWsListScope()
 const guide = pageGuideOf('query')
 const route = useRoute()
 const router = useRouter()
@@ -333,7 +335,11 @@ async function loadSchemaTree() {
 
 async function loadHistory() {
   try {
-    const list = await fetchQueryHistory({ limit: 30, mineOnly: true })
+    const list = await fetchQueryHistory({
+      limit: 30,
+      mineOnly: true,
+      ws: listWs.value,
+    })
     if (Array.isArray(list)) {
       history.value = list
       apiOnline.value = true
@@ -401,6 +407,11 @@ async function loadElevateStatus() {
 
 watch(currentWs, () => {
   loadSavedScripts()
+  if (wsScope.value === 'team') loadHistory()
+})
+
+watch(listWs, () => {
+  loadHistory()
 })
 
 function onCatResizeStart(e) {
@@ -1434,7 +1445,23 @@ function cellClass(col, row) {
         <section class="card">
           <div class="card-header">
             <div class="card-title">近 {{ history.length }} 条查询历史</div>
-            <button type="button" class="btn btn-sm" @click="loadHistory">刷新</button>
+            <div style="display: flex; gap: 8px; align-items: center">
+              <div class="ws-scope-tabs" role="group" aria-label="归属筛选">
+                <button
+                  type="button"
+                  class="ws-scope-tab"
+                  :class="{ active: wsScope === 'team' }"
+                  @click="setScope('team')"
+                >我的团队</button>
+                <button
+                  type="button"
+                  class="ws-scope-tab"
+                  :class="{ active: wsScope === 'all' }"
+                  @click="setScope('all')"
+                >查看全部</button>
+              </div>
+              <button type="button" class="btn btn-sm" @click="loadHistory">刷新</button>
+            </div>
           </div>
           <div class="card-body" style="padding: 0; overflow: auto">
             <table class="table">
