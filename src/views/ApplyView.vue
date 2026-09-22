@@ -2176,7 +2176,7 @@ function displayToken() {
     <div class="grid grid-2 apply-columns">
       <div class="card">
         <div class="card-header">
-          <div class="card-title">⏳ 待审批工单 <span class="tip">（我是资产 Owner/安全岗/API Owner）</span></div>
+          <div class="card-title">⏳ 待审批工单 <span class="tip">（我是资产 Owner / 空间 Owner / 超管）</span></div>
           <span class="tag tag-orange">{{ pendingFiltered.length }} 单</span>
         </div>
         <div class="card-body">
