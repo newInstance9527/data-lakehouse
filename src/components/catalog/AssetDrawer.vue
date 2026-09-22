@@ -10,7 +10,7 @@ import { useToast } from '@/composables/useToast'
 import { confirmDelete } from '@/composables/useConfirmDelete'
 import { APPLY_EXPIRE_OPTIONS } from '@/data/apply'
 import { formatDataType, yesNo } from '@/utils/fieldSchema'
-import { lineagePath, qualityPath, standardMapping } from '@/utils/moduleLinks'
+import { lineagePath, qualityPath, standardMapping, lifecyclePath } from '@/utils/moduleLinks'
 import { displayUser } from '@/utils/displayUser'
 
 const props = defineProps({
@@ -53,16 +53,29 @@ let grantFetchedFor = null
 const qualityExtra = computed(() => props.asset?.extras?.quality || null)
 const lineageExtra = computed(() => props.asset?.extras?.lineage || null)
 const standardExtra = computed(() => props.asset?.extras?.standard || null)
+const lifecycleExtra = computed(() => props.asset?.extras?.lifecycle || null)
+const driftExtra = computed(() => props.asset?.extras?.drift || null)
 const failRules = computed(() => qualityExtra.value?.failRules || [])
 const goldExtra = computed(() => props.asset?.extras?.gold || null)
 const omMeta = computed(() => props.asset?.extras?.omMeta || null)
 const canEditOmMeta = computed(() => !!props.asset?.omFqn)
+const lifecycleTags = computed(() =>
+  Array.isArray(lifecycleExtra.value?.tags) ? lifecycleExtra.value.tags : [],
+)
 
 function goStandard() {
   const a = props.asset
   const path =
     standardExtra.value?.path ||
     standardMapping(a?.objectName || a?.tableName || a?.name)
+  go(path)
+}
+
+function goLifecycle() {
+  const a = props.asset
+  const path =
+    lifecycleExtra.value?.path ||
+    lifecyclePath(a?.objectName || a?.tableName || a?.name || a?.assetCode)
   go(path)
 }
 
@@ -762,6 +775,35 @@ function cellAt(row, col) {
                     >· 检测失败 {{ standardExtra.detectFailCount }}</span>
                   </div>
                 </div>
+                <div>
+                  <div class="info-label">生命周期画像</div>
+                  <div class="info-value">
+                    <template v-if="lifecycleTags.length">
+                      <span
+                        v-for="t in lifecycleTags"
+                        :key="t"
+                        class="tag tag-gray"
+                        style="margin-right: 4px"
+                      >{{ t }}</span>
+                    </template>
+                    <template v-else-if="lifecycleExtra?.available">
+                      {{ lifecycleExtra.hint || '无策略/画像' }}
+                    </template>
+                    <template v-else>{{ lifecycleExtra?.degraded ? '降级' : '—' }}</template>
+                  </div>
+                </div>
+                <div v-if="driftExtra?.openCount">
+                  <div class="info-label">元数据漂移</div>
+                  <div class="info-value">
+                    <span class="tag tag-orange">开单 {{ driftExtra.openCount }}</span>
+                    <span
+                      v-for="d in (driftExtra.items || []).slice(0, 3)"
+                      :key="d.id || d.driftType"
+                      class="muted"
+                      style="margin-left: 6px; font-size: 11px"
+                    >{{ d.driftType }}</span>
+                  </div>
+                </div>
               </div>
               <div
                 v-if="standardExtra?.gaps?.length"
@@ -816,6 +858,7 @@ function cellAt(row, col) {
                 <button class="btn btn-sm" @click="goQuality">→ 数据质量</button>
                 <button class="btn btn-sm" @click="goLineage">→ 字段血缘</button>
                 <button class="btn btn-sm" @click="goStandard">→ 数据标准</button>
+                <button class="btn btn-sm" @click="goLifecycle">→ 生命周期</button>
               </div>
             </div>
           </div>
