@@ -15,6 +15,10 @@ import {
   parseMetricFormula,
   refsToArray,
 } from '@/data/metrics'
+import {
+  ensureWorkspaceUserOptions,
+  workspaceUserOptions,
+} from '@/data/workspaceUsers'
 
 /** 质量规则 · 绑定表（资产目录核心表） */
 export const QUALITY_BIND_TABLES = ASSET_DATA.map((a) => ({
@@ -449,16 +453,16 @@ export const AI_MODEL_FORM = {
       label: '供应商',
       type: 'select',
       options: ['OpenAI', 'Anthropic', 'DeepSeek', '阿里云', '通义', 'GLM', '自建'],
-      default: 'OpenAI',
+      default: 'DeepSeek',
     },
-    { key: 'model', label: '模型名称', type: 'text', required: true, placeholder: '如 gpt-4o / glm-4.6' },
+    { key: 'model', label: '模型名称', type: 'text', required: true, placeholder: '如 DeepSeek-V4.1-Flash / gpt-4o', default: 'DeepSeek-V4.1-Flash' },
     {
       key: 'baseURL',
       label: 'API 地址',
       type: 'text',
       required: true,
-      placeholder: 'https://api.openai.com/v1',
-      default: 'https://api.openai.com/v1',
+      placeholder: 'https://ai.datagoo.cn:3030/v1',
+      default: 'https://ai.datagoo.cn:3030/v1',
       wide: true,
     },
     {
@@ -486,13 +490,13 @@ export const AI_MODEL_FORM = {
         { value: 'cny_1k', label: '¥ / 1k tokens' },
         { value: 'free', label: '免费（本地/内网）' },
       ],
-      default: 'usd_1m',
+      default: 'cny_1m',
     },
     {
       key: 'inputRate',
       label: '输入价格',
       type: 'number',
-      default: 2.5,
+      default: 0,
       placeholder: '如 2.5',
       hideWhen: { key: 'priceUnit', value: 'free' },
     },
@@ -500,11 +504,63 @@ export const AI_MODEL_FORM = {
       key: 'outputRate',
       label: '输出价格',
       type: 'number',
-      default: 10,
+      default: 0,
       placeholder: '如 10',
       hideWhen: { key: 'priceUnit', value: 'free' },
     },
-    { key: 'use', label: '用途 / 角色', type: 'text', default: 'SQL 生成 / 知识问答', wide: true },
+    {
+      key: 'tokenQuota',
+      label: 'Token 总限额',
+      type: 'number',
+      default: 0,
+      placeholder: '0 = 不限',
+      wide: true,
+    },
+    {
+      key: 'costQuota',
+      label: '成本总限额',
+      type: 'number',
+      default: 0,
+      placeholder: '0 = 不限',
+      wide: true,
+    },
+    { key: 'use', label: '用途 / 角色', type: 'text', default: '默认对话 · DataGoo', wide: true },
+    {
+      key: 'kind',
+      label: '功能类别',
+      type: 'select',
+      options: [
+        { value: 'chat', label: '对话模型' },
+        { value: 'image', label: '图片模型' },
+        { value: 'embed', label: '向量模型' },
+      ],
+      default: 'chat',
+      wide: true,
+    },
+    {
+      key: 'supportsVision',
+      label: '支持上传图片 / 视觉输入',
+      type: 'select',
+      options: [
+        { value: '0', label: '否（纯文本对话）' },
+        { value: '1', label: '是（多模态 / 识图）' },
+      ],
+      default: '0',
+      showWhen: { key: 'kind', value: 'chat' },
+      wide: true,
+    },
+    {
+      key: 'supportsImageOutput',
+      label: '支持图片输出（生图）',
+      type: 'select',
+      options: [
+        { value: '0', label: '否' },
+        { value: '1', label: '是' },
+      ],
+      default: '1',
+      showWhen: { key: 'kind', value: 'image' },
+      wide: true,
+    },
     {
       key: 'egressApproved',
       label: '外发安全标记',
@@ -513,7 +569,7 @@ export const AI_MODEL_FORM = {
         { value: '0', label: '未评估（外发不可进生产路由）' },
         { value: '1', label: '安全岗已标记（允许外发）' },
       ],
-      default: '0',
+      default: '1',
       wide: true,
     },
   ],
@@ -584,7 +640,59 @@ export const AI_MODEL_EDIT_FORM = {
       placeholder: '如 10',
       hideWhen: { key: 'priceUnit', value: 'free' },
     },
+    {
+      key: 'tokenQuota',
+      label: 'Token 总限额',
+      type: 'number',
+      default: 0,
+      placeholder: '0 = 不限',
+      wide: true,
+    },
+    {
+      key: 'costQuota',
+      label: '成本总限额',
+      type: 'number',
+      default: 0,
+      placeholder: '0 = 不限',
+      wide: true,
+    },
     { key: 'use', label: '用途 / 角色', type: 'text', wide: true },
+    {
+      key: 'kind',
+      label: '功能类别',
+      type: 'select',
+      options: [
+        { value: 'chat', label: '对话模型' },
+        { value: 'image', label: '图片模型' },
+        { value: 'embed', label: '向量模型' },
+      ],
+      default: 'chat',
+      wide: true,
+    },
+    {
+      key: 'supportsVision',
+      label: '支持上传图片 / 视觉输入',
+      type: 'select',
+      options: [
+        { value: '0', label: '否（纯文本对话）' },
+        { value: '1', label: '是（多模态 / 识图）' },
+      ],
+      default: '0',
+      showWhen: { key: 'kind', value: 'chat' },
+      wide: true,
+    },
+    {
+      key: 'supportsImageOutput',
+      label: '支持图片输出（生图）',
+      type: 'select',
+      options: [
+        { value: '0', label: '否' },
+        { value: '1', label: '是' },
+      ],
+      default: '1',
+      showWhen: { key: 'kind', value: 'image' },
+      wide: true,
+    },
     {
       key: 'egressApproved',
       label: '外发安全标记',
@@ -605,12 +713,12 @@ export const WORKSPACE_FORM = {
   submitLabel: '创建空间',
   fields: [
     { key: 'name', label: '空间名称', type: 'text', required: true, placeholder: '如 交易域团队', wide: true },
-    { key: 'tpl', label: '业务域模板', type: 'select', options: ['交易', '用户', '商品', '自定义'], default: '交易' },
+    { key: 'tpl', label: '业务域模板', type: 'select', options: ['交易', '用户', '商品', '自定义'], default: '自定义' },
     {
       key: 'costCenter',
       label: '成本中心',
       type: 'text',
-      placeholder: '如 CC-TRADE-01',
+      placeholder: '如 CC-TEAM-01',
       wide: true,
     },
     {
@@ -624,10 +732,57 @@ export const WORKSPACE_FORM = {
       key: 'rg',
       label: 'Trino 资源组',
       type: 'text',
-      placeholder: '如 rg_trade（可选，用于限流/记账）',
+      placeholder: '如 rg_team（可选，用于限流/记账）',
       wide: true,
     },
-    { key: 'members', label: '初始成员', type: 'text', placeholder: '逗号分隔，门户协作角色', wide: true },
+    {
+      key: 'members',
+      label: '初始成员',
+      type: 'multi-search-select',
+      optionsResolver: () => workspaceUserOptions(),
+      optionsLoad: () => ensureWorkspaceUserOptions(),
+      placeholder: '搜索姓名 / 账号，可多选（创建人自动为 Owner）',
+      searchKeys: ['name', 'account', 'label', 'sub'],
+      subKey: 'sub',
+      default: [],
+      wide: true,
+      hint: '门户协作角色；默认 Developer。创建人已是 Owner，无需再选自己。',
+    },
+  ],
+}
+
+/** 工作空间 · 邀请成员（门户角色，非 Grav ACL） */
+export const WORKSPACE_MEMBER_FORM = {
+  title: '＋ 邀请成员',
+  intro: '写入 gov_ws_member · 不写 Grav grant · 读数/出湖仍走申请中心',
+  submitLabel: '添加成员',
+  fields: [
+    {
+      key: 'subjectId',
+      label: '用户',
+      type: 'search-select',
+      required: true,
+      optionsResolver: () => workspaceUserOptions(),
+      optionsLoad: () => ensureWorkspaceUserOptions(),
+      placeholder: '搜索姓名 / 账号',
+      searchKeys: ['name', 'account', 'label', 'sub'],
+      subKey: 'sub',
+      wide: true,
+    },
+    {
+      key: 'roleCode',
+      label: '协作角色',
+      type: 'select',
+      options: [
+        { value: 'Developer', label: 'Developer · 登记/开发' },
+        { value: 'Operator', label: 'Operator · 运维协作' },
+        { value: 'BusinessUser', label: 'BusinessUser · 消费方' },
+        { value: 'Owner', label: 'Owner · 认责/默认审批' },
+        { value: 'SecurityOfficer', label: 'SecurityOfficer · 高敏感审批' },
+      ],
+      default: 'Developer',
+      wide: true,
+    },
   ],
 }
 
@@ -997,6 +1152,30 @@ export const METRIC_CREATE_FORM = {
       placeholder: '业务统计口径说明（衍生可不写计算式，描述组合语义即可）',
       wide: true,
     },
-    { key: 'owner', label: '负责人', type: 'text', default: '李明' },
+    {
+      key: 'owner',
+      label: '负责人',
+      type: 'search-select',
+      optionsResolver: (form) => {
+        const list = [...workspaceUserOptions()]
+        const cur = String(form?.owner || '').trim()
+        if (cur && !list.some((o) => String(o.value) === cur)) {
+          list.unshift({
+            value: cur,
+            label: cur,
+            sub: '当前负责人',
+            account: '',
+            name: cur,
+          })
+        }
+        return list
+      },
+      optionsLoad: () => ensureWorkspaceUserOptions(),
+      placeholder: '搜索姓名 / 账号',
+      searchKeys: ['name', 'account', 'label', 'sub'],
+      subKey: 'sub',
+      default: '',
+      hint: '选项来自系统用户；提交存用户 id',
+    },
   ],
 }

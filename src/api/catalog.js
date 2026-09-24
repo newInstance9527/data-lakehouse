@@ -17,6 +17,7 @@ export function fetchAssetPage(filters = {}, { current = 1, size = 200 } = {}) {
     kind: filters.kind ?? filters.assetKind,
     status: filters.status,
     ws: filters.ws,
+    scope: filters.scope,
   })
 }
 
@@ -82,6 +83,15 @@ export function deleteAsset(id) {
 
 export function refreshAsset(id) {
   return http.post(`${CAT}/assets/refresh`, { id })
+}
+
+/** 发布到企业共享层（仅门户可见性） */
+export function publishAssetShare(id) {
+  return http.post(`${CAT}/assets/publish-share`, { id })
+}
+
+export function unpublishAssetShare(id) {
+  return http.post(`${CAT}/assets/unpublish-share`, { id })
 }
 
 export function fetchAssetPreview(id, { limit = 20 } = {}) {

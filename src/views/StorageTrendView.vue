@@ -1,17 +1,17 @@
 <script setup>
-import { computed, onMounted, watch } from 'vue'
+import { computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
 import { useToast } from '@/composables/useToast'
 import { useStorageTrend } from '@/composables/useStorageTrend'
-import { useWsListScope } from '@/composables/useWsListScope'
+import { useSession } from '@/composables/useSession'
 import { pageGuideOf } from '@/data/pageGuides'
 
 const router = useRouter()
 const route = useRoute()
 const { showToast } = useToast()
+const { currentWs } = useSession()
 const guide = pageGuideOf('storage-trend')
-const { currentWs, wsScope, listWs, setScope } = useWsListScope()
 
 const {
   loading,
@@ -40,38 +40,27 @@ const {
 const subtitle = computed(() => {
   const b = collectBanner.value
   const src = b?.source ? ' · ' + String(b.source).split(';')[0] : ''
-  const scope =
-    wsScope.value === 'team'
-      ? ` · 团队 ${currentWs.value || 'default'}`
-      : ' · 查看全部'
-  return `三口径度量 · ${range.value} 窗口 · 建议只深链生命周期${scope}${src}`
+  return `三口径度量 · ${range.value} 窗口 · 建议只深链生命周期${src}`
 })
 
 async function reload() {
-  await loadAll(listWs.value)
+  await loadAll()
 }
 
 onMounted(async () => {
   if (route.query.range) {
     range.value = String(route.query.range)
   }
-  if (route.query.ws && typeof route.query.ws === 'string') {
-    setScope('team')
-  }
   try {
     await reload()
   } catch (e) {
-    showToast(`存储趋势接口暂不可用，已用本地演示数据：${e.message || e}`, 'warning')
+    showToast(`存储趋势加载失败：${e.message || e}`, 'error')
   }
-})
-
-watch(listWs, () => {
-  reload().catch(() => {})
 })
 
 async function onRange(next) {
   try {
-    await setRange(next, listWs.value)
+    await setRange(next)
     router.replace({ query: { ...route.query, range: next } })
   } catch (e) {
     showToast(`切换窗口失败：${e.message || e}`, 'error')
@@ -80,7 +69,7 @@ async function onRange(next) {
 
 async function onFilter(next) {
   try {
-    await setTableFilter(next, listWs.value)
+    await setTableFilter(next)
   } catch (e) {
     showToast(`筛选失败：${e.message || e}`, 'error')
   }
@@ -161,30 +150,8 @@ const RANGES = ['7d', '30d', '90d']
       <button type="button" class="btn btn-sm btn-primary" @click="goLifecycle()">⏳ 去生命周期执行</button>
     </PageHeader>
 
-    <div class="ws-scope-tabs" style="margin: 0 0 12px" role="group" aria-label="归属筛选">
-      <button
-        type="button"
-        class="ws-scope-tab"
-        :class="{ active: wsScope === 'team' }"
-        @click="setScope('team')"
-      >
-        我的团队
-      </button>
-      <button
-        type="button"
-        class="ws-scope-tab"
-        :class="{ active: wsScope === 'all' }"
-        @click="setScope('all')"
-      >
-        查看全部
-      </button>
-      <span v-if="wsScope === 'team'" class="tip" style="align-self: center; margin-left: 8px">
-        当前 {{ currentWs || 'default' }}
-      </span>
-    </div>
-
     <p v-if="lastError && !loading" class="st-banner warn">
-      接口异常时已回退本地演示数据；接通后端后刷新即可。
+      加载失败：{{ lastError.message || lastError }}
     </p>
     <p v-else-if="collectBanner" class="st-banner" :class="collectBanner.status === 'FRESH' ? 'ok' : 'warn'">
       采集 {{ collectBanner.status }}

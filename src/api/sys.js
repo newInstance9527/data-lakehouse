@@ -1,7 +1,45 @@
 /**
- * Snowy 系统管理 API（用户 / 角色 / 菜单 / 角色菜单授权）
+ * Snowy 系统管理 API（用户 / 角色 / 菜单 / 组织 / 职位 / 角色菜单授权）
  */
 import { http } from './http.js'
+
+/** —— 组织 / 部门 —— */
+export function orgTree(params = {}) {
+  // searchKey 非 null（含空串）→ 全量嵌套树；不传则后端懒加载只返回 parentId 下直接子级
+  // 见 SysOrgServiceImpl.orgTreeSelector / treeSearch
+  return http.get('/sys/org/orgTreeSelector', {
+    parentId: params.parentId,
+    searchKey: params.searchKey != null ? params.searchKey : '',
+  })
+}
+
+export function pageOrgs(params = {}) {
+  return http.get('/sys/org/page', {
+    current: params.current ?? 1,
+    size: params.size ?? 100,
+    parentId: params.parentId,
+    searchKey: params.searchKey,
+  })
+}
+
+export function addOrg(body) {
+  return http.post('/sys/org/add', body)
+}
+
+export function editOrg(body) {
+  return http.post('/sys/org/edit', body)
+}
+
+export function deleteOrgs(ids) {
+  return http.post(
+    '/sys/org/delete',
+    (ids || []).map((id) => ({ id })),
+  )
+}
+
+export function detailOrg(id) {
+  return http.get('/sys/org/detail', { id })
+}
 
 /** —— 用户 —— */
 export function pageUsers(params = {}) {
@@ -11,6 +49,7 @@ export function pageUsers(params = {}) {
     searchKey: params.searchKey,
     userStatus: params.userStatus,
     orgId: params.orgId,
+    searchIncludeChild: params.searchIncludeChild,
   })
 }
 
@@ -54,11 +93,14 @@ export function grantUserRoles(id, roleIdList) {
 }
 
 export function userOrgTree() {
-  return http.get('/sys/user/orgTreeSelector')
+  // 与 orgTree 一致：必须带 searchKey（可空）才能拿到含 children 的全量树
+  return http.get('/sys/user/orgTreeSelector', { searchKey: '' })
 }
 
-export function userPositionSelector(orgId) {
-  return http.get('/sys/user/positionSelector', { orgId })
+export async function userPositionSelector(orgId) {
+  const data = await http.get('/sys/user/positionSelector', { orgId })
+  // Snowy 返回 Page；兼容直接数组
+  return Array.isArray(data) ? data : data?.records || []
 }
 
 export function userRoleSelector() {
@@ -145,4 +187,35 @@ export function menuModuleSelector() {
 
 export function menuTreeSelector(module) {
   return http.get('/sys/menu/menuTreeSelector', { module })
+}
+
+/** —— 职位 —— */
+export function pagePositions(params = {}) {
+  return http.get('/sys/position/page', {
+    current: params.current ?? 1,
+    size: params.size ?? 50,
+    orgId: params.orgId,
+    searchIncludeChild: params.searchIncludeChild,
+    category: params.category,
+    searchKey: params.searchKey,
+  })
+}
+
+export function addPosition(body) {
+  return http.post('/sys/position/add', body)
+}
+
+export function editPosition(body) {
+  return http.post('/sys/position/edit', body)
+}
+
+export function deletePositions(ids) {
+  return http.post(
+    '/sys/position/delete',
+    (ids || []).map((id) => ({ id })),
+  )
+}
+
+export function detailPosition(id) {
+  return http.get('/sys/position/detail', { id })
 }

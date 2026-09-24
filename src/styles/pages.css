@@ -284,35 +284,6 @@
   border-bottom: 1px solid var(--border);
   flex-wrap: wrap;
 }
-.ws-scope-tabs {
-  display: inline-flex;
-  gap: 0;
-  flex-shrink: 0;
-}
-.ws-scope-tab {
-  border: 1px solid var(--border);
-  cursor: pointer;
-  color: var(--text-2);
-  font-size: 12px;
-  font: inherit;
-  background: #fff;
-  padding: 5px 12px;
-  line-height: 1.2;
-}
-.ws-scope-tab:first-child {
-  border-radius: 6px 0 0 6px;
-}
-.ws-scope-tab:last-child {
-  border-radius: 0 6px 6px 0;
-  margin-left: -1px;
-}
-.ws-scope-tab.active {
-  border-color: var(--primary);
-  background: var(--primary-light);
-  color: var(--primary);
-  font-weight: 600;
-  z-index: 1;
-}
 .catalog-search {
   flex: 1;
   min-width: 240px;

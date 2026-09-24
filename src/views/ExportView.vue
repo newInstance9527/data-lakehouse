@@ -1,12 +1,12 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
 import CreateFormModal from '@/components/common/CreateFormModal.vue'
 import ListPager from '@/components/common/ListPager.vue'
 import { useToast } from '@/composables/useToast'
 import { usePager } from '@/composables/usePager'
-import { useSession } from '@/composables/useSession'
+import { useWsListScope } from '@/composables/useWsListScope'
 import { EXPORT_APPLY_FORM } from '@/data/createForms'
 import { pageGuideOf } from '@/data/pageGuides'
 import { EXPORT_FLOW, exportJobStatusMeta } from '@/data/export'
@@ -16,7 +16,7 @@ import { fetchExportSummary, fetchExportJobs, fetchExportAudit } from '@/api/exp
 const route = useRoute()
 const router = useRouter()
 const { showToast } = useToast()
-const { user } = useSession()
+const { user, currentWs, showAll, listWsParams, watchListScope } = useWsListScope()
 const guide = pageGuideOf('export')
 
 const createOpen = ref(false)
@@ -24,8 +24,6 @@ const loading = ref(false)
 const jobs = ref([])
 const summary = ref(null)
 const { page, pageSize, total, totalPages, paged, pageNums, goPage, resetPage } = usePager(jobs)
-
-const ws = computed(() => user.value?.ws || 'default')
 
 const kpis = computed(() => {
   const s = summary.value || {}
@@ -85,12 +83,15 @@ onMounted(async () => {
   await loadBoard()
 })
 
+watchListScope(() => loadBoard())
+
 async function loadBoard() {
   loading.value = true
   try {
+    const params = listWsParams()
     const [sum, list] = await Promise.all([
-      fetchExportSummary({ ws: ws.value }),
-      fetchExportJobs({ ws: ws.value }),
+      fetchExportSummary(params),
+      fetchExportJobs(params),
     ])
     summary.value = sum || {}
     jobs.value = (Array.isArray(list) ? list : []).map(normalizeJob)
@@ -142,51 +143,38 @@ function formatExpire(payload) {
 
 async function onExportApply(payload) {
   const expire = formatExpire(payload)
-  const result = await pushExportApply({
-    table: payload.table,
-    purpose: payload.purpose,
-    target: payload.target,
-    expire,
-    applicant: '我',
-  })
-  const ticketNo = result.ticketNo
-  createOpen.value = false
-  const tip = result.degraded
-    ? `⚠️ 出湖申请已落本地演示：${ticketNo}（后端暂不可用：${result.message || ''}）`
-    : `✅ 出湖申请已提交：${ticketNo} · 已进入申请中心待审批；通过后将单号填回 ETL ticketNo`
-  showToast(tip, result.degraded ? 'warning' : 'success', { duration: 8000 })
-  if (route.query.from === 'etl') {
-    try {
-      navigator.clipboard?.writeText?.(ticketNo)
-      showToast(`已复制单号 ${ticketNo}（审批通过后方可用于发布）`, 'info')
-    } catch {
-      /* ignore */
-    }
-  }
-  if (!result.degraded) {
-    await loadBoard()
-  } else {
-    jobs.value.unshift({
-      job: ticketNo,
-      ticketNo,
-      src: String(payload.table || '')
-        .replace(/^(ads|dwd|dws)\./, '')
-        .replace(/^[\w]+\./, '') || payload.table,
+  try {
+    const result = await pushExportApply({
+      table: payload.table,
+      purpose: payload.purpose,
       target: payload.target,
-      purpose: String(payload.purpose || '').slice(0, 40),
-      freq: '待审批(本地)',
-      mask: '待配置',
       expire,
-      status: 'warn',
-      ticketStatus: 'pending',
+      applicant: '我',
     })
-    resetPage()
+    const ticketNo = result.ticketNo
+    createOpen.value = false
+    showToast(
+      `✅ 出湖申请已提交：${ticketNo} · 已进入申请中心待审批；通过后将单号填回 ETL ticketNo`,
+      'success',
+      { duration: 8000 },
+    )
+    if (route.query.from === 'etl') {
+      try {
+        navigator.clipboard?.writeText?.(ticketNo)
+        showToast(`已复制单号 ${ticketNo}（审批通过后方可用于发布）`, 'info')
+      } catch {
+        /* ignore */
+      }
+    }
+    await loadBoard()
+  } catch (e) {
+    showToast(e?.message || '出湖申请提交失败', 'danger')
   }
 }
 
 async function exportAudit() {
   try {
-    const data = await fetchExportAudit({ ws: ws.value })
+    const data = await fetchExportAudit(listWsParams())
     const lines = Array.isArray(data?.lines) ? data.lines : []
     if (!lines.length) {
       showToast(data?.hint || '暂无出湖审计记录', 'info')
@@ -205,7 +193,7 @@ async function exportAudit() {
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `export-audit-${ws.value}-${Date.now()}.csv`
+    a.download = `export-audit-${currentWs.value || 'all'}-${Date.now()}.csv`
     a.click()
     URL.revokeObjectURL(url)
     showToast(`📋 已导出审计摘要 ${lines.length} 条（${data?.source === 'gov_export_audit' ? '正式落库' : 'soft 回落'}）`, 'success')
@@ -242,6 +230,10 @@ function goEtl(j) {
       subtitle="申请→审批→脱敏→出湖→审计→到期回收 · 独立 SA · 禁止私下灌库"
       :guide="guide"
     >
+      <label class="ws-mine-chk" title="默认跟随顶栏当前空间；勾选后查看全部归属">
+        <input v-model="showAll" type="checkbox" />
+        查看全部
+      </label>
       <button type="button" class="btn btn-sm" @click="newExportApply">＋ 出湖申请</button>
       <button type="button" class="btn btn-sm" @click="exportAudit">📋 出湖审计</button>
       <button type="button" class="btn btn-sm" @click="loadBoard" :disabled="loading">

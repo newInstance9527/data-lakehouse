@@ -12,16 +12,8 @@ import {
   formatScanBytes,
   upsertCatalogMap,
 } from '@/api/query'
-import {
-  COST_DOMAINS,
-  QG_KPIS,
-  QG_RULES,
-  QUERY_AUDITS,
-  TRINO_QUEUES,
-  auditStatusMeta,
-  costTrendClass,
-  truncateQuery,
-} from '@/data/querygov'
+import { fetchWsQuotaAlerts } from '@/api/workspace'
+import { auditStatusMeta, costTrendClass, truncateQuery } from '@/data/querygov'
 
 const router = useRouter()
 const route = useRoute()
@@ -32,8 +24,13 @@ const loading = ref(false)
 const costsLoading = ref(false)
 const live = ref(false)
 const costsLive = ref(false)
+const loadError = ref('')
+const costsError = ref('')
 const overview = ref(null)
 const costsPayload = ref(null)
+
+const quotaAlerts = ref([])
+const quotaAlertsError = ref('')
 
 const costRange = ref(typeof route.query.range === 'string' ? route.query.range : '30d')
 const costWs = ref(typeof route.query.ws === 'string' ? route.query.ws : '')
@@ -55,7 +52,7 @@ const lastMapMessage = ref('')
 
 const kpis = computed(() => {
   const list = overview.value?.kpis
-  if (!Array.isArray(list) || !list.length) return QG_KPIS
+  if (!Array.isArray(list) || !list.length) return []
   const colors = ['blue', 'green', 'orange', 'purple', 'red']
   const icons = ['🎚️', '✅', '⚠️', '💰', '📦']
   return list.map((k, i) => ({
@@ -73,7 +70,7 @@ const kpis = computed(() => {
 
 const queues = computed(() => {
   const list = overview.value?.queues
-  if (!Array.isArray(list) || !list.length) return TRINO_QUEUES
+  if (!Array.isArray(list) || !list.length) return []
   return list.map((q) => ({
     name: q.name,
     icon: q.icon || '💻',
@@ -87,15 +84,7 @@ const queues = computed(() => {
 
 const rules = computed(() => {
   const list = overview.value?.rules
-  if (!Array.isArray(list) || !list.length) {
-    return QG_RULES.map((r, i) => ({
-      id: `D${i + 1}`,
-      name: r.rule,
-      action: r.action,
-      desc: `${r.threshold} · ${r.notify}`,
-      source: 'demo',
-    }))
-  }
+  if (!Array.isArray(list) || !list.length) return []
   return list.map((r) => ({
     id: r.id,
     name: r.name,
@@ -107,34 +96,26 @@ const rules = computed(() => {
 
 const costRows = computed(() => {
   const items = costsPayload.value?.items
-  if (Array.isArray(items) && items.length) {
-    return items.map((d) => ({
-      name: d.name || d.ws || d.key,
-      ws: d.ws,
-      cost: d.totalLabel || formatCny(d.totalCost),
-      detail: [
-        d.storageCost != null ? `存 ¥${Number(d.storageCost).toFixed(0)}` : null,
-        d.computeCost != null ? `算 ¥${Number(d.computeCost).toFixed(0)}` : null,
-        d.aiCost != null ? `AI ¥${Number(d.aiCost).toFixed(0)}` : null,
-      ]
-        .filter(Boolean)
-        .join(' · '),
-      trend: d.trend || '',
-      pct: Math.min(100, Number(d.pct) || 0),
-    }))
-  }
-  return COST_DOMAINS.map((d) => ({
-    name: d.domain,
-    cost: d.total,
-    detail: '',
-    trend: d.trend,
-    pct: Math.min(100, Math.round((Number(String(d.total).replace(/[^\d]/g, '')) || 0) / 200)),
+  if (!Array.isArray(items) || !items.length) return []
+  return items.map((d) => ({
+    name: d.name || d.ws || d.key,
+    ws: d.ws,
+    cost: d.totalLabel || formatCny(d.totalCost),
+    detail: [
+      d.storageCost != null ? `存 ¥${Number(d.storageCost).toFixed(0)}` : null,
+      d.computeCost != null ? `算 ¥${Number(d.computeCost).toFixed(0)}` : null,
+      d.aiCost != null ? `AI ¥${Number(d.aiCost).toFixed(0)}` : null,
+    ]
+      .filter(Boolean)
+      .join(' · '),
+    trend: d.trend || '',
+    pct: Math.min(100, Number(d.pct) || 0),
   }))
 })
 
 const audits = computed(() => {
   const list = overview.value?.audits
-  if (!Array.isArray(list) || !list.length) return QUERY_AUDITS
+  if (!Array.isArray(list) || !list.length) return []
   return list.map((a) => ({
     user: a.user || '—',
     query: a.summary || a.sql || '—',
@@ -162,8 +143,24 @@ function formatCny(v) {
   return `¥${Number(v).toFixed(2)}`
 }
 
+async function loadQuotaAlerts() {
+  quotaAlertsError.value = ''
+  try {
+    const list = await fetchWsQuotaAlerts()
+    quotaAlerts.value = Array.isArray(list) ? list : []
+  } catch (e) {
+    quotaAlerts.value = []
+    quotaAlertsError.value = e?.message || '配额告警拉取失败'
+  }
+}
+
+function goWorkspaceQuota(ws) {
+  router.push({ path: '/workspace', query: ws ? { ws } : {} })
+}
+
 async function loadOverview() {
   loading.value = true
+  loadError.value = ''
   try {
     const data = await fetchQueryGovOverview()
     overview.value = data || null
@@ -174,7 +171,8 @@ async function loadOverview() {
   } catch (e) {
     overview.value = null
     live.value = false
-    showToast(e?.message || '治理总览拉取失败，展示演示数据', 'warning')
+    loadError.value = e?.message || '治理总览拉取失败'
+    showToast(loadError.value, 'warning')
   } finally {
     loading.value = false
   }
@@ -182,6 +180,7 @@ async function loadOverview() {
 
 async function loadCosts() {
   costsLoading.value = true
+  costsError.value = ''
   try {
     const data = await fetchQueryGovCosts({
       range: costRange.value || '30d',
@@ -193,7 +192,8 @@ async function loadCosts() {
   } catch (e) {
     costsPayload.value = null
     costsLive.value = false
-    showToast(e?.message || '成本卡拉取失败，展示演示分摊', 'warning')
+    costsError.value = e?.message || '成本卡拉取失败'
+    showToast(costsError.value, 'warning')
   } finally {
     costsLoading.value = false
   }
@@ -323,6 +323,7 @@ onMounted(() => {
   loadOverview()
   loadFederation()
   loadCosts()
+  loadQuotaAlerts()
 })
 </script>
 
@@ -341,8 +342,8 @@ onMounted(() => {
       <button type="button" class="btn btn-sm btn-primary" @click="goQuery">🔗 即席查询</button>
     </PageHeader>
 
-    <div v-if="!live" class="banner-soft">后端未连通时展示演示数据；连通后 KPI/审计来自 /lh/compute/query/gov/overview</div>
-    <div v-else class="banner-ok">
+    <div v-if="!live && loadError" class="banner-soft">{{ loadError }}</div>
+    <div v-else-if="live" class="banner-ok">
       已接真：默认扫描
       {{ formatScanBytes(overview?.scanDefaultBytes) }} / 硬顶
       {{ formatScanBytes(overview?.scanHardBytes) }} · adhoc 在途
@@ -454,6 +455,7 @@ onMounted(() => {
     </div>
 
     <div class="kpi-grid qg-kpi">
+      <div v-if="!kpis.length" class="tip" style="padding: 12px">暂无 KPI</div>
       <div v-for="(k, i) in kpis" :key="i" class="kpi-card" :class="k.color">
         <div class="kpi-icon" :class="k.color">{{ k.icon }}</div>
         <div class="kpi-value">
@@ -477,7 +479,8 @@ onMounted(() => {
         </div>
       </div>
       <div class="card-body qg-queue-body">
-        <div class="grid grid-3 qg-queue-grid">
+        <div v-if="!queues.length" class="tip" style="padding: 12px">暂无队列数据</div>
+        <div v-else class="grid grid-3 qg-queue-grid">
           <div v-for="q in queues" :key="q.name" class="queue-card">
             <div class="qc-head">
               <div class="qc-name">{{ q.icon }} {{ q.name }} 队列</div>
@@ -569,6 +572,42 @@ onMounted(() => {
     <div class="card qg-section">
       <div class="card-header">
         <div class="card-title">
+          🚨 工作空间配额水位
+          <span class="tip">· ≥60% 提示 · ≥80% 告警 · /lh/workspace/quota-alerts</span>
+        </div>
+        <button type="button" class="btn btn-sm" @click="loadQuotaAlerts">↻ 刷新</button>
+      </div>
+      <div class="card-body">
+        <div v-if="quotaAlertsError" class="tip">{{ quotaAlertsError }}</div>
+        <div v-else-if="!quotaAlerts.length" class="tip">暂无超过 60% 的配额水位（合法空态）</div>
+        <div v-else class="quota-alert-list">
+          <div
+            v-for="a in quotaAlerts"
+            :key="a.wsCode"
+            class="quota-alert-row"
+            :class="a.level === 'alert' ? 'is-alert' : 'is-warn'"
+            @click="goWorkspaceQuota(a.wsCode)"
+          >
+            <div class="qa-main">
+              <strong>{{ a.name || a.wsCode }}</strong>
+              <code>{{ a.wsCode }}</code>
+              <span class="tag" :class="a.level === 'alert' ? 'tag-red' : 'tag-orange'">
+                {{ a.level === 'alert' ? '告警' : '提示' }} {{ a.maxPct }}%
+              </span>
+            </div>
+            <div class="qa-meta">
+              存储 {{ a.storagePct ?? '—' }}% · CU {{ a.cuPct ?? '—' }}%
+              <template v-if="a.aiTokenPct"> · AI Token {{ a.aiTokenPct }}%</template>
+              · {{ a.hint }}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card qg-section">
+      <div class="card-header">
+        <div class="card-title">
           💰 成本分摊
           <span class="tip">· group=ws · 存储+扫描+AI</span>
         </div>
@@ -597,7 +636,9 @@ onMounted(() => {
             · 合计 {{ formatCny(costsPayload.totals.totalCost) }}
           </template>
         </div>
-        <div v-else class="tip cost-live">未连通时展示按域演示；连通后按空间聚合</div>
+        <div v-else-if="costsError" class="tip cost-live">{{ costsError }}</div>
+        <div v-else class="tip cost-live">暂无成本分摊</div>
+        <div v-if="!costRows.length" class="tip">暂无</div>
         <div class="cost-grid">
           <div v-for="d in costRows" :key="d.ws || d.name" class="cost-item">
             <div class="cost-name">{{ d.name }}<code v-if="d.ws" class="cost-ws-tag">{{ d.ws }}</code></div>
@@ -785,5 +826,36 @@ onMounted(() => {
   justify-content: space-between;
   align-items: center;
   gap: 8px;
+}
+.quota-alert-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.quota-alert-row {
+  padding: 10px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  cursor: pointer;
+}
+.quota-alert-row.is-warn {
+  background: var(--warning-light, #fff7e6);
+}
+.quota-alert-row.is-alert {
+  background: var(--danger-light, #fff1f0);
+}
+.quota-alert-row:hover {
+  border-color: var(--primary);
+}
+.qa-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+.qa-meta {
+  font-size: 12px;
+  color: var(--text-3);
 }
 </style>

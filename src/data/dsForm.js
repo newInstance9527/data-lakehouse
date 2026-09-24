@@ -31,7 +31,9 @@ export const DS_COMMON_FIELDS = [
   {
     "n": "owner",
     "l": "负责人",
-    "t": "text",
+    "t": "user-search",
+    "req": 1,
+    "ph": "搜索姓名 / 账号选择负责人",
     "def": ""
   },
   {

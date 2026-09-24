@@ -1,12 +1,4 @@
-/** 合规删除工单 · 创建 / 审批 / 执行 / 归档 */
-
-export const COMPLIANCE_KPIS = [
-  { icon: '🗑️', color: 'red', value: '12', unit: '单', label: '本月工单', trend: '被遗忘权 8 · 擦除 3 · 监管 1' },
-  { icon: '⏳', color: 'orange', value: '3', unit: '单', label: '待审批', trend: 'Owner / 法务节点', trendDown: true },
-  { icon: '⚡', color: 'blue', value: '2', unit: '单', label: '待执行', trend: '审批已齐 · 等窗口' },
-  { icon: '✅', color: 'green', value: '6', unit: '单', label: '本月已执行', trend: 'SLA 内 100%' },
-  { icon: '📦', color: 'purple', value: '1', unit: '单', label: '待物理销毁', trend: '归档观察期中', trendDown: true },
-]
+/** 合规删除 · 流程词表与状态 meta（工单列表走 /lh/compliance） */
 
 /** 流程阶段（设计口径 · doc/合规删除.md 状态机） */
 export const COMPLIANCE_STAGES = [
@@ -46,248 +38,31 @@ export const COMPLIANCE_STATUS_TABS = [
   { id: 'rejected', label: '已驳回' },
 ]
 
-/** 载体矩阵词表（与后端 carrier / mode 一致） */
-export const DEL_CARRIERS = [
-  { id: 'source', label: '源库', mode: 'sink_delete' },
-  { id: 'iceberg', label: '湖表 Iceberg', mode: 'cow' },
-  { id: 'ck', label: 'ClickHouse', mode: 'ck_mutation' },
-  { id: 'sink', label: '回流副本', mode: 'sink_delete' },
-  { id: 'export', label: '出湖副本', mode: 'notify' },
-  { id: 'platform', label: '平台留存', mode: 'purge' },
-  { id: 'ai', label: 'AI / 知识库', mode: 'purge' },
-  { id: 'meta', label: '元数据样例', mode: 'purge' },
-  { id: 'log', label: '日志', mode: 'purge' },
-  { id: 'backup', label: '备份 / 冷归档', mode: 'register' },
-  { id: 'kafka', label: '消息队列', mode: 'retention' },
-]
-
-export const DEL_TARGET_STATUS_CLS = {
-  planned: 'tag-gray',
-  running: 'tag-purple',
-  done: 'tag-green',
-  failed: 'tag-red',
-  pending_receipt: 'tag-orange',
-  registered: 'tag-blue',
-  restricted: 'tag-orange',
-  excluded: 'tag-gray',
-}
-
-export const DEL_REQ_TYPES = [
-  { value: 'forget', label: '被遗忘权' },
-  { value: 'erase_error', label: '错误数据擦除' },
-  { value: 'regulator', label: '监管责令删除' },
-  { value: 'contract_expire', label: '合同到期清除' },
-  { value: 'account_close', label: '账号注销' },
-]
-
 export const COMPLIANCE_TYPE_META = {
-  被遗忘权: { cls: 'tag-red', law: 'GDPR Art.17 / 个保法' },
-  错误数据擦除: { cls: 'tag-purple', law: '数据质量纠错' },
-  监管责令删除: { cls: 'tag-orange', law: '监管函件' },
-  合同到期清除: { cls: 'tag-blue', law: '合同约定保留期' },
+  被遗忘权: { cls: 'tag-red' },
+  错误数据擦除: { cls: 'tag-orange' },
+  监管责令删除: { cls: 'tag-purple' },
+  合同到期清除: { cls: 'tag-blue' },
+  forget: { cls: 'tag-red' },
+  erase_error: { cls: 'tag-orange' },
+  regulator: { cls: 'tag-purple' },
+  contract_expire: { cls: 'tag-blue' },
 }
 
-const IMPACT_PRESETS = {
-  user_88241:
-    '5 张 Iceberg 表 · 12 分区 · dwd_user.dwd_user_info / dwd_trade.dwd_order_detail / ads.ads_user_tags · 2 CK 热表 · 1 回流副本',
-  order_batch_202608: '1 张表 · 1 分区 · ods_trade.s_order dt=2026-08',
-  user_77120: '4 张 Iceberg 表 · 8 分区 · 含 PII 列 buyer_mobile / id_card',
-  UID_8827341:
-    '8 张 Iceberg 表 + 2 个 CK 表 + 1 个回流副本 · 主体 UID-8827341 全部 PII',
+/** 计划目标行状态色 */
+export const DEL_TARGET_STATUS_CLS = {
+  planned: 'tag-blue',
+  queued: 'tag-blue',
+  running: 'tag-purple',
+  executing: 'tag-purple',
+  done: 'tag-green',
+  success: 'tag-green',
+  skipped: 'tag-gray',
+  restricted: 'tag-orange',
+  failed: 'tag-red',
+  error: 'tag-red',
 }
-
-export function impactHintForSubject(subject) {
-  return IMPACT_PRESETS[subject] || '将按血缘自动评估受影响表与分区（演示）'
-}
-
-export const COMPLIANCE_TICKETS = [
-  {
-    id: 'DEL-2026-0042',
-    subject: 'user_88241',
-    type: '被遗忘权',
-    scope: '指定行',
-    law: 'GDPR 被遗忘权 · 用户主动申请',
-    impact: IMPACT_PRESETS.user_88241,
-    tables: ['dwd_user.dwd_user_info', 'dwd_trade.dwd_order_detail', 'ads.ads_user_tags'],
-    approver: '安全岗+法务+Owner',
-    approval: '安全岗 ✓ · 法务 ✓ · Owner 待签',
-    approvalPending: true,
-    status: '审批中',
-    statusKey: 'pending',
-    statusCls: 'tag-orange',
-    applicant: '法务系统',
-    createdAt: '2026-09-01 10:00',
-    deadline: '2026-09-05',
-    execMode: 'Iceberg equality delete + CK ALTER DELETE',
-    timeline: [
-      { name: '创建工单', status: 'done', time: '09-01 10:00' },
-      { name: '血缘影响评估', status: 'done', time: '09-01 10:12', opinion: '5 表 · 12 分区' },
-      { name: '安全岗审批', status: 'done', time: '09-01 14:20', opinion: '同意 · 限 PII 列' },
-      { name: '法务审批', status: 'done', time: '09-01 15:30', opinion: '确认合规' },
-      { name: 'Owner 签批', status: 'current', time: '待签' },
-      { name: '平台执行', status: 'pending' },
-      { name: '审计归档', status: 'pending' },
-    ],
-  },
-  {
-    id: 'DEL-2026-0040',
-    subject: 'UID_8827341',
-    type: '被遗忘权',
-    scope: '指定行',
-    law: 'GDPR 被遗忘权 · 用户主动申请',
-    impact: IMPACT_PRESETS.UID_8827341,
-    tables: ['dwd_user.dwd_user_info', 'ods_trade.s_order'],
-    approver: '安全岗+法务+Owner',
-    approval: '三方 ✓',
-    approvalPending: false,
-    status: '待执行',
-    statusKey: 'ready',
-    statusCls: 'tag-blue',
-    applicant: '法务系统',
-    createdAt: '2026-09-01 10:00',
-    deadline: '2026-09-05',
-    execMode: 'Iceberg equality delete + CK ALTER DELETE',
-    timeline: [
-      { name: '创建工单', status: 'done', time: '09-01 10:00' },
-      { name: '血缘影响评估', status: 'done', time: '09-01 10:20' },
-      { name: '三方审批', status: 'done', time: '09-01 16:00', opinion: '全部通过' },
-      { name: '平台执行', status: 'current', time: '待执行 · 维护窗口 02:00' },
-      { name: '审计归档', status: 'pending' },
-    ],
-  },
-  {
-    id: 'DEL-2026-0038',
-    subject: 'order_batch_202608',
-    type: '错误数据擦除',
-    scope: '指定行',
-    law: '错误导入批次纠错',
-    impact: IMPACT_PRESETS.order_batch_202608,
-    tables: ['ods_trade.s_order'],
-    approver: '安全岗+法务+Owner',
-    approval: '三方 ✓',
-    approvalPending: false,
-    status: '已执行',
-    statusKey: 'done',
-    statusCls: 'tag-green',
-    applicant: '数据治理',
-    createdAt: '2026-08-28 09:12',
-    deadline: '2026-08-30',
-    execMode: '分区 overwrite + equality delete',
-    executedAt: '2026-08-29 02:18',
-    timeline: [
-      { name: '创建工单', status: 'done', time: '08-28 09:12' },
-      { name: '三方审批', status: 'done', time: '08-28 18:00' },
-      { name: '平台执行', status: 'done', time: '08-29 02:18', opinion: '删除 1,248 行' },
-      { name: '审计归档', status: 'done', time: '08-29 03:00' },
-    ],
-  },
-  {
-    id: 'DEL-2026-0031',
-    subject: 'user_77120',
-    type: '被遗忘权',
-    scope: '指定行',
-    law: '个保法 · 用户注销',
-    impact: IMPACT_PRESETS.user_77120,
-    tables: ['dwd_user.dwd_user_info', 'dwd_trade.dwd_order_detail'],
-    approver: '安全岗+法务+Owner',
-    approval: '三方 ✓',
-    approvalPending: false,
-    status: '已归档·待物理销毁',
-    statusKey: 'archive',
-    statusCls: 'tag-gray',
-    applicant: '客服系统',
-    createdAt: '2026-08-10 11:00',
-    deadline: '2026-08-20',
-    execMode: 'Iceberg equality delete',
-    executedAt: '2026-08-12 02:05',
-    destroyAfter: '2026-09-12',
-    timeline: [
-      { name: '创建工单', status: 'done', time: '08-10 11:00' },
-      { name: '三方审批', status: 'done', time: '08-11 10:00' },
-      { name: '平台执行', status: 'done', time: '08-12 02:05' },
-      { name: '审计归档', status: 'done', time: '08-12 03:00' },
-      { name: '物理销毁', status: 'current', time: '观察至 09-12' },
-    ],
-  },
-  {
-    id: 'DEL-2026-0027',
-    subject: 'partner_feed_0701',
-    type: '合同到期清除',
-    scope: '日志归档',
-    law: '合作协议保留 90 天',
-    impact: 'Landing 桶 partner_daily · 3 个分区 · 约 18GB',
-    tables: ['ods_ext.partner_daily'],
-    approver: '法务+Owner',
-    approval: '法务 ✓ · Owner ✕',
-    approvalPending: false,
-    status: '已驳回',
-    statusKey: 'rejected',
-    statusCls: 'tag-red',
-    applicant: '合作伙伴运营',
-    createdAt: '2026-08-05 14:22',
-    deadline: '2026-08-15',
-    execMode: '对象存储生命周期规则',
-    timeline: [
-      { name: '创建工单', status: 'done', time: '08-05 14:22' },
-      { name: '法务审批', status: 'done', time: '08-06 09:00', opinion: '同意按合同清除' },
-      { name: 'Owner 签批', status: 'done', time: '08-06 16:40', opinion: '驳回 · 仍有对账争议' },
-    ],
-  },
-  {
-    id: 'DEL-2026-0045',
-    subject: 'user_99001',
-    type: '监管责令删除',
-    scope: '指定行',
-    law: '监管函〔2026〕12 号',
-    impact: '评估中 · 预计涉 PII 表 6 张',
-    tables: [],
-    approver: '安全岗+法务+Owner',
-    approval: '安全岗待审',
-    approvalPending: true,
-    status: '审批中',
-    statusKey: 'pending',
-    statusCls: 'tag-orange',
-    applicant: '合规办公室',
-    createdAt: '2026-09-03 09:30',
-    deadline: '2026-09-10',
-    execMode: '待评估后确定',
-    timeline: [
-      { name: '创建工单', status: 'done', time: '09-03 09:30' },
-      { name: '血缘影响评估', status: 'current', time: '进行中' },
-      { name: '安全岗审批', status: 'pending' },
-      { name: '法务审批', status: 'pending' },
-      { name: 'Owner 签批', status: 'pending' },
-      { name: '平台执行', status: 'pending' },
-    ],
-  },
-]
-
-/** 生命周期页预览用（最近待办优先） */
-export const LC_COMPLIANCE_PREVIEW = COMPLIANCE_TICKETS.filter((t) =>
-  ['pending', 'ready', 'archive'].includes(t.statusKey),
-).slice(0, 3)
 
 export function complianceTypeCls(type) {
   return COMPLIANCE_TYPE_META[type]?.cls || 'tag-gray'
-}
-
-export function filterComplianceTickets(list, tab, q = '') {
-  let rows = list
-  if (tab && tab !== 'all') rows = rows.filter((t) => t.statusKey === tab)
-  const s = String(q || '').trim().toLowerCase()
-  if (s) {
-    rows = rows.filter(
-      (t) =>
-        t.id.toLowerCase().includes(s) ||
-        t.subject.toLowerCase().includes(s) ||
-        t.type.includes(s) ||
-        (t.applicant || '').toLowerCase().includes(s),
-    )
-  }
-  return rows
-}
-
-export function nextComplianceId(existing = []) {
-  const n = existing.length + 46
-  return `DEL-2026-${String(n).padStart(4, '0')}`
 }

@@ -4,19 +4,24 @@ import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
 import { useToast } from '@/composables/useToast'
 import { pageGuideOf } from '@/data/pageGuides'
+import { opsStatusIconClass } from '@/data/ops'
+import { ensureOnce } from '@/composables/useEnsureSamples'
+import { SAMPLE_ETL_DAG } from '@/data/sampleSeeds'
 import {
-  OPS_DS_DAGS,
-  OPS_FLINK_JOBS,
-  OPS_KPIS,
-  OPS_RECONCILE,
-  opsStatusIconClass,
-} from '@/data/ops'
-import { backfillEtlDag, fetchEtlRunDetail } from '@/api/etl'
+  backfillEtlDag,
+  createEtlDag,
+  fetchEtlDags,
+  fetchEtlRunDetail,
+  fetchEtlRuns,
+} from '@/api/etl'
+import { fetchReconPartition } from '@/api/metric'
+import { useSession } from '@/composables/useSession'
 
 const route = useRoute()
 const router = useRouter()
 const { showToast } = useToast()
 const guide = pageGuideOf('ops')
+const { currentWs } = useSession()
 
 const env = ref('prod')
 const focusRunId = ref('')
@@ -25,6 +30,221 @@ const focusRun = ref(null)
 const bfMarkKey = ref('dt')
 const bfMarkValue = ref('')
 const bfDagId = ref('')
+const loading = ref(false)
+const loadError = ref('')
+const dags = ref([])
+const runs = ref([])
+const reconRows = ref([])
+
+function mapRunStatus(st) {
+  const s = String(st || '').toLowerCase()
+  if (['success', 'successed', 'succeeded', 'ok', 'done'].includes(s)) return 'success'
+  if (['failed', 'fail', 'error'].includes(s)) return 'failed'
+  if (['running', 'executing'].includes(s)) return 'running'
+  if (['blocked', 'warn', 'warning'].includes(s)) return 'warning'
+  return s || 'running'
+}
+
+function statusIcon(st) {
+  const m = mapRunStatus(st)
+  if (m === 'success') return '✓'
+  if (m === 'failed') return '✕'
+  if (m === 'warning') return '⚠️'
+  return '⚙️'
+}
+
+function progressOf(st) {
+  const m = mapRunStatus(st)
+  if (m === 'success') return { pct: 100, label: '完成', text: '100%', color: 'var(--success)' }
+  if (m === 'failed') return { pct: 0, label: '失败', text: '0%', color: 'var(--danger)' }
+  if (m === 'warning') return { pct: 50, label: '告警', text: '—', color: 'var(--warning)' }
+  return { pct: 60, label: '进度', text: '运行中', color: 'linear-gradient(90deg,#1e6fff,#5cdbd3)' }
+}
+
+const flinkJobs = computed(() => {
+  const fromDags = dags.value.filter((d) => {
+    const eng = String(d.defaultEngine || d.engine || '').toLowerCase()
+    return eng.includes('flink') || eng.includes('stream')
+  })
+  const list = fromDags.length
+    ? fromDags
+    : runs.value.filter((r) => String(r.engine || r.trigger || '').toLowerCase().includes('flink'))
+  return list.map((t) => {
+    const st = mapRunStatus(t.lastStatus || t.status)
+    const prog = progressOf(st)
+    return {
+      id: t.id || t.dagCode || t.runId,
+      name: t.name || t.dagCode || t.runId || '—',
+      status: st,
+      icon: statusIcon(st),
+      tags: t.status ? [{ text: String(t.status), cls: st === 'failed' ? 'tag-red' : 'tag-green' }] : [],
+      meta: [
+        t.cron ? { text: `cron ${t.cron}` } : null,
+        t.env ? { text: `env ${t.env}` } : null,
+        t.message ? { text: t.message, tone: st === 'failed' ? 'danger' : undefined } : null,
+      ].filter(Boolean),
+      progressLabel: prog.label,
+      progressText: prog.text,
+      progress: prog.pct,
+      barColor: prog.color,
+      route: t.id ? { path: '/integration', query: { dagId: t.id } } : null,
+    }
+  })
+})
+
+const dsDags = computed(() => {
+  const batch = dags.value.filter((d) => {
+    const eng = String(d.defaultEngine || d.engine || '').toLowerCase()
+    return !eng.includes('flink') && !eng.includes('stream')
+  })
+  const list = batch.length ? batch : dags.value
+  return list.map((t) => {
+    const st = mapRunStatus(t.lastStatus || t.status)
+    const prog = progressOf(st)
+    return {
+      id: t.id || t.dagCode,
+      name: `${t.dagCode || t.name || '—'} · ${t.name || ''}`.trim(),
+      status: st,
+      icon: statusIcon(st),
+      tags: [],
+      meta: [
+        t.cron ? { text: t.cron } : null,
+        t.owner ? { text: `owner ${t.owner}` } : null,
+        t.description || t.desc ? { text: t.description || t.desc } : null,
+      ].filter(Boolean),
+      progressLabel: prog.label,
+      progressText: prog.text,
+      progress: prog.pct,
+      barColor: prog.color,
+      route: t.id ? { path: '/integration', query: { dagId: t.id } } : null,
+    }
+  })
+})
+
+const kpis = computed(() => {
+  const flinkN = flinkJobs.value.length
+  const flinkFail = flinkJobs.value.filter((j) => j.status === 'failed').length
+  const flinkRun = flinkJobs.value.filter((j) => j.status === 'running').length
+  const dagN = dags.value.length
+  const runOk = runs.value.filter((r) => mapRunStatus(r.status) === 'success').length
+  const runFail = runs.value.filter((r) => mapRunStatus(r.status) === 'failed').length
+  const reconPass = reconRows.value.filter((r) => r.pass || r.status === 'pass').length
+  const reconFail = reconRows.value.filter((r) => !(r.pass || r.status === 'pass')).length
+  return [
+    {
+      icon: '🌊',
+      color: 'blue',
+      value: String(flinkN || '—'),
+      unit: '个',
+      label: '流作业 Flink',
+      trend: flinkN ? `${flinkRun} 运行 · ${flinkFail} 异常` : '暂无',
+      trendDanger: flinkFail > 0,
+    },
+    {
+      icon: '🐬',
+      color: 'green',
+      value: String(dagN || '—'),
+      unit: '个',
+      label: '批任务 DS',
+      trend: runs.value.length ? `✓ ${runOk} · ✕ ${runFail}` : '暂无运行',
+      trendUp: runFail === 0,
+    },
+    {
+      icon: '🔁',
+      color: 'orange',
+      value: String(reconRows.value.length || '—'),
+      unit: '条',
+      label: '湖/CK 对账',
+      trend: reconRows.value.length ? `${reconPass} 通过 · ${reconFail} 失败` : '暂无',
+      trendDanger: reconFail > 0,
+    },
+    {
+      icon: '📦',
+      color: 'purple',
+      value: String(runs.value.length || '—'),
+      unit: '次',
+      label: '近期运行',
+      trend: loadError.value || '来自 /lh/etl/runs',
+      trendUp: true,
+    },
+  ]
+})
+
+const reconcileBlocks = computed(() =>
+  reconRows.value.map((r) => {
+    const ok = r.pass || r.status === 'pass'
+    const lake = r.lakeMetric?.rows ?? r.lakeRows ?? '—'
+    const ck = r.ckMetric?.rows ?? r.ckRows ?? '—'
+    return {
+      table: r.ckTable || r.lakeTable || r.metricCode || '—',
+      dt: r.partitionKey || r.dt || '—',
+      ice: { rows: String(lake), amt: r.lakeMetric?.amt || '' },
+      ck: { rows: String(ck), amt: r.ckMetric?.amt || '' },
+      diff: {
+        rows: r.diffRows != null ? String(r.diffRows) : String(r.diffRatio ?? '—'),
+        amt: r.diffAmt != null ? String(r.diffAmt) : '',
+      },
+      pass: ok,
+      reason: r.reason || r.message || '',
+    }
+  }),
+)
+
+const flinkTagSummary = computed(() => {
+  const run = flinkJobs.value.filter((j) => j.status === 'running').length
+  const fail = flinkJobs.value.filter((j) => j.status === 'failed').length
+  return { run, fail }
+})
+
+const dsSuccessRate = computed(() => {
+  if (!runs.value.length) return null
+  const ok = runs.value.filter((r) => mapRunStatus(r.status) === 'success').length
+  return Math.round((ok / runs.value.length) * 1000) / 10
+})
+
+const reconPassCount = computed(() => reconcileBlocks.value.filter((r) => r.pass).length)
+const reconFailCount = computed(() => reconcileBlocks.value.filter((r) => !r.pass).length)
+
+async function loadOpsBoard() {
+  loading.value = true
+  loadError.value = ''
+  const ws = currentWs.value || 'default'
+  try {
+    const [dagPage, runPage, recon] = await Promise.all([
+      fetchEtlDags({ ws }, { current: 1, size: 100 }),
+      fetchEtlRuns({ ws, current: 1, size: 50 }),
+      fetchReconPartition({ limit: 20 }).catch(() => null),
+    ])
+    dags.value = dagPage?.records || []
+    runs.value = runPage?.records || []
+    reconRows.value = recon?.records || []
+
+    await ensureOnce(
+      'ops_sample_etl_dag',
+      () => dags.value.length === 0,
+      () =>
+        createEtlDag({
+          name: SAMPLE_ETL_DAG.name,
+          dagCode: SAMPLE_ETL_DAG.code,
+          engine: SAMPLE_ETL_DAG.engine,
+          desc: SAMPLE_ETL_DAG.desc,
+          ws,
+        }),
+      async () => {
+        const page = await fetchEtlDags({ ws }, { current: 1, size: 100 })
+        dags.value = page?.records || []
+      },
+    )
+  } catch (e) {
+    dags.value = []
+    runs.value = []
+    reconRows.value = []
+    loadError.value = e?.message || '运维数据拉取失败'
+    showToast(loadError.value, 'warning')
+  } finally {
+    loading.value = false
+  }
+}
 
 async function loadFocusRun() {
   const rid = String(route.query.runId || '')
@@ -48,8 +268,13 @@ watch(
   },
 )
 
+watch(currentWs, () => {
+  loadOpsBoard()
+})
+
 onMounted(() => {
   loadFocusRun()
+  loadOpsBoard()
 })
 
 async function startSupplement() {
@@ -102,7 +327,7 @@ async function runOpsBackfill(dagId, markKey, markValue, confirmReqNo) {
 }
 
 function reimportDiff() {
-  showToast('🔧 重导差异分区 · ads_gmv_board · 以 Iceberg 为准校正 CK', 'success')
+  showToast('🔧 重导差异分区 · 以 Iceberg 为准校正 CK', 'info')
 }
 
 function onTaskClick(task) {
@@ -136,8 +361,13 @@ function metaToneStyle(tone) {
         <option value="prod">生产 prod</option>
         <option value="stg">预发 stg</option>
       </select>
+      <button type="button" class="btn btn-sm" :disabled="loading" @click="loadOpsBoard">
+        {{ loading ? '…' : '刷新' }}
+      </button>
       <button type="button" class="btn btn-sm btn-primary" @click="startSupplement">🔧 发起补数</button>
     </PageHeader>
+
+    <div v-if="loadError" class="banner-soft">{{ loadError }}</div>
 
     <div v-if="focusRunId" class="ops-focus card">
       <div class="card-header">
@@ -172,7 +402,7 @@ function metaToneStyle(tone) {
     </div>
 
     <div class="kpi-grid ops-kpi">
-      <div v-for="(k, i) in OPS_KPIS" :key="i" class="kpi-card" :class="k.color">
+      <div v-for="(k, i) in kpis" :key="i" class="kpi-card" :class="k.color">
         <div class="kpi-icon" :class="k.color">{{ k.icon }}</div>
         <div class="kpi-value">
           {{ k.value }}<span class="kpi-unit">{{ k.unit }}</span>
@@ -193,13 +423,15 @@ function metaToneStyle(tone) {
         <div class="card-header">
           <div class="card-title">🌊 Flink 流作业</div>
           <div class="ops-header-tags">
-            <span class="tag tag-green">35 RUNNING</span>
-            <span class="tag tag-red">1 FAIL</span>
+            <span v-if="flinkJobs.length" class="tag tag-green">{{ flinkTagSummary.run }} RUNNING</span>
+            <span v-if="flinkTagSummary.fail" class="tag tag-red">{{ flinkTagSummary.fail }} FAIL</span>
+            <span v-else-if="!flinkJobs.length" class="tip">暂无</span>
           </div>
         </div>
         <div class="card-body">
+          <div v-if="!flinkJobs.length" class="tip" style="padding: 12px">暂无流作业</div>
           <div
-            v-for="t in OPS_FLINK_JOBS"
+            v-for="t in flinkJobs"
             :key="t.id"
             class="task-card"
             :class="{ clickable: !!t.route }"
@@ -235,12 +467,14 @@ function metaToneStyle(tone) {
         <div class="card-header">
           <div class="card-title">🐬 DS 批 DAG 今日运行</div>
           <div class="ops-ds-rate">
-            成功率 <b>96.4%</b>
+            <template v-if="dsSuccessRate != null">成功率 <b>{{ dsSuccessRate }}%</b></template>
+            <template v-else>暂无</template>
           </div>
         </div>
         <div class="card-body">
+          <div v-if="!dsDags.length" class="tip" style="padding: 12px">暂无批 DAG</div>
           <div
-            v-for="t in OPS_DS_DAGS"
+            v-for="t in dsDags"
             :key="t.id"
             class="task-card"
             :class="{ clickable: !!t.route }"
@@ -280,15 +514,20 @@ function metaToneStyle(tone) {
           <span class="tip">· 未通过自动摘牌黄金数据集</span>
         </div>
         <div class="flex gap-8 ops-reconcile-actions">
-          <span class="tag tag-green">20 通过</span>
-          <span class="tag tag-red">1 失败</span>
+          <span v-if="reconcileBlocks.length" class="tag tag-green">
+            {{ reconPassCount }} 通过
+          </span>
+          <span v-if="reconFailCount" class="tag tag-red">
+            {{ reconFailCount }} 失败
+          </span>
           <button type="button" class="btn btn-sm btn-primary" @click="reimportDiff">
             🔧 重导差异分区
           </button>
         </div>
       </div>
       <div class="card-body">
-        <div v-for="r in OPS_RECONCILE" :key="r.table" class="reconcile-block">
+        <div v-if="!reconcileBlocks.length" class="tip" style="padding: 12px">暂无对账记录</div>
+        <div v-for="r in reconcileBlocks" :key="r.table" class="reconcile-block">
           <div class="reconcile-table-name">{{ r.table }}</div>
           <div class="reconcile-card" :class="{ 'is-fail': !r.pass }">
             <div class="rc-side">
@@ -309,7 +548,7 @@ function metaToneStyle(tone) {
           </div>
           <div v-if="!r.pass" class="reconcile-fail">
             ⚠ 差异：行 <b>{{ r.diff.rows }}</b> · 金额 <b>{{ r.diff.amt }}</b><br />
-            🔍 原因：{{ r.reason }} ·
+            🔍 原因：{{ r.reason || '—' }} ·
             <button type="button" class="btn-link" @click="goRootcause">根因分析台 →</button>
             （默认以 Iceberg 为准重导 CK）
           </div>
@@ -556,5 +795,14 @@ function metaToneStyle(tone) {
     grid-template-columns: 1fr;
     gap: 8px;
   }
+}
+.banner-soft {
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  background: #fff7e6;
+  border: 1px solid #ffd591;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--text-2);
 }
 </style>

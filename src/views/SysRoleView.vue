@@ -2,6 +2,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import { useToast } from '@/composables/useToast'
+import { useActionLock } from '@/composables/useActionLock'
 import {
   pageRoles,
   addRole,
@@ -13,6 +14,7 @@ import {
 } from '@/api/sys'
 
 const { showToast } = useToast()
+const { busy, run: runLocked } = useActionLock()
 const kw = ref('')
 const loading = ref(false)
 const rows = ref([])
@@ -71,15 +73,17 @@ async function saveForm() {
     showToast('请填写名称与编码', 'warning')
     return
   }
-  try {
-    if (formMode.value === 'add') await addRole({ ...form })
-    else await editRole({ ...form })
-    showToast('角色已保存', 'success')
-    formOpen.value = false
-    await load()
-  } catch (e) {
-    showToast(e.message || '保存失败', 'error')
-  }
+  await runLocked('save', async () => {
+    try {
+      if (formMode.value === 'add') await addRole({ ...form })
+      else await editRole({ ...form })
+      showToast('角色已保存', 'success')
+      formOpen.value = false
+      await load()
+    } catch (e) {
+      showToast(e.message || '保存失败', 'error')
+    }
+  })
 }
 
 async function remove(row) {
@@ -155,7 +159,10 @@ const flatMenus = computed(() => {
 
 <template>
   <div class="sys-page">
-    <PageHeader title="角色管理" subtitle="角色 CRUD · 角色菜单授权 · 对接 /sys/role">
+    <PageHeader
+      title="角色管理"
+      subtitle="角色 CRUD · 菜单授权 · 治理角色 dataOwner / dataSteward / dataAnalyst（Flyway V51）"
+    >
       <button type="button" class="btn btn-sm btn-primary" @click="openAdd">＋ 新建角色</button>
       <button type="button" class="btn btn-sm" :disabled="loading" @click="load">↻ 刷新</button>
     </PageHeader>
@@ -216,7 +223,7 @@ const flatMenus = computed(() => {
         </div>
         <div class="modal-ft">
           <button type="button" class="btn btn-sm" @click="formOpen = false">取消</button>
-          <button type="button" class="btn btn-sm btn-primary" @click="saveForm">保存</button>
+          <button type="button" class="btn btn-sm btn-primary" :disabled="busy('save')" @click="saveForm">{{ busy('save') ? '保存中…' : '保存' }}</button>
         </div>
       </div>
     </div>
@@ -237,7 +244,7 @@ const flatMenus = computed(() => {
         </div>
         <div class="modal-ft">
           <button type="button" class="btn btn-sm" @click="grantOpen = false">取消</button>
-          <button type="button" class="btn btn-sm btn-primary" @click="saveGrant">保存授权</button>
+          <button type="button" class="btn btn-sm btn-primary" :disabled="busy('grant')" @click="saveGrant">{{ busy('grant') ? '保存中…' : '保存授权' }}</button>
         </div>
       </div>
     </div>

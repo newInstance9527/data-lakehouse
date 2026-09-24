@@ -4,6 +4,7 @@ import FieldMapEditor from '@/components/etl/FieldMapEditor.vue'
 import NodeConfBody from '@/components/etl/NodeConfBody.vue'
 import TaskRunHistory from '@/components/etl/TaskRunHistory.vue'
 import NodeExecLog from '@/components/etl/NodeExecLog.vue'
+import SearchSelect from '@/components/common/SearchSelect.vue'
 import {
   CRON_PRESETS,
   ENGINES,
@@ -13,6 +14,7 @@ import {
 } from '@/data/etl'
 import { useStandards } from '@/composables/useStandards'
 import { autoMapFields } from '@/utils/etlFields'
+import { ensureWorkspaceUserOptions, workspaceUserById, workspaceUserOptions } from '@/data/workspaceUsers'
 
 const props = defineProps({
   task: { type: Object, default: null },
@@ -43,6 +45,41 @@ const { fieldList, ensureLoaded: ensureStdLoaded, loaded: stdLoaded } = useStand
 const manualTab = ref(null)
 const bfMarkKey = ref('dt')
 const bfMarkValue = ref('')
+const ownerOptionsTick = ref(0)
+
+const ownerOptions = computed(() => {
+  void ownerOptionsTick.value
+  const list = [...workspaceUserOptions()]
+  const cur = String(props.task?.owner || '').trim()
+  if (cur && !list.some((o) => String(o.value) === cur)) {
+    const name = props.task?.ownerName || cur
+    list.unshift({
+      value: cur,
+      label: String(name),
+      sub: '当前负责人',
+      account: '',
+      name: String(name),
+    })
+  }
+  return list
+})
+
+watch(
+  () => props.task?.id,
+  async () => {
+    await ensureWorkspaceUserOptions()
+    ownerOptionsTick.value += 1
+    // 历史可能存展示名，尽量解析为用户 id
+    const raw = String(props.task?.owner || '').trim()
+    if (!raw || !props.canManage) return
+    if (workspaceUserById(raw)) return
+    const hit = workspaceUserOptions().find(
+      (o) => o.account === raw || o.name === raw || o.label === raw,
+    )
+    if (hit) patchTask('owner', hit.value)
+  },
+  { immediate: true },
+)
 
 watch(
   () => props.node?.type,
@@ -256,8 +293,18 @@ function onAutoMap() {
         </div>
         <label class="form-field">
           <span class="form-label">负责人</span>
-          <input class="input" :value="task.owner" :disabled="!canManage" @input="patchTask('owner', $event.target.value)" />
-          <div v-if="task.ownerName" class="form-hint">{{ task.ownerName }}</div>
+          <SearchSelect
+            :model-value="task.owner"
+            :options="ownerOptions"
+            :disabled="!canManage"
+            placeholder="搜索姓名 / 账号选择负责人"
+            sub-key="sub"
+            :search-keys="['name', 'account', 'label', 'sub']"
+            @update:model-value="patchTask('owner', $event)"
+          />
+          <div v-if="task.ownerName && !workspaceUserById(task.owner)" class="form-hint">
+            {{ task.ownerName }}
+          </div>
         </label>
         <div class="form-hint">节点 {{ task.nodes?.length || 0 }} · 连线 {{ task.edges?.length || 0 }} · 版本 {{ task.ver }}</div>
         <div class="form-hint" style="margin-top: 8px">

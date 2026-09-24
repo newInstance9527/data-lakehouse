@@ -7,12 +7,14 @@ import RegisterStandardModal from '@/components/standard/RegisterStandardModal.v
 import RegisterNamingModal from '@/components/standard/RegisterNamingModal.vue'
 import RegisterMappingModal from '@/components/standard/RegisterMappingModal.vue'
 import { useStandards } from '@/composables/useStandards'
+import { useSession } from '@/composables/useSession'
 import { useToast } from '@/composables/useToast'
 import { pageGuideOf } from '@/data/pageGuides'
 import { STD_KPIS, stdStatusMeta } from '@/data/standards'
 
 const route = useRoute()
 const { showToast } = useToast()
+const { currentWs } = useSession()
 const {
   fieldList,
   codeList,
@@ -234,7 +236,15 @@ watch(
 
 onMounted(async () => {
   try {
-    await loadAll()
+    await loadAll({ ws: currentWs.value || 'default' })
+  } catch (e) {
+    showToast(`加载数据标准失败：${e.message || e}`, 'error')
+  }
+})
+
+watch(currentWs, async () => {
+  try {
+    await loadAll({ ws: currentWs.value || 'default' })
   } catch (e) {
     showToast(`加载数据标准失败：${e.message || e}`, 'error')
   }
@@ -316,12 +326,13 @@ function closeNaming() {
 async function onRegisterSubmit(payload) {
   registering.value = true
   try {
+    const body = { ...payload, ws: payload.ws || currentWs.value || 'default' }
     if (payload.kind === 'field') {
-      const row = await addField(payload)
+      const row = await addField(body)
       tab.value = 'field'
       showToast(payload.editing ? `已更新标准字段 ${row.name}` : `已注册标准字段 ${row.name}`, 'success')
     } else {
-      const row = await addCode(payload)
+      const row = await addCode(body)
       tab.value = 'code'
       showToast(payload.editing ? `已更新标准码值 ${row.id}` : `已注册标准码值 ${row.id}`, 'success')
     }
@@ -335,7 +346,7 @@ async function onRegisterSubmit(payload) {
 async function onNamingSubmit(payload) {
   registering.value = true
   try {
-    const row = await addNaming(payload)
+    const row = await addNaming({ ...payload, ws: payload.ws || currentWs.value || 'default' })
     tab.value = 'naming'
     showToast(payload.editing ? `已更新命名规范 ${row.pattern}` : `已注册命名规范 ${row.pattern}`, 'success')
   } catch (e) {
@@ -417,7 +428,7 @@ function closeMapping() {
 async function onMappingSubmit(payload) {
   registering.value = true
   try {
-    const row = await addMapping(payload)
+    const row = await addMapping({ ...payload, ws: payload.ws || currentWs.value || 'default' })
     tab.value = 'mapping'
     showToast(payload.editing ? `已更新映射 ${row.src}` : `已登记映射 ${row.src} → ${row.std}`, 'success')
     closeMapping()
@@ -431,7 +442,7 @@ async function onMappingSubmit(payload) {
 async function onRunDetect() {
   detecting.value = true
   try {
-    const r = await runDetect()
+    const r = await runDetect(currentWs.value || 'default')
     tab.value = 'detect'
     showToast(
       `落地检测完成 · 写入 ${r?.written ?? 0} 条（ok=${r?.ok ?? 0} warn=${r?.warn ?? 0} fail=${r?.fail ?? 0}）`,
@@ -446,7 +457,7 @@ async function onRunDetect() {
 
 async function reload() {
   try {
-    await loadAll()
+    await loadAll({ ws: currentWs.value || 'default' })
     showToast('已刷新', 'success')
   } catch (e) {
     showToast(`刷新失败：${e.message || e}`, 'error')

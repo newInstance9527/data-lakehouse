@@ -11,7 +11,6 @@ import { useDatasources } from '@/composables/useDatasources'
 import { useAssets } from '@/composables/useAssets'
 import { useDsSchema } from '@/composables/useDsSchema'
 import { useSession, isNeedOwnerApplyError } from '@/composables/useSession'
-import { useWsListScope } from '@/composables/useWsListScope'
 import { pageGuideOf } from '@/data/pageGuides'
 import { TASK_STATUS_META } from '@/data/etl'
 import {
@@ -21,16 +20,18 @@ import {
 } from '@/utils/etlFields'
 import { useRouter } from 'vue-router'
 import { confirmDelete } from '@/composables/useConfirmDelete'
+import { useActionLock } from '@/composables/useActionLock'
 import { displayUser } from '@/utils/displayUser'
 
 const { showToast } = useToast()
 const router = useRouter()
+const { busy, run: runLocked } = useActionLock()
 const guide = pageGuideOf('integration')
 const canvasRef = ref(null)
 const { getSource, loadSources } = useDatasources()
 const { findAsset } = useAssets()
 const { ensureSchema, getDsFields, schemaRev } = useDsSchema()
-const { canEditEtl, canDeleteEtl, refreshManageGrant } = useSession()
+const { canEditEtl, canDeleteEtl, refreshManageGrant, currentWs } = useSession()
 
 function toastNeedApply(e) {
   if (isNeedOwnerApplyError(e)) {
@@ -101,22 +102,25 @@ const {
   deleteCurrent,
 } = useEtl()
 
-const { currentWs, wsScope, listWs, setScope } = useWsListScope()
-
 const canEditCurrent = computed(() => canEditEtl(current.value))
 const canDeleteCurrent = computed(() => canDeleteEtl(current.value))
 const needApplyOps = computed(() => !!current.value && !canEditCurrent.value && !canDeleteCurrent.value)
+const actionBusy = computed(
+  () =>
+    busy('save') ||
+    busy('trial') ||
+    busy('publish') ||
+    busy('delete') ||
+    busy('backfill') ||
+    busy('status'),
+)
 
 const taskKw = ref('')
 const runsDrawerOpen = ref(false)
 
 async function reloadEtlList() {
-  await loadList({ ws: listWs.value })
+  await loadList({ ws: currentWs.value || 'default' })
 }
-
-watch(listWs, () => {
-  reloadEtlList().catch((e) => showToast(e?.message || 'ETL 列表加载失败', 'error'))
-})
 
 const leftWidth = ref(loadNum('etl-left-w', 220))
 const rightWidth = ref(loadNum('etl-right-w', 300))
@@ -349,92 +353,100 @@ async function onValidate() {
 async function onSave() {
   if (!current.value) return
   if (!assertEditOrGuide('保存')) return
-  try {
-    await saveCurrent()
-    showToast(`💾 已保存 ${current.value.name}`, 'success')
-  } catch (e) {
-    if (!toastNeedApply(e)) showToast(e.message || '保存失败', 'error')
-  }
+  await runLocked('save', async () => {
+    try {
+      await saveCurrent()
+      showToast(`💾 已保存 ${current.value.name}`, 'success')
+    } catch (e) {
+      if (!toastNeedApply(e)) showToast(e.message || '保存失败', 'error')
+    }
+  })
 }
 
 async function onTrialRun() {
   if (!current.value) return
   if (!assertEditOrGuide('试跑')) return
-  try {
-    const row = await trialRun()
-    if (row) {
-      const failed = row.rawStatus === 'failed'
-      const qBlocked = !!row.quality?.blocked
-      const qOk = row.quality?.qualityRunOk
-      const dsMsg =
-        row.dsStart?.message ||
-        row.ds?.message ||
-        row.message ||
-        row.rawMessage ||
-        ''
-      let tip = ''
-      // DS/引擎错误优先；勿把「已提交但校验误报」盖成质量门禁
-      if (failed && dsMsg) tip = String(dsMsg).slice(0, 160)
-      else if (qBlocked) tip = '质量门禁已阻断'
-      else if (failed) tip = '试跑失败'
-      else if (qOk != null) tip = `质量 runs ${qOk}`
-      const ol = row.openLineage?.olOk != null ? ` · OL ${row.openLineage.olOk}` : ''
-      showToast(
-        `▶ ${failed || qBlocked ? '试跑失败' : '已提交试跑'} ${row.run}${tip ? ' · ' + tip : ''}${ol}`,
-        failed || qBlocked ? 'warning' : 'success',
-        { duration: failed || qBlocked ? 10000 : 4000 },
-      )
-      if ((failed || qBlocked) && row.alert?.opsPath) {
-        showToast(`告警已登记 · 运维入口 ${row.alert.opsPath}`, 'warning')
+  await runLocked('trial', async () => {
+    try {
+      const row = await trialRun()
+      if (row) {
+        const failed = row.rawStatus === 'failed'
+        const qBlocked = !!row.quality?.blocked
+        const qOk = row.quality?.qualityRunOk
+        const dsMsg =
+          row.dsStart?.message ||
+          row.ds?.message ||
+          row.message ||
+          row.rawMessage ||
+          ''
+        let tip = ''
+        // DS/引擎错误优先；勿把「已提交但校验误报」盖成质量门禁
+        if (failed && dsMsg) tip = String(dsMsg).slice(0, 160)
+        else if (qBlocked) tip = '质量门禁已阻断'
+        else if (failed) tip = '试跑失败'
+        else if (qOk != null) tip = `质量 runs ${qOk}`
+        const ol = row.openLineage?.olOk != null ? ` · OL ${row.openLineage.olOk}` : ''
+        showToast(
+          `▶ ${failed || qBlocked ? '试跑失败' : '已提交试跑'} ${row.run}${tip ? ' · ' + tip : ''}${ol}`,
+          failed || qBlocked ? 'warning' : 'success',
+          { duration: failed || qBlocked ? 10000 : 4000 },
+        )
+        if ((failed || qBlocked) && row.alert?.opsPath) {
+          showToast(`告警已登记 · 运维入口 ${row.alert.opsPath}`, 'warning')
+        }
+        runsDrawerOpen.value = true
       }
-      runsDrawerOpen.value = true
+    } catch (e) {
+      if (!toastNeedApply(e)) showToast(e.message || '试跑失败', 'error')
     }
-  } catch (e) {
-    if (!toastNeedApply(e)) showToast(e.message || '试跑失败', 'error')
-  }
+  })
 }
 
 async function onSetStatus(status) {
   if (!current.value) return
   if (!assertEditOrGuide('变更状态')) return
-  try {
-    const r = await setScheduleStatus(status)
-    const deg = r?.dsSchedule?.degraded
-    const label =
-      status === 'paused' ? '已暂停' : status === 'prod' ? '已恢复/上线' : status === 'draft' ? '已标为草稿' : status
-    const synced = status === 'prod' || status === 'paused'
-    showToast(
-      synced
-        ? deg
-          ? `${label}（门户已更新；DS 同步降级）`
-          : `${label} · DS 已同步`
-        : label,
-      deg ? 'warning' : 'success',
-    )
-  } catch (e) {
-    if (!toastNeedApply(e)) showToast(e.message || '状态变更失败', 'error')
-  }
+  await runLocked('status', async () => {
+    try {
+      const r = await setScheduleStatus(status)
+      const deg = r?.dsSchedule?.degraded
+      const label =
+        status === 'paused' ? '已暂停' : status === 'prod' ? '已恢复/上线' : status === 'draft' ? '已标为草稿' : status
+      const synced = status === 'prod' || status === 'paused'
+      showToast(
+        synced
+          ? deg
+            ? `${label}（门户已更新；DS 同步降级）`
+            : `${label} · DS 已同步`
+          : label,
+        deg ? 'warning' : 'success',
+      )
+    } catch (e) {
+      if (!toastNeedApply(e)) showToast(e.message || '状态变更失败', 'error')
+    }
+  })
 }
 
 async function onBackfill({ markKey, markValue } = {}) {
   if (!current.value) return
   if (!assertEditOrGuide('补数')) return
-  try {
-    const resp = await runBackfillWithGate(markKey, markValue)
-    showToast(
-      `🔧 补数已提交 ${resp?.markKey}=${resp?.markValue} · ${resp?.runId || ''}`,
-      resp?.ds?.degraded ? 'warning' : 'success',
-    )
-    if (resp?.complianceGate?.acknowledged) {
-      showToast('已确认合规补数门禁（命中已删分区）', 'warning')
+  await runLocked('backfill', async () => {
+    try {
+      const resp = await runBackfillWithGate(markKey, markValue)
+      showToast(
+        `🔧 补数已提交 ${resp?.markKey}=${resp?.markValue} · ${resp?.runId || ''}`,
+        resp?.ds?.degraded ? 'warning' : 'success',
+      )
+      if (resp?.complianceGate?.acknowledged) {
+        showToast('已确认合规补数门禁（命中已删分区）', 'warning')
+      }
+      if (resp?.opsPath) {
+        showToast(`运维入口 ${resp.opsPath}`, 'info')
+      }
+      runsDrawerOpen.value = true
+    } catch (e) {
+      if (!toastNeedApply(e)) showToast(e.message || '补数失败', 'error')
     }
-    if (resp?.opsPath) {
-      showToast(`运维入口 ${resp.opsPath}`, 'info')
-    }
-    runsDrawerOpen.value = true
-  } catch (e) {
-    if (!toastNeedApply(e)) showToast(e.message || '补数失败', 'error')
-  }
+  })
 }
 
 /** E7：命中已删分区时提示回填合规请求号后重试 */
@@ -481,23 +493,25 @@ function onSelectRunNode(nodeId) {
 async function onPublish() {
   if (!current.value) return
   if (!assertEditOrGuide('发布')) return
-  try {
-    const resp = await publishCurrent()
-    const wf = resp?.dsWorkflowCode || current.value.dsWorkflowCode || ''
-    const se = resp?.sideEffects || {}
-    const mapN = se.stdMappingOk != null ? `映射${se.stdMappingOk}` : ''
-    const linN = se.lineageOk != null ? `血缘${se.lineageOk}` : ''
-    const dqN = se.qualityRunOk != null ? `质量${se.qualityRunOk}` : ''
-    const vaultN = se.vault?.injected != null ? `Vault${se.vault.injected}` : ''
-    const sinkN = se.sinkTarget?.created != null ? `建表${se.sinkTarget.created}` : ''
-    const side = [mapN, linN, dqN, vaultN, sinkN].filter(Boolean).join('·')
-    const tip = resp?.degraded
-      ? `（DS 降级，已登记 ${wf}）`
-      : [wf && `→ ${wf}`, side, se.qualityGateBlocked ? '⚠质量阻断' : ''].filter(Boolean).join(' ')
-    showToast(`🚀 已发布 ${current.value.name} ${current.value.ver} ${tip}`.trim(), se.qualityGateBlocked ? 'warning' : 'success')
-  } catch (e) {
-    if (!toastNeedApply(e)) showToast(e.message || '发布失败', 'error')
-  }
+  await runLocked('publish', async () => {
+    try {
+      const resp = await publishCurrent()
+      const wf = resp?.dsWorkflowCode || current.value.dsWorkflowCode || ''
+      const se = resp?.sideEffects || {}
+      const mapN = se.stdMappingOk != null ? `映射${se.stdMappingOk}` : ''
+      const linN = se.lineageOk != null ? `血缘${se.lineageOk}` : ''
+      const dqN = se.qualityRunOk != null ? `质量${se.qualityRunOk}` : ''
+      const vaultN = se.vault?.injected != null ? `Vault${se.vault.injected}` : ''
+      const sinkN = se.sinkTarget?.created != null ? `建表${se.sinkTarget.created}` : ''
+      const side = [mapN, linN, dqN, vaultN, sinkN].filter(Boolean).join('·')
+      const tip = resp?.degraded
+        ? `（DS 降级，已登记 ${wf}）`
+        : [wf && `→ ${wf}`, side, se.qualityGateBlocked ? '⚠质量阻断' : ''].filter(Boolean).join(' ')
+      showToast(`🚀 已发布 ${current.value.name} ${current.value.ver} ${tip}`.trim(), se.qualityGateBlocked ? 'warning' : 'success')
+    } catch (e) {
+      if (!toastNeedApply(e)) showToast(e.message || '发布失败', 'error')
+    }
+  })
 }
 
 async function onDeleteTask() {
@@ -522,13 +536,15 @@ async function onDeleteTask() {
     confirmLabel: '确认删除',
   })
   if (!ok) return
-  try {
-    const resp = await deleteCurrent()
-    const deg = resp?.dsSchedule?.degraded
-    showToast(deg ? '已删除（DS 下线同步降级）' : '已删除任务', deg ? 'warning' : 'success')
-  } catch (e) {
-    if (!toastNeedApply(e)) showToast(e.message || '删除失败', 'error')
-  }
+  await runLocked('delete', async () => {
+    try {
+      const resp = await deleteCurrent()
+      const deg = resp?.dsSchedule?.degraded
+      showToast(deg ? '已删除（DS 下线同步降级）' : '已删除任务', deg ? 'warning' : 'success')
+    } catch (e) {
+      if (!toastNeedApply(e)) showToast(e.message || '删除失败', 'error')
+    }
+  })
 }
 
 function statusMeta(st) {
@@ -559,6 +575,9 @@ onMounted(async () => {
     showToast(e.message || 'ETL 列表加载失败', 'error')
   }
 })
+watch(currentWs, () => {
+  reloadEtlList().catch(() => {})
+})
 onUnmounted(() => window.removeEventListener('keydown', onKey))
 </script>
 
@@ -570,15 +589,15 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
       :guide-title="guide.title"
       :guide="guide"
     >
-      <span v-if="loading || saving" class="etl-busy">{{ saving ? '保存中…' : '加载中…' }}</span>
-      <button class="btn btn-sm" :disabled="!current || saving" @click="onValidate">校验</button>
-      <button v-if="canEditCurrent" class="btn btn-sm" :disabled="!current || saving" @click="onSave">保存</button>
-      <button v-if="canEditCurrent" class="btn btn-sm" :disabled="!current || saving" @click="onTrialRun">▶ 试跑</button>
+      <span v-if="loading || saving || actionBusy" class="etl-busy">{{ saving || busy('save') ? '保存中…' : actionBusy ? '处理中…' : '加载中…' }}</span>
+      <button class="btn btn-sm" :disabled="!current || saving || actionBusy" @click="onValidate">校验</button>
+      <button v-if="canEditCurrent" class="btn btn-sm" :disabled="!current || saving || actionBusy" @click="onSave">保存</button>
+      <button v-if="canEditCurrent" class="btn btn-sm" :disabled="!current || saving || actionBusy" @click="onTrialRun">▶ 试跑</button>
       <button class="btn btn-sm" :disabled="!current" @click="onOpenRuns">执行记录</button>
-      <button v-if="canEditCurrent" class="btn btn-sm" :disabled="!current || saving" @click="onPublish">发布</button>
-      <button v-if="canDeleteCurrent" class="btn btn-sm" :disabled="!current || saving" style="color: var(--danger)" @click="onDeleteTask">删除</button>
+      <button v-if="canEditCurrent" class="btn btn-sm" :disabled="!current || saving || actionBusy" @click="onPublish">发布</button>
+      <button v-if="canDeleteCurrent" class="btn btn-sm" :disabled="!current || saving || actionBusy" style="color: var(--danger)" @click="onDeleteTask">删除</button>
       <button v-if="needApplyOps" class="btn btn-sm" @click="goApplyManageEtl">🔐 申请操作权限</button>
-      <button class="btn btn-sm btn-primary" :disabled="saving" @click="onNewTask">＋ 新建任务</button>
+      <button class="btn btn-sm btn-primary" :disabled="saving || actionBusy" @click="onNewTask">＋ 新建任务</button>
     </PageHeader>
 
     <div
@@ -604,20 +623,6 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
         <div class="dag-col-head">
           <span>任务</span>
           <button type="button" class="btn btn-sm dag-collapse-btn" title="折叠" @click="toggleLeft">⟨</button>
-        </div>
-        <div class="ws-scope-tabs" style="margin: 0 10px 8px" role="group" aria-label="归属筛选">
-          <button
-            type="button"
-            class="ws-scope-tab"
-            :class="{ active: wsScope === 'team' }"
-            @click="setScope('team')"
-          >我的团队</button>
-          <button
-            type="button"
-            class="ws-scope-tab"
-            :class="{ active: wsScope === 'all' }"
-            @click="setScope('all')"
-          >查看全部</button>
         </div>
         <input v-model="taskKw" class="input input-sm" style="margin: 0 10px 8px; width: calc(100% - 20px)" placeholder="搜索任务…" />
         <div class="dag-task-list">

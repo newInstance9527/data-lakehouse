@@ -2,9 +2,11 @@
 import { computed, reactive, ref, watch } from 'vue'
 import SchemaListField from '@/components/datasource/SchemaListField.vue'
 import DsTypeIcon from '@/components/datasource/DsTypeIcon.vue'
+import SearchSelect from '@/components/common/SearchSelect.vue'
 import { DS_COMMON_FIELDS, dsTypeFields, dsTypeMeta } from '@/data/dsForm'
 import { groupTypesByCategory } from '@/data/datasources'
 import { isInventoryField, tablesToSchema } from '@/utils/schemaList'
+import { ensureWorkspaceUserOptions, workspaceUserById, workspaceUserOptions } from '@/data/workspaceUsers'
 import { useToast } from '@/composables/useToast'
 import { discoverTables, testDatasource } from '@/api/datasource'
 import { useSession } from '@/composables/useSession'
@@ -22,6 +24,24 @@ const tested = ref(false)
 const testing = ref(false)
 /** 编辑回填期间跳过 type watch，避免清空连接参数 */
 const hydrating = ref(false)
+const ownerOptionsTick = ref(0)
+
+const ownerOptions = computed(() => {
+  void ownerOptionsTick.value
+  const list = [...workspaceUserOptions()]
+  const cur = String(form.owner || '').trim()
+  if (cur && !list.some((o) => String(o.value) === cur)) {
+    const name = props.editSource?.ownerName || cur
+    list.unshift({
+      value: cur,
+      label: String(name),
+      sub: '当前负责人',
+      account: '',
+      name: String(name),
+    })
+  }
+  return list
+})
 
 const typeFields = computed(() => dsTypeFields(form.type || 'MySQL'))
 const isEdit = computed(() => !!props.editSource)
@@ -85,15 +105,29 @@ function flattenSeed(seed) {
   return flat
 }
 
-function resetForm() {
+/** 历史数据可能存展示名：尽量解析为用户 id */
+function resolveOwnerId(raw) {
+  const v = String(raw || '').trim()
+  if (!v) return user.value?.id || ''
+  if (workspaceUserById(v)) return v
+  const hit = workspaceUserOptions().find(
+    (o) => o.account === v || o.name === v || o.label === v,
+  )
+  return hit?.value || v
+}
+
+async function resetForm() {
   hydrating.value = true
   try {
+    await ensureWorkspaceUserOptions()
+    ownerOptionsTick.value += 1
     Object.keys(form).forEach((k) => delete form[k])
     const seed = props.editSource
     if (seed) {
       const flat = flattenSeed(seed)
       const type = flat.type || 'MySQL'
       Object.assign(form, blankForm(type), flat, { type })
+      form.owner = resolveOwnerId(flat.owner)
       dsTypeFields(type).forEach((f) => {
         const v = flat[f.n] ?? seed[f.n] ?? seed.conn?.[f.n]
         if (v != null && v !== '') form[f.n] = String(v)
@@ -275,7 +309,7 @@ function submit() {
                 v-for="f in basicFields"
                 :key="f.n"
                 class="form-field"
-                :class="{ wide: f.t === 'textarea' }"
+                :class="{ wide: f.t === 'textarea' || f.t === 'user-search' }"
               >
                 <span class="form-label">
                   <span v-if="f.req" class="req">*</span>{{ f.l }}
@@ -283,6 +317,14 @@ function submit() {
                 <select v-if="f.t === 'select'" v-model="form[f.n]" class="select" style="width: 100%">
                   <option v-for="o in f.o" :key="o" :value="o">{{ o }}</option>
                 </select>
+                <SearchSelect
+                  v-else-if="f.t === 'user-search' || f.n === 'owner'"
+                  v-model="form[f.n]"
+                  :options="ownerOptions"
+                  :placeholder="f.ph || '搜索姓名 / 账号'"
+                  sub-key="sub"
+                  :search-keys="['name', 'account', 'label', 'sub']"
+                />
                 <textarea
                   v-else-if="f.t === 'textarea'"
                   v-model="form[f.n]"

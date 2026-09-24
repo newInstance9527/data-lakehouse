@@ -7,6 +7,7 @@ import AppDrawer from '@/components/common/AppDrawer.vue'
 import ListPager from '@/components/common/ListPager.vue'
 import { useToast } from '@/composables/useToast'
 import { usePager } from '@/composables/usePager'
+import { useSession } from '@/composables/useSession'
 import { slaCls, statusMeta, useCompliance } from '@/composables/useCompliance'
 import { COMPLIANCE_DELETE_FORM, SUBJECT_MAP_FORM } from '@/data/createForms'
 import { pageGuideOf } from '@/data/pageGuides'
@@ -19,12 +20,14 @@ import {
 const route = useRoute()
 const router = useRouter()
 const { showToast } = useToast()
+const { currentWs } = useSession()
 const guide = pageGuideOf('compliance')
 
 const {
   loading,
   actionBusy,
   degraded,
+  lastError,
   coverage,
   requests,
   detail,
@@ -144,8 +147,8 @@ watch(drawerTab, (t) => {
 async function reload() {
   try {
     await loadBoard({ status: tab.value || undefined, size: 200 })
-  } catch {
-    showToast('⚠ 合规删除接口不可用，已切换到演示数据', 'warning')
+  } catch (e) {
+    showToast(e?.message || '合规删除加载失败', 'error')
   }
 }
 
@@ -293,7 +296,9 @@ async function guarded(fn, okMsg) {
 }
 
 async function onCreate(payload) {
-  const res = await guarded(() => create(payload))
+  const res = await guarded(() =>
+    create({ ...payload, ws: payload.ws || currentWs.value || 'default' }),
+  )
   if (!res) return
   createOpen.value = false
   if (route.query.create) router.replace({ path: '/compliance', query: {} })
@@ -302,7 +307,10 @@ async function onCreate(payload) {
 }
 
 async function onSaveMap(payload) {
-  const saved = await guarded(() => saveSubjectMap(payload), '✅ 主体索引已登记')
+  const saved = await guarded(
+    () => saveSubjectMap({ ...payload, ws: payload.ws || currentWs.value || 'default' }),
+    '✅ 主体索引已登记',
+  )
   if (saved) mapOpen.value = false
 }
 
@@ -448,8 +456,8 @@ function exportList() {
       <button type="button" class="btn btn-sm btn-primary" @click="createOpen = true">＋ 受理请求</button>
     </PageHeader>
 
-    <div v-if="degraded" class="cp-degraded">
-      ⚠ 未连上 <code>/lh/compliance</code>，当前为演示数据，执行类操作不可用。
+    <div v-if="degraded || lastError" class="cp-degraded">
+      ⚠ 合规删除接口不可用：{{ lastError?.message || lastError || '请稍后重试' }}
     </div>
 
     <CreateFormModal

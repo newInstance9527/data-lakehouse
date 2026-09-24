@@ -1,6 +1,6 @@
 /**
  * 存储趋势分册（对接 /lh/lifecycle/storage/* · doc/存储趋势.md）
- * 失败时回退 data/storageTrend 演示数据。
+ * API 失败：null/[] + lastError；无 create 种子。
  */
 import { computed, ref } from 'vue'
 import {
@@ -11,17 +11,7 @@ import {
   fetchLcStorageTables,
   fetchLcStorageTrend,
 } from '@/api/lifecycle'
-import {
-  ST_ADVICE,
-  ST_ANOMALIES,
-  ST_CAPACITY,
-  ST_DAILY,
-  ST_KPIS,
-  ST_LAYERS,
-  ST_TOP_GROWTH,
-  stBarHeight,
-  stGrowthCls,
-} from '@/data/storageTrend'
+import { stBarHeight, stGrowthCls } from '@/data/storageTrend'
 
 const LAYER_COLOR = {
   ODS: '#4d8dff',
@@ -92,6 +82,14 @@ function actionLabel(kind) {
   )
 }
 
+const EMPTY_KPIS = [
+  { icon: '💾', color: 'blue', value: '—', unit: '', label: '物理占用', trend: '—' },
+  { icon: '📊', color: 'green', value: '—', unit: '', label: '活跃量', trend: '—' },
+  { icon: '♻️', color: 'orange', value: '—', unit: '', label: '可回收', trend: '—' },
+  { icon: '📈', color: 'purple', value: '—', unit: '', label: '净增', trend: '—' },
+  { icon: '⏳', color: 'red', value: '—', unit: '天', label: '最紧桶 TTF(p95)', trend: '—' },
+]
+
 export function useStorageTrend() {
   const loading = ref(false)
   const loaded = ref(false)
@@ -108,7 +106,7 @@ export function useStorageTrend() {
 
   const kpis = computed(() => {
     const s = summary.value
-    if (!s) return ST_KPIS
+    if (!s) return EMPTY_KPIS
     const phys = splitSize(s.physicalBytes)
     const act = splitSize(s.activeBytes)
     const rec = splitSize(s.reclaimableBytes)
@@ -163,7 +161,7 @@ export function useStorageTrend() {
 
   const daily = computed(() => {
     const list = trend.value?.daily
-    if (!list?.length) return ST_DAILY
+    if (!list?.length) return []
     return list.map((d) => ({
       day: d.day || (d.date || '').slice(5),
       date: d.date,
@@ -176,7 +174,7 @@ export function useStorageTrend() {
 
   const layers = computed(() => {
     const series = trend.value?.series
-    if (!series?.length) return ST_LAYERS
+    if (!series?.length) return []
     return series.map((l) => ({
       layer: l.layer || l.key,
       size: humanBytes(l.activeBytes ?? l.totalBytes),
@@ -188,7 +186,7 @@ export function useStorageTrend() {
   })
 
   const capacityRows = computed(() => {
-    if (!buckets.value.length) return ST_CAPACITY
+    if (!buckets.value.length) return []
     return buckets.value.map((b) => {
       const alert = b.alert || 'ok'
       const used = humanBytes(b.usedBytes)
@@ -207,7 +205,7 @@ export function useStorageTrend() {
 
   const topGrowth = computed(() => {
     const list = tablesPage.value?.list
-    if (!list?.length) return ST_TOP_GROWTH
+    if (!list?.length) return []
     return [...list]
       .sort((a, b) => n(b.growthPct) - n(a.growthPct))
       .slice(0, 3)
@@ -220,7 +218,7 @@ export function useStorageTrend() {
   })
 
   const adviceCards = computed(() => {
-    if (!advice.value.length) return ST_ADVICE
+    if (!advice.value.length) return []
     return advice.value.map((a) => ({
       id: a.id,
       pri: a.priorityLabel || (a.priority === 1 ? 'P1' : 'P2'),
@@ -239,11 +237,7 @@ export function useStorageTrend() {
 
   const tableRows = computed(() => {
     const list = tablesPage.value?.list
-    if (!list?.length) {
-      return tableFilter.value === 'anomaly' || tableFilter.value === 'all'
-        ? ST_ANOMALIES
-        : []
-    }
+    if (!list?.length) return []
     return list.map((a) => {
       const kind = a.suggestedAction || 'catalog'
       return {

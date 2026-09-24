@@ -7,7 +7,7 @@ import RegisterAssetModal from '@/components/catalog/RegisterAssetModal.vue'
 import { useAssets } from '@/composables/useAssets'
 import { useDatasources } from '@/composables/useDatasources'
 import { useToast } from '@/composables/useToast'
-import { useWsListScope } from '@/composables/useWsListScope'
+import { useSession } from '@/composables/useSession'
 import { ASSET_DOMAINS, ASSET_LAYERS } from '@/data/assetMeta'
 import DsTypeIcon from '@/components/datasource/DsTypeIcon.vue'
 import { dsTypeMeta } from '@/data/dsForm'
@@ -21,7 +21,7 @@ const { showToast } = useToast()
 const catalogGuide = pageGuideOf('catalog')
 const { sources, loadSources, updateSource } = useDatasources()
 const { assets, loading, loadAssets, loadDetail, addAsset, findAsset } = useAssets()
-const { currentWs, wsScope, listWs, setScope } = useWsListScope()
+const { currentWs } = useSession()
 
 const search = ref(String(route.query.q || ''))
 const domain = ref('')
@@ -67,7 +67,8 @@ async function reload() {
     layer: layerFilter.value || undefined,
     dsId: selectedDsId.value || undefined,
     source: !selectedDsId.value && sourceFilter.value ? sourceFilter.value : undefined,
-    ws: listWs.value,
+    scope: 'workspace',
+    ws: currentWs.value || 'default',
   }
   try {
     await loadAssets(filters)
@@ -112,10 +113,12 @@ watch(sourceFilter, (v) => {
 })
 
 let searchTimer
-watch([search, domain, layerFilter, sourceFilter, listWs], () => {
+watch([search, domain, layerFilter, sourceFilter], () => {
   clearTimeout(searchTimer)
   searchTimer = setTimeout(() => reload(), 280)
 })
+
+watch(currentWs, () => reload())
 
 onMounted(async () => {
   try {
@@ -365,20 +368,6 @@ function onAssetUpdated(row) {
 
       <div class="card">
         <div class="catalog-toolbar">
-          <div class="ws-scope-tabs" role="group" aria-label="归属筛选">
-            <button
-              type="button"
-              class="ws-scope-tab"
-              :class="{ active: wsScope === 'team' }"
-              @click="setScope('team')"
-            >我的团队</button>
-            <button
-              type="button"
-              class="ws-scope-tab"
-              :class="{ active: wsScope === 'all' }"
-              @click="setScope('all')"
-            >查看全部</button>
-          </div>
           <div class="catalog-search">
             <span class="search-icon">🔍</span>
             <input v-model="search" type="text" placeholder="搜索资产编码 / 描述 / owner / 数据源…" />
@@ -397,8 +386,6 @@ function onAssetUpdated(row) {
           </select>
           <div style="margin-left: auto; font-size: 12px; color: var(--text-3)">
             <template v-if="loading">加载中… · </template>
-            <template v-if="wsScope === 'team'">团队 <b>{{ currentWs || 'default' }}</b> · </template>
-            <template v-else>全部空间 · </template>
             <template v-if="sourceFilter">
               数据源 <b>{{ sourceFilter }}</b> ·
             </template>
@@ -414,7 +401,7 @@ function onAssetUpdated(row) {
         </div>
 
         <div v-else-if="!loading && !list.length" class="ds-empty" style="padding: 48px">
-          暂无资产，请先同步数据源表清单后注册
+          本空间暂无资产，请先同步数据源表清单后注册
           <div style="margin-top: 12px">
             <button class="btn btn-sm btn-primary" @click="openRegister">＋ 注册新资产</button>
           </div>

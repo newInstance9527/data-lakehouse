@@ -2,6 +2,7 @@
  * 数据开发 / 发布 API
  */
 import { http } from './http.js'
+import { releaseIdempotencyKey, stickyIdempotencyKey } from './idempotency.js'
 
 const C = '/lh/compute'
 
@@ -45,12 +46,41 @@ export function fetchReleases(ws) {
   return http.get(`${C}/releases`, { ws })
 }
 
-export function createRelease(body) {
-  return http.post(`${C}/releases`, body)
+export function createRelease(body = {}) {
+  const fp = {
+    scriptId: body.scriptId,
+    ws: body.ws,
+    engine: body.engine,
+    env: body.env,
+  }
+  const key = body.idempotencyKey || stickyIdempotencyKey('release_create', fp)
+  const payload = { ...body, idempotencyKey: key }
+  return http
+    .post(`${C}/releases`, payload, { idempotencyKey: key })
+    .then((data) => {
+      releaseIdempotencyKey('release_create', fp)
+      return data
+    })
+}
+
+/** 提交上版前门禁预检（不生成发布单） */
+export function fetchReleasePrecheck({ scriptId, engine, env } = {}) {
+  return http.get(`${C}/scripts/release-precheck`, { scriptId, engine, env })
 }
 
 export function publishRelease(id) {
-  return http.post(`${C}/releases/${id}/publish`, {})
+  const releaseId = String(id || '')
+  const key = stickyIdempotencyKey('release_publish', releaseId)
+  return http
+    .post(`${C}/releases/${releaseId}/publish`, {}, { idempotencyKey: key })
+    .then((data) => {
+      releaseIdempotencyKey('release_publish', releaseId)
+      return data
+    })
+}
+
+export function fetchReleaseGates(id) {
+  return http.get(`${C}/releases/${id}/gates`)
 }
 
 export function rollbackRelease(id) {

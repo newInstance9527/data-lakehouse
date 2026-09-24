@@ -220,6 +220,33 @@
   align-items: center;
   gap: 6px;
 }
+.ws-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 4px;
+  max-width: 200px;
+}
+.ws-switch-label {
+  font-size: 11px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+.ws-switch-select {
+  max-width: 140px;
+  height: 30px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-1);
+  color: var(--text-1);
+  font-size: 12px;
+  cursor: pointer;
+}
+.ws-switch-select:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
 .icon-btn {
   width: 36px;
   height: 36px;

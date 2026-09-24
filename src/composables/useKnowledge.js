@@ -8,6 +8,8 @@ import {
   fetchKbEntries,
   fetchKbOverview,
   searchKnowledge,
+  updateKbEntry,
+  uploadKbEntry,
 } from '@/api/ai'
 import { resolveKbCat } from '@/data/knowledge'
 
@@ -39,7 +41,9 @@ export function normalizeKbEntry(row) {
   }
   const link = refs?.link || ''
   const to = link || ''
-  const chunks = row.chunkCount ?? row.chunks ?? 1
+  const chunkCount = Number(
+    row.chunkCount ?? (Array.isArray(row.chunks) ? row.chunks.length : row.chunks) ?? 0,
+  )
   return {
     id: row.id,
     cat,
@@ -47,14 +51,18 @@ export function normalizeKbEntry(row) {
     title: row.title,
     desc: row.body || row.desc || '',
     source: row.source || 'manual',
-    chunks,
+    chunks: chunkCount,
     embedModel: row.embedModelName || row.embedModelId || '',
-    meta: buildMeta(row, chunks, refs),
+    meta: buildMeta(row, chunkCount, refs),
     link: linkLabel(to),
     to,
     status: row.status || 'ready',
     citeCnt: row.citeCnt || 0,
+    indexMode: row.indexMode,
+    indexError: row.indexError,
     refs,
+    scope: 'global',
+    ws: row.ws,
   }
 }
 
@@ -99,7 +107,7 @@ export function useKnowledge() {
     try {
       const [page, ov] = await Promise.all([
         fetchKbEntries(filters, { current: 1, size: 500 }),
-        fetchKbOverview(filters.ws).catch(() => null),
+        fetchKbOverview(filters.ws, filters.scope).catch(() => null),
       ])
       items.value = (page?.records || []).map(normalizeKbEntry).filter(Boolean)
       overview.value = ov
@@ -116,6 +124,30 @@ export function useKnowledge() {
 
   async function addEntry(payload) {
     const resolved = resolveKbCat(payload.cat)
+    if (payload.source === 'upload' && payload.file) {
+      const saved = await uploadKbEntry(payload.file, {
+        title: payload.title,
+        cat: resolved.cat,
+        strategy: payload.strategy,
+        chunkSize: payload.chunkSize,
+        overlap: payload.overlap,
+        separator: payload.separator === 'custom' ? payload.customSep : payload.separator,
+        embedModelId: payload.embedModel,
+        refsJson: payload.rel ? JSON.stringify({ note: payload.rel }) : undefined,
+        ws: payload.ws,
+        scope: 'workspace',
+        entryId: payload.id || undefined,
+      })
+      const n = normalizeKbEntry(saved)
+      if (payload.id) {
+        const idx = items.value.findIndex((x) => x.id === payload.id)
+        if (idx >= 0) items.value[idx] = n
+        else items.value.unshift(n)
+      } else {
+        items.value.unshift(n)
+      }
+      return n
+    }
     const saved = await createKbEntry({
       title: payload.title,
       cat: resolved.cat,
@@ -129,10 +161,42 @@ export function useKnowledge() {
       embedModelId: payload.embedModel,
       refsJson: payload.rel ? JSON.stringify({ note: payload.rel }) : undefined,
       ws: payload.ws,
+      scope: 'workspace',
     })
     const n = normalizeKbEntry(saved)
     items.value.unshift(n)
     return n
+  }
+
+  async function saveEntry(payload) {
+    const resolved = resolveKbCat(payload.cat)
+    if (payload.source === 'upload' && payload.file) {
+      return addEntry(payload)
+    }
+    const body = {
+      title: payload.title,
+      cat: resolved.cat,
+      body: payload.body,
+      source: payload.source || 'manual',
+      fileName: payload.fileName,
+      strategy: payload.strategy,
+      chunkSize: payload.chunkSize,
+      overlap: payload.overlap,
+      separator: payload.separator === 'custom' ? payload.customSep : payload.separator,
+      embedModelId: payload.embedModel,
+      refsJson: payload.rel ? JSON.stringify({ note: payload.rel }) : undefined,
+      ws: payload.ws,
+      scope: payload.scope || 'workspace',
+    }
+    if (payload.id) {
+      const saved = await updateKbEntry(payload.id, body)
+      const n = normalizeKbEntry(saved)
+      const idx = items.value.findIndex((x) => x.id === payload.id)
+      if (idx >= 0) items.value[idx] = n
+      else items.value.unshift(n)
+      return n
+    }
+    return addEntry(payload)
   }
 
   async function removeEntry(id) {
@@ -141,7 +205,14 @@ export function useKnowledge() {
   }
 
   async function search(query, opts = {}) {
-    return searchKnowledge({ query, topK: opts.topK || 5, ws: opts.ws, cats: opts.cats })
+    return searchKnowledge({
+      query,
+      topK: opts.topK || 5,
+      ws: opts.ws,
+      cats: opts.cats,
+      scope: opts.scope,
+      includePlatform: opts.includePlatform,
+    })
   }
 
   return {
@@ -156,6 +227,7 @@ export function useKnowledge() {
     loadAll,
     ensureLoaded,
     addEntry,
+    saveEntry,
     removeEntry,
     search,
   }

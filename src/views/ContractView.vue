@@ -1,59 +1,125 @@
 <script setup>
-import { ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
 import CreateFormModal from '@/components/common/CreateFormModal.vue'
 import ListPager from '@/components/common/ListPager.vue'
 import { useToast } from '@/composables/useToast'
 import { usePager } from '@/composables/usePager'
+import { useWsListScope } from '@/composables/useWsListScope'
 import { SCHEMA_REG_FORM } from '@/data/createForms'
 import { pageGuideOf } from '@/data/pageGuides'
 import {
-  CONTRACT_APPROVAL_TICKETS,
   CONTRACT_CDC_FLOW,
   CONTRACT_CDC_SEMANTICS,
-  CONTRACT_COMPAT_CHECK,
-  CONTRACT_KPIS,
-  CONTRACT_SCHEMAS,
-  CONTRACT_VERSIONS,
   ICEBERG_EVOLUTION_RULES,
   contractCompatClass,
   contractSchemaStatusMeta,
   icebergAllowMeta,
 } from '@/data/contract'
+import {
+  fetchContractOverview,
+  fetchContractSchemas,
+  registerContractSchema,
+  fetchSchemaVersions,
+  fetchContractChanges,
+  createContractChange,
+  putCdcConfig,
+} from '@/api/contract'
 
 const router = useRouter()
 const { showToast } = useToast()
+const { currentWs, showAll, listWsParams, watchListScope } = useWsListScope()
 const guide = pageGuideOf('contract')
 
 const createOpen = ref(false)
-const schemas = ref(CONTRACT_SCHEMAS.map((s) => ({ ...s })))
+const loading = ref(false)
+const schemas = ref([])
+const versions = ref([])
+const changes = ref([])
+const overview = ref(null)
 const { page, pageSize, total, totalPages, paged, pageNums, goPage, resetPage } = usePager(schemas)
+
+const kpis = computed(() => {
+  const o = overview.value || {}
+  const dash = (v) => (v == null ? '—' : String(v))
+  return [
+    { icon: '📜', color: 'blue', value: dash(o.schemaCount), unit: '', label: '注册 Schema', trend: '门户 SoT' },
+    { icon: '✅', color: 'green', value: dash(o.compatOk), unit: '', label: '兼容通过', trend: 'status=ok' },
+    { icon: '⚠️', color: 'orange', value: dash(o.breaking), unit: '', label: '破坏性变更', trend: '变更单' },
+    { icon: '🔄', color: 'purple', value: dash(o.cdcConfigCount), unit: '', label: 'CDC 配置', trend: 'topic 数' },
+    { icon: '🚫', color: 'red', value: dash(o.blocked), unit: '', label: '阻断中', trend: 'blocked' },
+  ]
+})
+
+async function loadBoard() {
+  loading.value = true
+  try {
+    const base = listWsParams()
+    const [ov, list, ch] = await Promise.all([
+      fetchContractOverview(base),
+      fetchContractSchemas(base),
+      fetchContractChanges(base),
+    ])
+    overview.value = ov || {}
+    schemas.value = Array.isArray(list?.records) ? list.records : []
+    changes.value = Array.isArray(ch?.records) ? ch.records : []
+    resetPage()
+    if (schemas.value[0]?.name) {
+      versions.value = (await fetchSchemaVersions(schemas.value[0].name, base)) || []
+    } else {
+      versions.value = []
+    }
+  } catch (e) {
+    showToast(e?.message || '契约加载失败', 'warning')
+    overview.value = null
+    schemas.value = []
+    changes.value = []
+    versions.value = []
+  } finally {
+    loading.value = false
+  }
+}
 
 function registerSchema() {
   createOpen.value = true
 }
 
-function onRegisterSchema(payload) {
-  const fieldCount = String(payload.fields)
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean).length
-  schemas.value.unshift({
-    name: payload.topic,
-    type: payload.topic.startsWith('topic') || payload.topic.includes('cdc.') ? 'Avro' : 'Iceberg',
-    version: 'v1',
-    compat: payload.compat,
-    fields: fieldCount || 1,
-    change: '新注册 · 刚刚',
-    status: 'ok',
-  })
-  resetPage()
-  showToast(`✅ Schema 已注册：${payload.topic} · ${payload.compat}`, 'success')
+async function onRegisterSchema(payload) {
+  try {
+    await registerContractSchema({
+      ws: currentWs.value,
+      topic: payload.topic,
+      name: payload.topic,
+      compat: payload.compat,
+      fields: payload.fields,
+    })
+    createOpen.value = false
+    showToast(`已注册 Schema ${payload.topic}`, 'success')
+    await loadBoard()
+  } catch (e) {
+    showToast(e?.message || '注册失败', 'warning')
+  }
 }
 
-function openChangeTicket() {
-  showToast('📋 变更单 CHG-2026-008 · s_order 删列 pay_amt 阻断中', 'warning')
+async function openChangeTicket() {
+  const name = schemas.value[0]?.name
+  if (!name) {
+    showToast('请先注册 Schema', 'warning')
+    return
+  }
+  try {
+    await createContractChange({
+      ws: currentWs.value,
+      schemaName: name,
+      title: `变更 · ${name}`,
+      changeSummary: '门户发起变更单',
+    })
+    showToast('已创建变更单（draft）', 'success')
+    await loadBoard()
+  } catch (e) {
+    showToast(e?.message || '创建变更单失败', 'warning')
+  }
 }
 
 function goLineage() {
@@ -64,26 +130,44 @@ function goCatalog(name) {
   router.push({ path: '/catalog', query: { q: name } })
 }
 
-function notifyDownstream() {
-  showToast('📢 已通知 3 个作业 owner 评审变更单 CHG-2026-008', 'success')
+async function loadVersions(name) {
+  try {
+    versions.value = (await fetchSchemaVersions(name, listWsParams())) || []
+  } catch (e) {
+    showToast(e?.message || '版本加载失败', 'warning')
+  }
 }
 
-function newChangeTicket() {
-  showToast('＋ 发起 Schema 变更单（演示）', 'info')
+async function newCdcConfig() {
+  const topic = window.prompt('CDC Topic', schemas.value[0]?.name || 'cdc.sample')
+  if (!topic) return
+  try {
+    await putCdcConfig(topic, { config: undefined }, { ws: currentWs.value })
+    showToast(`已保存 CDC 配置 ${topic}`, 'success')
+    await loadBoard()
+  } catch (e) {
+    showToast(e?.message || 'CDC 配置失败', 'warning')
+  }
 }
 
-function newCdcConfig() {
-  showToast('＋ 新建 CDC 入湖语义配置（演示）', 'info')
-}
+onMounted(loadBoard)
+watchListScope(() => loadBoard())
 </script>
 
 <template>
   <div class="ctr-page">
     <PageHeader
       title="数据契约"
-      subtitle="Schema Registry · 兼容性 · CDC · Iceberg 演进"
+      subtitle="门户 Schema SoT · 兼容性 · CDC · Iceberg 演进"
       :guide="guide"
     >
+      <label class="ws-mine-chk" title="默认跟随顶栏当前空间；勾选后查看全部归属">
+        <input v-model="showAll" type="checkbox" />
+        查看全部
+      </label>
+      <button type="button" class="btn btn-sm" :disabled="loading" @click="loadBoard">
+        {{ loading ? '刷新中…' : '↻ 刷新' }}
+      </button>
       <button type="button" class="btn btn-sm" @click="registerSchema">＋ 注册 Schema</button>
       <button type="button" class="btn btn-sm" @click="openChangeTicket">📋 变更单</button>
       <button type="button" class="btn btn-sm btn-primary" @click="goLineage">🔗 血缘影响</button>
@@ -96,20 +180,22 @@ function newCdcConfig() {
       @submit="onRegisterSchema"
     />
 
+    <p class="tip ctr-banner">列表/KPI 接 `/lh/contract/*`；下方 Iceberg/CDC 约定为流程规则，非业务假数。</p>
+
     <div class="kpi-grid ctr-kpi">
-      <div v-for="(k, i) in CONTRACT_KPIS" :key="i" class="kpi-card" :class="k.color">
+      <div v-for="(k, i) in kpis" :key="i" class="kpi-card" :class="k.color">
         <div class="kpi-icon" :class="k.color">{{ k.icon }}</div>
         <div class="kpi-value">
           {{ k.value }}<span class="kpi-unit">{{ k.unit }}</span>
         </div>
         <div class="kpi-label">{{ k.label }}</div>
-        <div class="kpi-trend" :class="k.trendUp ? 'up' : 'down'">{{ k.trend }}</div>
+        <div class="kpi-trend">{{ k.trend }}</div>
       </div>
     </div>
 
     <div class="card">
       <div class="card-header">
-        <div class="card-title">📋 Schema Registry <span class="tip">· Topic/表 schema 注册 · Avro/JSON · 版本化</span></div>
+        <div class="card-title">📋 Schema Registry</div>
       </div>
       <div class="card-body" style="padding: 0">
         <table class="table">
@@ -130,7 +216,7 @@ function newCdcConfig() {
             </tr>
             <tr v-for="(s, si) in paged" :key="`${s.name}-${si}`">
               <td>
-                <button type="button" class="btn-link" @click="goCatalog(s.name)">
+                <button type="button" class="btn-link" @click="goCatalog(s.name); loadVersions(s.name)">
                   <code>{{ s.name }}</code>
                 </button>
               </td>
@@ -164,34 +250,23 @@ function newCdcConfig() {
     <div class="grid grid-2 ctr-grid-top">
       <div class="card">
         <div class="card-header">
-          <div class="card-title">🔄 Schema 版本演进 · <code>ods_trade.s_order</code></div>
-          <span class="tag tag-red">破坏性变更阻断中</span>
+          <div class="card-title">🔄 Schema 版本演进</div>
         </div>
-        <div class="card-body ctr-versions">
-          <div
-            v-for="v in CONTRACT_VERSIONS"
-            :key="v.ver"
-            class="schema-version-card"
-            :class="{ fail: v.status === 'fail' }"
-          >
-            <div class="svc-head">
-              <span class="svc-version">{{ v.ver }}</span>
-              <span class="svc-date">{{ v.date }}</span>
-              <span v-if="v.status === 'fail'" class="tag tag-red svc-fail-tag">破坏性变更</span>
-            </div>
-            <div class="svc-body">{{ v.change }}</div>
-            <div class="svc-fields">{{ (v.fields || []).join(' · ') }}</div>
-            <div class="svc-compat">
-              <span class="muted">兼容性：</span>
-              <b :class="v.status === 'fail' ? 'text-danger' : 'text-success'">{{ v.compat }}</b>
-            </div>
-          </div>
+        <div class="card-body">
+          <div v-if="!versions.length" class="tip">暂无版本历史</div>
+          <ul v-else class="ctr-ver-list">
+            <li v-for="v in versions" :key="v.id">
+              <b>{{ v.version }}</b>
+              <span>{{ v.diffSummary || '—' }}</span>
+            </li>
+          </ul>
         </div>
       </div>
 
       <div class="card">
         <div class="card-header">
-          <div class="card-title">🗑️ CDC 删除传播链路</div>
+          <div class="card-title">🗑️ CDC 删除传播链路（约定）</div>
+          <button type="button" class="btn btn-sm" @click="newCdcConfig">配置</button>
         </div>
         <div class="card-body">
           <div class="flow-chain ctr-flow">
@@ -204,154 +279,77 @@ function newCdcConfig() {
               </div>
             </template>
           </div>
-          <p class="ctr-cdc-note">
-            <b class="text-danger">约束：</b>源 DELETE 必须传播到 ODS equality delete → DWD 剔除 → ADS 重算 → CK 重导。
-            缺失这条链路会导致「订单作废」和合规删除在看板里<b>幽灵复活</b>。
-          </p>
         </div>
       </div>
     </div>
 
-    <div class="card ctr-card-top">
+    <div class="card">
       <div class="card-header">
-        <div class="card-title">🧊 Iceberg Schema 演进规则</div>
+        <div class="card-title">📋 变更单</div>
       </div>
       <div class="card-body" style="padding: 0">
         <table class="table">
           <thead>
             <tr>
-              <th>变更类型</th>
-              <th>允许</th>
-              <th>动作</th>
-              <th>CK 同步</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="row in ICEBERG_EVOLUTION_RULES" :key="row.change">
-              <td>{{ row.change }}</td>
-              <td>
-                <span class="tag" :class="icebergAllowMeta(row.allow).tag">{{ icebergAllowMeta(row.allow).label }}</span>
-              </td>
-              <td style="font-size: 12px">{{ row.action }}</td>
-              <td style="font-size: 12px">{{ row.ck }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <div class="card ctr-card-top">
-      <div class="card-header">
-        <div class="card-title">📡 CDC 入湖必须写死的语义</div>
-      </div>
-      <div class="card-body" style="padding: 0">
-        <table class="table">
-          <thead>
-            <tr><th>问题</th><th>约定</th></tr>
-          </thead>
-          <tbody>
-            <tr v-for="row in CONTRACT_CDC_SEMANTICS" :key="row.q">
-              <td>{{ row.q }}</td>
-              <td style="font-size: 12px">{{ row.a }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <div class="card ctr-card-top">
-      <div class="card-header">
-        <div class="card-title">📝 Schema 变更审批 · §34.1 <span class="tip">· 破坏性变更必须走变更单</span></div>
-        <button type="button" class="btn btn-sm" @click="newChangeTicket">＋ 发起变更单</button>
-      </div>
-      <div class="card-body" style="padding: 0">
-        <table class="table">
-          <thead>
-            <tr>
-              <th>变更单</th>
-              <th>表/Topic</th>
-              <th>类型</th>
-              <th>兼容性</th>
-              <th>下游影响</th>
+              <th>标题</th>
+              <th>Schema</th>
               <th>状态</th>
+              <th>兼容结果</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="t in CONTRACT_APPROVAL_TICKETS" :key="t.id">
-              <td><code>{{ t.id }}</code></td>
-              <td><code>{{ t.target }}</code></td>
-              <td><span class="tag" :class="t.typeCls">{{ t.type }}</span></td>
-              <td><span class="tag" :class="t.compatCls">{{ t.compat }}</span></td>
-              <td>{{ t.impact }}</td>
-              <td><span class="tag" :class="t.statusCls">{{ t.status }}</span></td>
+            <tr v-if="!changes.length">
+              <td colspan="4" style="text-align: center; color: var(--text-3); padding: 24px">暂无变更单</td>
+            </tr>
+            <tr v-for="c in changes" :key="c.id">
+              <td>{{ c.title || '—' }}</td>
+              <td><code>{{ c.schemaName }}</code></td>
+              <td>{{ c.status }}</td>
+              <td>{{ c.compatResult || '—' }}</td>
             </tr>
           </tbody>
         </table>
-        <div class="ctr-footnote">流程：草稿 → 兼容性检查 → 血缘影响 → 评审 → 批准 → 作业先发 → 放行 binlog</div>
       </div>
     </div>
 
-    <div class="grid grid-2 ctr-grid-top">
+    <div class="grid grid-2">
       <div class="card">
         <div class="card-header">
-          <div class="card-title">🔍 兼容性检查 · §34.2 <span class="tip">· CHG-2026-008</span></div>
-          <span class="tag tag-red">破坏性</span>
+          <div class="card-title">🧊 Iceberg 演进约定</div>
         </div>
-        <div class="card-body ctr-compat">
-          <table class="table ctr-compat-table">
+        <div class="card-body" style="padding: 0">
+          <table class="table">
             <thead>
-              <tr><th>字段</th><th>旧</th><th>新</th><th>判定</th></tr>
+              <tr>
+                <th>变更</th>
+                <th>允许</th>
+                <th>动作</th>
+                <th>CK</th>
+              </tr>
             </thead>
             <tbody>
-              <tr v-for="c in CONTRACT_COMPAT_CHECK" :key="c.field">
-                <td>{{ c.field }}</td>
-                <td>{{ c.old }}</td>
-                <td>{{ c.neu }}</td>
+              <tr v-for="(r, ri) in ICEBERG_EVOLUTION_RULES" :key="ri">
+                <td>{{ r.change }}</td>
                 <td>
-                  <span class="tag" :class="c.ok ? 'tag-green' : 'tag-red'">{{ c.label || '✓' }}</span>
+                  <span class="tag" :class="icebergAllowMeta(r.allow).tag" style="font-size: 10px">
+                    {{ icebergAllowMeta(r.allow).label }}
+                  </span>
                 </td>
+                <td style="font-size: 12px">{{ r.action }}</td>
+                <td style="font-size: 11px; color: var(--text-3)">{{ r.ck }}</td>
               </tr>
             </tbody>
           </table>
-          <div class="ctr-alert danger">
-            ⚠ 删列 <code>pay_amt</code> 违反 BACKWARD。必须走「新表 + 双跑 + 切读 + 下线旧表」流程。
-          </div>
-          <div class="ctr-jobs">
-            <strong>需同步改的作业：</strong>
-            <div>· dag.trade_dwd（dwd_order_detail 依赖 pay_amt）</div>
-            <div>· job.ck.sync.gmv_board（导入 SQL 引用 pay_amt）</div>
-            <div>· 报表「交易总览」3 张图表引用</div>
-          </div>
-          <button type="button" class="btn btn-sm" @click="notifyDownstream">📢 通知下游</button>
         </div>
       </div>
-
       <div class="card">
         <div class="card-header">
-          <div class="card-title">⚙️ CDC 入湖语义 · §34.3 <span class="tip">· 每表一份</span></div>
-          <button type="button" class="btn btn-sm" @click="newCdcConfig">＋ 新建配置</button>
+          <div class="card-title">📡 CDC 语义约定</div>
         </div>
-        <div class="card-body ctr-compat">
-          <div class="ctr-cdc-focus"><strong>当前：<code>cdc.trade.order → ods_trade.s_order</code></strong></div>
-          <table class="table ctr-compat-table">
-            <thead><tr><th>配置项</th><th>当前值</th></tr></thead>
-            <tbody>
-              <tr><td>首次接入</td><td><span class="tag tag-green">全量+增量</span></td></tr>
-              <tr><td>主键策略</td><td>equality upsert</td></tr>
-              <tr><td>DELETE 处理</td><td><span class="tag tag-green">传播 (equality delete)</span></td></tr>
-              <tr><td>乱序处理</td><td>watermark + 侧输出</td></tr>
-              <tr><td>时间语义</td><td>事件时间</td></tr>
-              <tr><td>时区</td><td>UTC 存储</td></tr>
-            </tbody>
-          </table>
-          <div class="ctr-alert warn">
-            ⚠ DELETE 传播是合规删除的前置条件。改为「忽略」将标记该表<b>不支持合规删除</b>。
-          </div>
-          <div class="ctr-jobs">
-            <strong>其他表配置：</strong>
-            <div>· cdc.user.info → equality upsert · DELETE 传播 ✓</div>
-            <div>· cdc.erp.goods → append-only · 无主键</div>
-            <div>· kafka.pv.buried → append-only · 事件时间</div>
+        <div class="card-body">
+          <div v-for="(s, si) in CONTRACT_CDC_SEMANTICS" :key="si" class="ctr-qa">
+            <div class="ctr-q">{{ s.q }}</div>
+            <div class="ctr-a">{{ s.a }}</div>
           </div>
         </div>
       </div>
@@ -362,160 +360,90 @@ function newCdcConfig() {
 <style scoped>
 .ctr-kpi {
   grid-template-columns: repeat(5, 1fr);
+  margin-bottom: 16px;
 }
-.ctr-grid-top,
-.ctr-card-top {
+@media (max-width: 1100px) {
+  .ctr-kpi {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+.tip {
+  font-size: 12px;
+  color: var(--text-3);
+}
+.ctr-banner {
+  margin: -4px 0 12px;
+}
+.ctr-page .card {
   margin-top: 16px;
 }
-.ctr-flow {
-  flex-wrap: wrap;
-  align-items: center;
-  padding: 8px;
+.ctr-grid-top {
+  margin-top: 0;
+}
+.ctr-ver-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.ctr-ver-list li {
+  display: flex;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
 }
 .flow-chain {
   display: flex;
-  gap: 8px;
   flex-wrap: wrap;
+  gap: 8px;
   align-items: center;
 }
 .flow-arrow {
   color: var(--text-3);
-  font-size: 12px;
 }
 .flow-node {
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 10px 12px;
-  text-align: center;
+  padding: 8px 10px;
   min-width: 88px;
+  background: var(--bg-2);
 }
 .fn-icon {
-  font-size: 20px;
+  font-size: 16px;
 }
 .fn-title {
   font-weight: 600;
-  font-size: 13px;
-  margin-top: 4px;
+  font-size: 12px;
 }
 .fn-sub {
   font-size: 11px;
   color: var(--text-3);
-  margin-top: 2px;
-}
-.ctr-cdc-note {
-  margin-top: 12px;
-  font-size: 12px;
-  color: var(--text-2);
-  line-height: 1.8;
-}
-.ctr-versions {
-  padding: 14px;
-}
-.schema-version-card {
-  margin-bottom: 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 10px 12px;
-}
-.schema-version-card.fail {
-  border-color: var(--danger);
-}
-.svc-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-.svc-version {
-  font-weight: 700;
-  font-size: 13px;
-}
-.svc-date {
-  font-size: 11px;
-  color: var(--text-3);
-}
-.svc-fail-tag {
-  margin-left: auto;
-  font-size: 10px;
-}
-.svc-body {
-  margin-top: 6px;
-  font-size: 12px;
-}
-.svc-fields {
-  margin-top: 4px;
-  font-size: 11px;
-  color: var(--text-3);
-}
-.svc-compat {
-  margin-top: 6px;
-  font-size: 11px;
-}
-.muted {
-  color: var(--text-3);
-}
-.text-danger {
-  color: var(--danger);
-}
-.text-success {
-  color: var(--success);
 }
 .compat-badge {
-  display: inline-block;
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
 }
 .compat-badge.backward {
-  background: #e6f7ff;
-  color: #096dd9;
+  color: var(--success);
 }
 .compat-badge.forward {
-  background: #f6ffed;
-  color: #389e0d;
+  color: var(--primary);
 }
 .compat-badge.full {
-  background: #f9f0ff;
-  color: #722ed1;
+  color: var(--success);
 }
 .compat-badge.breaking {
-  background: var(--danger-light);
   color: var(--danger);
 }
-.ctr-footnote {
-  padding: 8px 12px;
-  font-size: 11px;
-  color: var(--text-3);
-  border-top: 1px solid var(--border);
+.ctr-qa {
+  margin-bottom: 10px;
 }
-.ctr-compat {
+.ctr-q {
+  font-weight: 600;
   font-size: 12px;
-  line-height: 1.8;
 }
-.ctr-compat-table {
-  font-size: 11px;
-}
-.ctr-alert {
-  margin-top: 8px;
-  padding: 8px;
-  border-radius: 6px;
-  font-size: 11px;
-}
-.ctr-alert.danger {
-  background: var(--danger-light);
-  color: var(--danger);
-}
-.ctr-alert.warn {
-  background: var(--warning-light);
-  color: var(--warning);
-}
-.ctr-jobs {
-  margin-top: 8px;
+.ctr-a {
+  font-size: 12px;
   color: var(--text-2);
-  font-size: 12px;
-}
-.ctr-cdc-focus {
-  margin-bottom: 8px;
 }
 </style>

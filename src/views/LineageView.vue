@@ -11,6 +11,7 @@ import {
 } from '@/data/lineage'
 import { useLineage } from '@/composables/useLineage'
 import { useToast } from '@/composables/useToast'
+import { useSession } from '@/composables/useSession'
 import { DEFAULT_PAGE_SIZE } from '@/config/pagination'
 import { buildDownstreamPropagations, fieldNodeKey } from '@/utils/etlLineage'
 import { fieldsFromAsset } from '@/utils/etlFields'
@@ -37,6 +38,7 @@ const {
   syncInfo,
 } = useLineage()
 const { findAsset } = useAssets()
+const { currentWs } = useSession()
 
 const mode = ref('field')
 const focusId = ref('')
@@ -247,7 +249,12 @@ async function refreshGraph() {
   try {
     const focus = focusId.value || focusOptions.value[0]?.value || ''
     if (!focusId.value && focus) focusId.value = focus
-    const { graph } = await loadGraphImpact(focus, clampDepth(upDepth.value), clampDepth(downDepth.value))
+    const { graph } = await loadGraphImpact(
+      focus,
+      clampDepth(upDepth.value),
+      clampDepth(downDepth.value),
+      currentWs.value || 'default',
+    )
     omDegraded.value = !!graph?.omDegraded
     graphSource.value = graph?.source || ''
     if (graph?.focusTable && !focusId.value) focusId.value = graph.focusTable
@@ -396,7 +403,7 @@ function impactTypeClass(type) {
 }
 
 function exportSvg() {
-  showToast('已导出血缘关系图 SVG（演示）', 'success')
+  showToast('已导出血缘关系图 SVG', 'success')
 }
 
 async function genChangeEval() {
@@ -427,7 +434,7 @@ async function blockDdl() {
 async function onRebuild() {
   syncBusy.value = true
   try {
-    const info = await sync()
+    const info = await sync(currentWs.value || 'default')
     const r = info?.result || {}
     const mzOk = info?.marquez?.ok === true || r?.marquez?.ok === true
     const edges = r.edgeCount ?? stats.value.fieldEdges
@@ -453,7 +460,7 @@ async function onRebuild() {
 onMounted(async () => {
   const fromRoute = resolveLineageFocus(route.query)
   try {
-    await loadFields({})
+    await loadFields({ ws: currentWs.value || 'default' })
   } catch (e) {
     showToast(`字段边加载失败：${e.message || e}`, 'error')
   }
@@ -464,6 +471,20 @@ onMounted(async () => {
   }
   if (!selectedField.value) selectedField.value = pickDefaultField(focusFields.value)
   await refreshGraph()
+})
+
+watch(currentWs, async () => {
+  try {
+    await loadFields({ ws: currentWs.value || 'default' })
+    const opts = focusOptions.value
+    if (!opts.some((o) => o.value === focusId.value)) {
+      focusId.value = opts[0]?.value || ''
+      selectedField.value = pickDefaultField(focusFields.value)
+    }
+    await refreshGraph()
+  } catch (e) {
+    showToast(`字段边加载失败：${e.message || e}`, 'error')
+  }
 })
 </script>
 
@@ -795,11 +816,11 @@ onMounted(async () => {
             <div class="lin-actions">
               <button type="button" class="lin-act primary" @click="genChangeEval">
                 <b>生成变更评估</b>
-                <small>汇总下游影响，生成评审单（演示）</small>
+                <small>汇总下游影响，生成评审单</small>
               </button>
               <button type="button" class="lin-act danger" @click="blockDdl">
                 <b>阻断 DDL</b>
-                <small>评估未通过前拦截字段变更（演示）</small>
+                <small>评估未通过前拦截字段变更</small>
               </button>
             </div>
           </div>

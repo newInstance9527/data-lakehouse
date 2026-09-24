@@ -27,7 +27,7 @@ function exportReport() {
 }
 
 function dispatchTicket() {
-  showToast('📋 根因工单已派发 · 挂表 owner 李明（演示）', 'success')
+  showToast('功能待接后端', 'info')
 }
 
 function onEvidenceAction(row) {

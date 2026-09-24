@@ -20,11 +20,15 @@ import {
   metricTypeMeta,
   setMetricCatalogProvider,
 } from '@/data/metrics'
+import { ensureOnce } from '@/composables/useEnsureSamples'
+import { SAMPLE_METRIC } from '@/data/sampleSeeds'
+import { useSession } from '@/composables/useSession'
 
 const catalog = ref([])
 const overview = ref(null)
 const loading = ref(false)
 const loaded = ref(false)
+const loadedWs = ref('')
 const lastError = ref(null)
 let loadPromise = null
 
@@ -105,8 +109,23 @@ export function normalizeMetric(row) {
     omFqn: row.omFqn,
     gravAssetId: row.gravAssetId,
     revision: row.revision,
+    createTime: row.createTime || null,
     updateTime: row.updateTime,
   }
+}
+
+/** 目录排序：非 deprecated 在前，组内 createTime 倒序（新→旧） */
+export function sortMetricCatalog(rows) {
+  if (!Array.isArray(rows) || rows.length < 2) return rows || []
+  return [...rows].sort((a, b) => {
+    const aDep = a?.status === 'deprecated' ? 1 : 0
+    const bDep = b?.status === 'deprecated' ? 1 : 0
+    if (aDep !== bDep) return aDep - bDep
+    const at = String(a?.createTime || a?.updateTime || '')
+    const bt = String(b?.createTime || b?.updateTime || '')
+    if (at !== bt) return bt.localeCompare(at)
+    return String(b?.id || '').localeCompare(String(a?.id || ''))
+  })
 }
 
 function upsertLocal(row) {
@@ -114,7 +133,8 @@ function upsertLocal(row) {
   if (!n) return null
   const idx = catalog.value.findIndex((r) => r.id === n.id)
   if (idx >= 0) catalog.value[idx] = { ...catalog.value[idx], ...n }
-  else catalog.value.unshift(n)
+  else catalog.value.push(n)
+  catalog.value = sortMetricCatalog(catalog.value)
   return catalog.value.find((r) => r.id === n.id)
 }
 
@@ -127,8 +147,11 @@ export function useMetrics() {
   })
 
   function ensureLoaded() {
-    if (loaded.value || loading.value || loadPromise) return loadPromise
-    loadPromise = loadAll()
+    const { currentWs } = useSession()
+    const ws = currentWs.value || 'default'
+    if (loaded.value && loadedWs.value === ws) return loadPromise
+    if (loading.value && loadPromise) return loadPromise
+    loadPromise = loadAll({ ws })
       .catch(() => {})
       .finally(() => {
         loadPromise = null
@@ -140,13 +163,30 @@ export function useMetrics() {
     loading.value = true
     lastError.value = null
     try {
+      const { currentWs } = useSession()
+      const ws = filters.ws || currentWs.value || 'default'
+      if (loadedWs.value && loadedWs.value !== ws) {
+        catalog.value = []
+        overview.value = null
+      }
+      const q = { ...filters, ws }
       const [page, ov] = await Promise.all([
-        fetchMetricList(filters, { current: 1, size: 500 }),
-        fetchMetricOverview(filters.ws).catch(() => null),
+        fetchMetricList(q, { current: 1, size: 500 }),
+        fetchMetricOverview(ws).catch(() => null),
       ])
-      catalog.value = (page?.records || []).map(normalizeMetric).filter(Boolean)
+      catalog.value = sortMetricCatalog((page?.records || []).map(normalizeMetric).filter(Boolean))
       overview.value = ov
       loaded.value = true
+      loadedWs.value = ws
+      await ensureOnce(
+        `metric_list_${ws}`,
+        () => catalog.value.length === 0,
+        () => createMetric({ ...SAMPLE_METRIC, ws }),
+        async () => {
+          const page2 = await fetchMetricList(q, { current: 1, size: 500 })
+          catalog.value = sortMetricCatalog((page2?.records || []).map(normalizeMetric).filter(Boolean))
+        },
+      )
       return { catalog: catalog.value, overview: overview.value }
     } catch (e) {
       lastError.value = e
@@ -159,7 +199,8 @@ export function useMetrics() {
 
   async function refreshOverview(ws) {
     try {
-      overview.value = await fetchMetricOverview(ws)
+      const { currentWs } = useSession()
+      overview.value = await fetchMetricOverview(ws || currentWs.value || 'default')
     } catch (e) {
       console.warn('[metrics] overview failed', e)
     }

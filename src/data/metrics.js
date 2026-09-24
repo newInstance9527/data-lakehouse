@@ -788,7 +788,7 @@ export function buildMetricFromForm(payload, existing = []) {
       latest: '待计算',
       vol: '—',
       volCls: 'warn',
-      owner: payload.owner || '李明',
+      owner: payload.owner || '',
       ver: 'v1',
       unit: payload.unit || '',
       formula: kind === '复合' ? payload.formula || '' : '',

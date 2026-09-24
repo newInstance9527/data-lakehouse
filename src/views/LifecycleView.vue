@@ -53,7 +53,7 @@ onMounted(async () => {
   try {
     await loadBoard()
   } catch (e) {
-    showToast(`生命周期接口暂不可用，已用本地演示数据：${e.message || e}`, 'warning')
+    showToast(`生命周期加载失败：${e.message || e}`, 'error')
   }
   // 存储趋势深链：?table=&action=&from=storage-trend&adviceId=
   const q = route.query || {}
@@ -230,7 +230,7 @@ async function submitPolicy() {
     </div>
 
     <p v-if="lastError && !loading" class="lc-banner">
-      接口异常时已回退本地演示数据；接通后端后刷新即可。
+      加载失败：{{ lastError.message || lastError }}
     </p>
 
     <div class="kpi-grid lc-kpi">

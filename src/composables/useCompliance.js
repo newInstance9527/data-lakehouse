@@ -1,6 +1,6 @@
 /**
  * 合规删除主台（对接 /lh/compliance）
- * 接口不可用时降级到 data/compliance.js 演示种子，页面结构保持不变。
+ * API 失败：空列表 + lastError；空成功保持空态（不自动造工单，与申请中心一致）。
  */
 import { computed, ref } from 'vue'
 import {
@@ -26,12 +26,13 @@ import {
   upsertDelSubjectMap,
   verifyDelRequest,
 } from '@/api/compliance'
-import { COMPLIANCE_TICKETS, DEL_STATUS_META } from '@/data/compliance'
+import { DEL_STATUS_META } from '@/data/compliance'
 
 const loading = ref(false)
 const loaded = ref(false)
 const lastError = ref(null)
 const actionBusy = ref(false)
+/** true = 接口失败（仅 UI 横幅，无假数据） */
 const degraded = ref(false)
 
 const summary = ref(null)
@@ -43,63 +44,9 @@ const evidence = ref(null)
 const lastDryRun = ref(null)
 const subjectMaps = ref([])
 
-const SEED_STATUS = {
-  pending: 'pending_approval',
-  ready: 'scheduled',
-  done: 'done',
-  archive: 'archived',
-  rejected: 'rejected',
-}
-
-const SEED_TYPE = {
-  被遗忘权: 'forget',
-  错误数据擦除: 'erase_error',
-  监管责令删除: 'regulator',
-  合同到期清除: 'contract_expire',
-}
-
 function n(v, d = 0) {
   const x = Number(v)
   return Number.isFinite(x) ? x : d
-}
-
-/** 演示种子 → 新请求结构（仅在后端不可用时使用） */
-function seedRequests() {
-  return COMPLIANCE_TICKETS.map((t) => ({
-    id: t.id,
-    reqNo: t.id,
-    status: SEED_STATUS[t.statusKey] || t.statusKey,
-    statusLabel: t.status,
-    subjectType: 'user',
-    subjectMasked: t.subject,
-    reqType: SEED_TYPE[t.type] || 'forget',
-    reqTypeLabel: t.type,
-    legalBasis: t.law,
-    scopeLabel: t.scope,
-    sourceSystem: t.applicant,
-    ticketNo: null,
-    deadline: t.deadline,
-    createTime: t.createdAt,
-    slaLevel: 'ok',
-    planSummary: { total: (t.tables || []).length, included: (t.tables || []).length, done: 0, restricted: 0 },
-    targets: (t.tables || []).map((tb, i) => ({
-      id: `${t.id}-${i}`,
-      carrier: 'iceberg',
-      carrierLabel: '湖表 Iceberg',
-      objectFqn: tb,
-      mode: 'cow',
-      modeLabel: 'Copy-on-Write DELETE',
-      status: 'planned',
-      statusLabel: '待执行',
-      rowsEst: 0,
-    })),
-    timeline: (t.timeline || []).map((x) => ({
-      step: x.name,
-      status: x.status === 'done' ? 'success' : x.status === 'current' ? 'running' : 'queued',
-      detail: x.opinion || '',
-      at: x.time || '',
-    })),
-  }))
 }
 
 export function statusMeta(status) {
@@ -110,6 +57,23 @@ export function slaCls(level) {
   return level === 'overdue' ? 'tag-red' : level === 'warn' ? 'tag-orange' : 'tag-green'
 }
 
+async function applyBoard(filters = {}) {
+  const [sum, page, cov] = await Promise.all([
+    fetchDelSummary(filters.ws),
+    fetchDelRequests(filters),
+    fetchDelCoverage(filters.ws).catch(() => null),
+  ])
+  summary.value = sum
+  coverage.value = cov || sum?.coverage || null
+  requests.value = page?.records || []
+  pageInfo.value = {
+    current: n(page?.current, 1),
+    size: n(page?.size, 20),
+    total: n(page?.total, requests.value.length),
+  }
+  return page
+}
+
 export function useCompliance() {
   const kpis = computed(() => {
     const s = summary.value
@@ -118,16 +82,16 @@ export function useCompliance() {
       {
         icon: '🗑️',
         color: 'red',
-        value: String(s ? s.total : requests.value.length),
-        unit: '单',
+        value: String(s ? s.total : requests.value.length || '—'),
+        unit: s || requests.value.length ? '单' : '',
         label: '删除请求',
         trend: `进行中 ${s ? s.open : '—'}`,
       },
       {
         icon: '⏳',
         color: 'orange',
-        value: String(s?.pendingApproval ?? 0),
-        unit: '单',
+        value: String(s?.pendingApproval ?? (s ? 0 : '—')),
+        unit: s ? '单' : '',
         label: '待审批',
         trend: '安全岗 → 法务 → Owner',
         trendDown: n(s?.pendingApproval) > 0,
@@ -135,24 +99,24 @@ export function useCompliance() {
       {
         icon: '⚡',
         color: 'blue',
-        value: String(s?.executing ?? 0),
-        unit: '单',
+        value: String(s?.executing ?? (s ? 0 : '—')),
+        unit: s ? '单' : '',
         label: '待执行 / 执行中',
         trend: '维护窗口 02:00',
       },
       {
         icon: '🚫',
         color: 'purple',
-        value: String(s?.restricted ?? 0),
-        unit: '单',
+        value: String(s?.restricted ?? (s ? 0 : '—')),
+        unit: s ? '单' : '',
         label: '限制处理',
         trend: '个保法 §47 兜底',
       },
       {
         icon: '🔥',
         color: 'gray',
-        value: String(s?.pendingDestroy ?? 0),
-        unit: '单',
+        value: String(s?.pendingDestroy ?? (s ? 0 : '—')),
+        unit: s ? '单' : '',
         label: '待物理销毁',
         trend: `备份观察 ${s?.sla?.backupObserveDays ?? 30} 天`,
       },
@@ -160,7 +124,7 @@ export function useCompliance() {
         icon: '🧭',
         color: n(cov.gapCount) > 0 ? 'orange' : 'green',
         value: String(cov.coveragePct ?? '—'),
-        unit: '%',
+        unit: cov.coveragePct != null ? '%' : '',
         label: '主体索引覆盖',
         trend: n(cov.gapCount) > 0 ? `${cov.gapCount} 张高敏表未登记` : '高敏资产已全覆盖',
         trendDown: n(cov.gapCount) > 0,
@@ -175,28 +139,17 @@ export function useCompliance() {
     loading.value = true
     lastError.value = null
     try {
-      const [sum, page, cov] = await Promise.all([
-        fetchDelSummary(filters.ws),
-        fetchDelRequests(filters),
-        fetchDelCoverage(filters.ws).catch(() => null),
-      ])
-      summary.value = sum
-      coverage.value = cov || sum?.coverage || null
-      requests.value = page?.records || []
-      pageInfo.value = {
-        current: n(page?.current, 1),
-        size: n(page?.size, 20),
-        total: n(page?.total, requests.value.length),
-      }
+      await applyBoard(filters)
       degraded.value = false
       loaded.value = true
-      return page
+      return pageInfo.value
     } catch (e) {
       lastError.value = e
       console.error('[compliance] load failed', e)
-      requests.value = seedRequests()
-      pageInfo.value = { current: 1, size: 20, total: requests.value.length }
+      requests.value = []
+      pageInfo.value = { current: 1, size: 20, total: 0 }
       summary.value = null
+      coverage.value = null
       degraded.value = true
       loaded.value = true
       throw e
@@ -211,11 +164,6 @@ export function useCompliance() {
   }
 
   async function openDetail(reqId) {
-    if (degraded.value) {
-      detail.value = requests.value.find((r) => r.id === reqId || r.reqNo === reqId) || null
-      evidence.value = null
-      return detail.value
-    }
     detail.value = await fetchDelRequest(reqId)
     evidence.value = null
     lastDryRun.value = null
@@ -227,10 +175,10 @@ export function useCompliance() {
     actionBusy.value = true
     try {
       const res = await fn()
-      if (reqId && !degraded.value) {
+      if (reqId) {
         detail.value = res && res.reqNo ? res : await fetchDelRequest(reqId)
       }
-      if (reload && !degraded.value) {
+      if (reload) {
         await loadBoard({ current: pageInfo.value.current, size: pageInfo.value.size }).catch(() => {})
       }
       return res

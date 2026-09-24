@@ -1,45 +1,43 @@
 /**
- * 列表「我的团队 / 查看全部」软过滤作用域。
- * team → 带当前 ws；all → 不传 ws（后端不过滤归属）。
+ * 列表范围（空间优先定型）：
+ * - 默认跟随 currentWs（切换即刷新）
+ * - 「查看全部」→ scope=all（不传 ws；特权巡检）
+ * 资产目录另支持 scope=enterprise，见 CatalogView。
  */
 import { computed, ref, watch } from 'vue'
 import { useSession } from '@/composables/useSession'
 
-/**
- * @param {{ defaultScope?: 'team' | 'all', onChange?: (listWs: string | undefined) => void | Promise<void> }} [opts]
- */
-export function useWsListScope(opts = {}) {
-  const { currentWs } = useSession()
-  const wsScope = ref(opts.defaultScope === 'all' ? 'all' : 'team')
+export function useWsListScope() {
+  const { currentWs, user } = useSession()
+  /** true = 仅当前空间（默认）；false = 查看全部 */
+  const mineOnly = ref(true)
 
-  const listWs = computed(() =>
-    wsScope.value === 'team' ? currentWs.value || 'default' : undefined,
-  )
+  /** UI：勾选 = 查看全部（与 mineOnly 相反） */
+  const showAll = computed({
+    get: () => !mineOnly.value,
+    set: (v) => {
+      mineOnly.value = !v
+    },
+  })
 
-  const scopeLabel = computed(() =>
-    wsScope.value === 'team' ? `我的团队 · ${currentWs.value || 'default'}` : '查看全部',
-  )
+  const listWs = computed(() => (mineOnly.value ? currentWs.value || 'default' : undefined))
 
-  function setScope(scope) {
-    wsScope.value = scope === 'all' ? 'all' : 'team'
+  function listWsParams(extra = {}) {
+    const ws = listWs.value
+    if (ws) return { ...extra, ws, scope: 'workspace' }
+    return { ...extra, scope: 'all' }
   }
 
-  if (typeof opts.onChange === 'function') {
-    watch(
-      listWs,
-      (ws) => {
-        opts.onChange(ws)
-      },
-      { flush: 'post' },
-    )
+  /**
+   * 范围或 currentWs 变化时回调（查看全部时切换空间不刷列表）。
+   * @param {() => void} reload
+   */
+  function watchListScope(reload) {
+    watch(mineOnly, () => reload())
+    watch(currentWs, () => {
+      if (mineOnly.value) reload()
+    })
   }
 
-  return {
-    currentWs,
-    wsScope,
-    listWs,
-    scopeLabel,
-    setScope,
-    isTeam: computed(() => wsScope.value === 'team'),
-  }
+  return { user, currentWs, mineOnly, showAll, listWs, listWsParams, watchListScope }
 }

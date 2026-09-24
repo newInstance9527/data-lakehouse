@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import SqlEditor from '@/components/etl/SqlEditor.vue'
 import SearchSelect from '@/components/common/SearchSelect.vue'
 import { useToast } from '@/composables/useToast'
@@ -13,8 +13,10 @@ import { parseDataapiParams, fetchSqlrestOptions, buildDataapi, publishDataapi, 
 import { createApplyTicket, pageMyTickets } from '@/api/apply.js'
 import { compileMetric, fetchMetricList } from '@/api/metric.js'
 import { fetchAssetPage, fetchAssetSchema, fetchAssetSources } from '@/api/catalog.js'
-import { streamAiChat } from '@/api/ai.js'
+import { streamAiChat, createAiSession, fetchAiModels } from '@/api/ai.js'
 import { useSession } from '@/composables/useSession'
+import { useActionLock } from '@/composables/useActionLock'
+import { chatModelOptionLabel, filterChatPickerModels } from '@/data/ai.js'
 import { bindTableKeyOf } from '@/data/metricBindAssets.js'
 import {
   applyPgParamTextCasts,
@@ -51,9 +53,10 @@ const TAB_IDS = [
 
 const tab = ref('sql')
 const paramSide = ref('in')
-const saving = ref(false)
+const { busy, run: runLocked } = useActionLock()
+const saving = computed(() => busy('save'))
+const publishing = computed(() => busy('publish') || busy('apply'))
 const testing = ref(false)
-const publishing = ref(false)
 const dirty = ref(false)
 const debugOpen = ref(false)
 const DEBUG_WIDTH_KEY = 'dataservice-api-debug-width'
@@ -145,16 +148,65 @@ const tplPreview = ref('')
 const tplHint = ref('')
 const tplPortalDsId = ref('')
 
-/** D6/D11：AI NL2SQL → 当前 SQL 窗口（左树 schema linking） */
+/** 构建 API：AI 对话生成 SQL/Groovy → 确认后写入当前窗口 */
+const AI_MODEL_STORAGE_KEY = 'dataservice-api-script-ai-model'
+
+function loadAiModelChoice() {
+  try {
+    return String(localStorage.getItem(AI_MODEL_STORAGE_KEY) || '')
+  } catch {
+    return ''
+  }
+}
+
+function persistAiModelChoice(id) {
+  try {
+    if (id) localStorage.setItem(AI_MODEL_STORAGE_KEY, id)
+    else localStorage.removeItem(AI_MODEL_STORAGE_KEY)
+  } catch {
+    /* ignore */
+  }
+}
+
 const aiOpen = ref(false)
-const aiPrompt = ref('')
+const aiInput = ref('')
 const aiGenerating = ref(false)
-const aiPreview = ref('')
-const aiHint = ref('共用助手 nl2sql；结果只写入当前窗口，不自动执行、不旁路 ACL。')
+const aiHint = ref('选数据源后多轮对话生成脚本；确认 Apply 才写入，不自动执行、不旁路 ACL。')
 const aiError = ref('')
+const aiSessionId = ref('')
+/** @type {import('vue').Ref<Array<{ role: string, text?: string, html?: string, actions?: any[] }>>} */
+const aiMessages = ref([])
+/** @type {import('vue').Ref<{ kind: 'SQL'|'GROOVY', content: string } | null>} */
+const aiPending = ref(null)
+const aiChatBody = ref(null)
 let aiAbort = null
+/** chat 模型列表；空选中 = 走后端 gov_ai_route（api_script → scene sql） */
+const aiModelOptions = ref([])
+/** 空 = 路由默认，不传 modelOverride */
+const aiSelectedModelId = ref(loadAiModelChoice())
+const aiRouteModelLabel = ref('')
 /** @type {import('vue').Ref<{ schema: string, table: string, columns: { name: string, type?: string }[] } | null>} */
 const metaSel = ref(null)
+
+watch(aiSelectedModelId, (id) => {
+  persistAiModelChoice(id || '')
+})
+
+async function loadAiModelOptions() {
+  try {
+    const page = await fetchAiModels({ kind: 'chat' }, { current: 1, size: 100 })
+    const rows = page?.records || []
+    aiModelOptions.value = filterChatPickerModels(rows).map((m) => ({
+      id: m.id,
+      label: chatModelOptionLabel(m),
+    }))
+    if (aiSelectedModelId.value && !aiModelOptions.value.some((m) => m.id === aiSelectedModelId.value)) {
+      aiSelectedModelId.value = ''
+    }
+  } catch {
+    aiModelOptions.value = []
+  }
+}
 
 const projectedDs = computed(() =>
   (sqlrestDs.value || []).filter((d) => d.projected || d.sqlrestDatasourceId),
@@ -198,7 +250,7 @@ watch(
     debugOpen.value = false
     moreOpen.value = false
     closeTplPicker()
-    closeAiSql()
+    resetAiChat()
     metaSel.value = null
     try {
       options.value = { ...options.value, ...((await fetchSqlrestOptions()) || {}) }
@@ -237,6 +289,7 @@ watch(moreOpen, (v) => {
 onBeforeUnmount(() => {
   document.removeEventListener('click', onDocClickMore, true)
   stopDebugResize()
+  closeAiChat()
 })
 
 watch(
@@ -746,16 +799,40 @@ function metaSelLabel() {
   return cols.length ? `${fqn}（${cols.slice(0, 8).join(', ')}${cols.length > 8 ? '…' : ''}）` : `${fqn}（*）`
 }
 
-function extractSqlFromAi({ actions, html }) {
+function extractScriptFromAi({ actions, html }, preferGroovy) {
   for (const a of actions || []) {
-    if (a?.type === 'apply_sql' && a.sql) return String(a.sql).trim()
-    if (a?.sql) return String(a.sql).trim()
+    if (a?.type === 'apply_script' && (a.script || a.sql)) {
+      return {
+        kind: 'GROOVY',
+        content: String(a.script || a.sql).trim(),
+      }
+    }
+    if (a?.type === 'apply_sql' && a.sql) {
+      return {
+        kind: String(a.scriptType || '').toUpperCase() === 'GROOVY' ? 'GROOVY' : 'SQL',
+        content: String(a.sql).trim(),
+      }
+    }
+    if (a?.script) {
+      return { kind: 'GROOVY', content: String(a.script).trim() }
+    }
+    if (a?.sql) {
+      return { kind: 'SQL', content: String(a.sql).trim() }
+    }
   }
-  const m = String(html || '').match(/```sql\s*([\s\S]*?)```/i)
-  return m ? m[1].trim() : ''
+  const raw = String(html || '')
+  const groovy = raw.match(/```groovy\s*([\s\S]*?)```/i)
+  if (groovy) return { kind: 'GROOVY', content: groovy[1].trim() }
+  const sql = raw.match(/```sql\s*([\s\S]*?)```/i)
+  if (sql) return { kind: 'SQL', content: sql[1].trim() }
+  if (preferGroovy) {
+    const java = raw.match(/```java\s*([\s\S]*?)```/i)
+    if (java) return { kind: 'GROOVY', content: java[1].trim() }
+  }
+  return null
 }
 
-function closeAiSql() {
+function closeAiChat() {
   if (aiAbort) {
     try {
       aiAbort.abort()
@@ -766,108 +843,273 @@ function closeAiSql() {
   }
   aiOpen.value = false
   aiGenerating.value = false
-  aiPrompt.value = ''
-  aiPreview.value = ''
   aiError.value = ''
-  aiHint.value = '共用助手 nl2sql；结果只写入当前窗口，不自动执行、不旁路 ACL。'
 }
 
-function openAiSql() {
+function resetAiChat() {
+  closeAiChat()
+  aiInput.value = ''
+  aiMessages.value = []
+  aiPending.value = null
+  aiSessionId.value = ''
+  aiHint.value = '选数据源后多轮对话生成脚本；确认 Apply 才写入，不自动执行、不旁路 ACL。'
+}
+
+function clearAiConversation() {
+  if (aiAbort) {
+    try {
+      aiAbort.abort()
+    } catch {
+      /* ignore */
+    }
+    aiAbort = null
+  }
+  aiGenerating.value = false
+  aiInput.value = ''
+  aiMessages.value = []
+  aiPending.value = null
+  aiSessionId.value = ''
+  aiError.value = ''
+  openAiChat()
+}
+
+async function ensureAiSession() {
+  if (aiSessionId.value) return aiSessionId.value
+  try {
+    const s = await createAiSession({
+      ws: currentWs.value || 'default',
+      title: `构建API · ${(selectedDs.value?.name || form.datasourceId || '').slice(0, 24)}`,
+    })
+    aiSessionId.value = s?.id || s?.sessionId || ''
+  } catch {
+    aiSessionId.value = ''
+  }
+  return aiSessionId.value
+}
+
+function openAiChat() {
   moreOpen.value = false
-  if (form.engine !== 'SQL') {
-    showToast('AI 生成 SQL 仅支持 SQL 引擎；请先切换到 SQL 语句', 'warning')
+  if (!form.datasourceId) {
+    showToast('请先选择已投影数据源，再打开 AI 对话', 'warning')
+    return
+  }
+  if (!selectedDs.value) {
+    showToast('当前数据源未投影或不在可选列表，请重新选择', 'warning')
     return
   }
   aiOpen.value = true
-  aiPreview.value = ''
   aiError.value = ''
-  aiHint.value = `上下文：${metaSelLabel()} · 写入当前窗口后可自行试跑`
-  if (!aiPrompt.value.trim()) {
-    const ctx = schemaContextOf()[0]
-    if (ctx) {
-      const fqn = ctx.schema ? `${ctx.schema}.${ctx.table}` : ctx.table
-      aiPrompt.value = `基于表 ${fqn} 生成只读查询 SQL，LIMIT 100`
-    }
+  aiHint.value = `数据源 ${selectedDs.value?.name || form.datasourceId} · ${form.engine} · ${metaSelLabel()}`
+  if (!aiMessages.value.length) {
+    aiMessages.value.push({
+      role: 'assistant',
+      html:
+        `已绑定数据源与当前引擎（${form.engine}）。描述查询/脚本需求即可生成草案；` +
+        `左树可用「+」选表/列作上下文。生成后点 <b>Apply 写入</b> 才会覆盖当前窗口。`,
+    })
   }
+  loadAiModelOptions().catch(() => {})
+  ensureAiSession().catch(() => {})
+  nextTick(() => scrollAiChatBottom())
 }
 
-async function runAiSqlGen() {
-  const text = aiPrompt.value.trim()
+function scrollAiChatBottom() {
+  nextTick(() => {
+    const el = aiChatBody.value
+    if (el) el.scrollTop = el.scrollHeight
+  })
+}
+
+async function sendAiChat(quickText) {
+  if (!form.datasourceId) {
+    showToast('请先选择数据源', 'warning')
+    return
+  }
+  const text = String(quickText || aiInput.value || '').trim()
   if (!text) {
-    showToast('请先描述要生成的 SQL', 'warning')
+    showToast('请先描述要生成的 SQL 或 Groovy', 'warning')
     return
   }
   if (aiGenerating.value) return
   aiGenerating.value = true
-  aiPreview.value = ''
   aiError.value = ''
+  aiPending.value = null
+  aiInput.value = ''
+  aiMessages.value.push({ role: 'user', text })
+  const assistantMsg = { role: 'assistant', html: '', actions: [] }
+  aiMessages.value.push(assistantMsg)
+  const idx = aiMessages.value.length - 1
+  scrollAiChatBottom()
+
   const actions = []
   let html = ''
   try {
-    await new Promise((resolve, reject) => {
-      aiAbort = streamAiChat(
-        {
-          ws: currentWs.value || 'default',
-          text,
-          scene: 'nl2sql',
-          schemaContext: schemaContextOf(),
-        },
-        {
-          onEvent({ event, data }) {
-            if (event === 'token') {
-              const t = typeof data === 'string' ? data : data?.text || data?.token || ''
-              html += t
-            }
-            if (event === 'action') {
-              const list = Array.isArray(data) ? data : data ? [data] : []
-              actions.push(...list)
-            }
-            if (event === 'done' && data?.content && !html) {
-              html = data.content
-            }
-            if (event === 'done' && data?.error) {
-              aiError.value = String(data.error)
-            }
-          },
-          onError(e) {
-            reject(e)
-          },
-          onDone() {
-            resolve()
-          },
-        },
-      )
-    })
-    const sql = extractSqlFromAi({ actions, html })
-    if (!sql) {
-      aiError.value = aiError.value || '未解析到 SQL；可改描述或先在左树选表/列'
-      showToast(aiError.value, 'warning')
-      return
+    await ensureAiSession()
+    const chatBody = {
+      sessionId: aiSessionId.value || undefined,
+      ws: currentWs.value || 'default',
+      text,
+      scene: 'api_script',
+      scriptType: form.engine === 'GROOVY' ? 'GROOVY' : 'SQL',
+      datasourceId: form.datasourceId,
+      datasourceType: selectedDs.value?.sqlrestType || selectedDs.value?.type || undefined,
+      schemaContext: schemaContextOf(),
     }
-    aiPreview.value = toSqlrestPlaceholders(sql)
-    aiHint.value = '已生成草案（未执行）；确认后写入当前 SQL 窗口'
+    // 仅用户显式选择时 override；空则走后端 gov_ai_route（api_script → scene sql）
+    if (aiSelectedModelId.value) {
+      chatBody.modelOverride = aiSelectedModelId.value
+    }
+    await new Promise((resolve, reject) => {
+      aiAbort = streamAiChat(chatBody, {
+        onEvent({ event, data }) {
+          if (event === 'meta' && data?.sessionId) {
+            aiSessionId.value = data.sessionId
+          }
+          if (event === 'meta' && (data?.modelName || data?.modelId)) {
+            aiRouteModelLabel.value = data.modelName || data.modelId
+          }
+          if (event === 'token') {
+            const t = typeof data === 'string' ? data : data?.text || data?.token || ''
+            html += t
+            const msg = aiMessages.value[idx]
+            if (msg) {
+              msg.html = html
+              aiMessages.value[idx] = { ...msg }
+            }
+          }
+          if (event === 'action') {
+            const list = Array.isArray(data) ? data : data ? [data] : []
+            actions.push(...list)
+            const msg = aiMessages.value[idx]
+            if (msg) {
+              msg.actions = [...(msg.actions || []), ...list]
+              aiMessages.value[idx] = { ...msg }
+            }
+          }
+          if (event === 'done' && data?.content && !html) {
+            html = data.content
+            const msg = aiMessages.value[idx]
+            if (msg) {
+              msg.html = html
+              aiMessages.value[idx] = { ...msg }
+            }
+          }
+          if (event === 'done' && data?.error) {
+            aiError.value = String(data.error)
+          }
+          if (event === 'done' && (data?.modelName || data?.modelId) && !aiRouteModelLabel.value) {
+            aiRouteModelLabel.value = data.modelName || data.modelId
+          }
+        },
+        onError(e) {
+          reject(e)
+        },
+        onDone() {
+          resolve()
+        },
+      })
+    })
+    const preferGroovy = form.engine === 'GROOVY'
+    const extracted = extractScriptFromAi({ actions, html }, preferGroovy)
+    if (extracted?.content) {
+      const content =
+        extracted.kind === 'SQL' ? toSqlrestPlaceholders(extracted.content) : extracted.content
+      aiPending.value = { kind: extracted.kind, content }
+      aiHint.value = `草案已生成（${extracted.kind}，未写入）；确认后 Apply`
+    } else {
+      aiError.value = aiError.value || '未解析到可应用脚本；可改描述或先在左树选表/列'
+      showToast(aiError.value, 'warning')
+    }
   } catch (e) {
     aiError.value = e?.message || String(e)
+    const msg = aiMessages.value[idx]
+    if (msg) {
+      msg.html =
+        (msg.html || '') +
+        `<br/><span class="ai-err">⚠️ ${aiError.value}</span>`
+      aiMessages.value[idx] = { ...msg }
+    }
     showToast(`AI 生成失败：${aiError.value}`, 'warning')
   } finally {
     aiGenerating.value = false
     aiAbort = null
+    scrollAiChatBottom()
   }
 }
 
-function applyAiSql() {
-  const sql = String(aiPreview.value || '').trim()
-  if (!sql) {
-    showToast('请先生成预览', 'warning')
+function applyAiPending() {
+  const pending = aiPending.value
+  if (!pending?.content) {
+    showToast('请先生成可应用的草案', 'warning')
     return
   }
-  if (form.engine !== 'SQL') setEngine('SQL')
-  activeSql.value = sql.endsWith('\n') ? sql : `${sql}\n`
+  const cur = String(activeSql.value || '').trim()
+  const blank =
+    !cur ||
+    cur === SQL_STUB.trim() ||
+    cur === GROOVY_STUB ||
+    isDialectSample(cur)
+  if (!blank) {
+    const ok = window.confirm(
+      `确认用 AI 草案覆盖当前${pending.kind === 'GROOVY' ? ' Groovy' : ' SQL'}窗口？`,
+    )
+    if (!ok) return
+  }
+  if (pending.kind === 'GROOVY') {
+    if (form.engine !== 'GROOVY') setEngine('GROOVY')
+  } else if (form.engine !== 'SQL') {
+    setEngine('SQL')
+  }
+  const body = pending.content
+  activeSql.value = body.endsWith('\n') ? body : `${body}\n`
   tab.value = 'sql'
   dirty.value = true
-  closeAiSql()
-  showToast('已写入当前 SQL 窗口（未执行）', 'success')
-  parseParams({ quiet: true }).catch(() => {})
+  aiPending.value = null
+  showToast(
+    pending.kind === 'GROOVY' ? '已写入当前 Groovy 窗口（未执行）' : '已写入当前 SQL 窗口（未执行）',
+    'success',
+  )
+  if (pending.kind === 'SQL') {
+    parseParams({ quiet: true }).catch(() => {})
+  }
+}
+
+function applyAiAction(act) {
+  if (!act) return
+  if (act.type === 'apply_script' && (act.script || act.sql)) {
+    aiPending.value = {
+      kind: 'GROOVY',
+      content: String(act.script || act.sql).trim(),
+    }
+    applyAiPending()
+    return
+  }
+  if (act.type === 'apply_sql' && act.sql) {
+    const kind = String(act.scriptType || '').toUpperCase() === 'GROOVY' ? 'GROOVY' : 'SQL'
+    aiPending.value = {
+      kind,
+      content: kind === 'SQL' ? toSqlrestPlaceholders(String(act.sql)) : String(act.sql).trim(),
+    }
+    applyAiPending()
+  }
+}
+
+function aiQuick(chip) {
+  if (chip === 'sql') {
+    if (form.engine !== 'SQL') setEngine('SQL')
+    const ctx = schemaContextOf()[0]
+    const fqn = ctx
+      ? ctx.schema
+        ? `${ctx.schema}.${ctx.table}`
+        : ctx.table
+      : '当前授权表'
+    sendAiChat(`基于表 ${fqn} 生成只读查询 SQL，占位符用 #{param}，LIMIT 100`)
+    return
+  }
+  if (chip === 'groovy') {
+    if (form.engine !== 'GROOVY') setEngine('GROOVY')
+    sendAiChat('生成 SQLREST 风格 Groovy 脚本骨架，return 行列表，注释说明入参')
+  }
 }
 
 function quoteIdentSafe(name) {
@@ -1658,31 +1900,30 @@ async function save() {
     showToast(err, 'warning')
     return null
   }
-  saving.value = true
-  try {
-    const res = await buildDataapi(buildPayload())
-    const binding = res?.binding
-    // 门户草稿落库即成功；SQLREST 失败用 degraded，不因 ok/sqlrest 失败丢掉 id
-    if (binding?.id) form.id = binding.id
-    if (!binding?.id) {
-      throw new Error(res?.sqlrest?.message || res?.message || '保存失败：未返回绑定 id')
+  return runLocked('save', async () => {
+    try {
+      const res = await buildDataapi(buildPayload())
+      const binding = res?.binding
+      // 门户草稿落库即成功；SQLREST 失败用 degraded，不因 ok/sqlrest 失败丢掉 id
+      if (binding?.id) form.id = binding.id
+      if (!binding?.id) {
+        throw new Error(res?.sqlrest?.message || res?.message || '保存失败：未返回绑定 id')
+      }
+      dirty.value = false
+      if (res?.degraded || res?.sqlrestOk === false) {
+        showToast(
+          `草稿已保存（id=${binding.id}），但 SQLREST 同步失败：${res?.sqlrest?.message || binding.lastError || '请检查 Manager'}`,
+          'warning',
+        )
+      } else {
+        showToast(`已保存草稿${form.id ? ` · ${form.id.slice(-6)}` : ''}`, 'success')
+      }
+      return binding
+    } catch (e) {
+      showToast(`保存失败：${e?.message || e}`, 'warning')
+      return null
     }
-    dirty.value = false
-    if (res?.degraded || res?.sqlrestOk === false) {
-      showToast(
-        `草稿已保存（id=${binding.id}），但 SQLREST 同步失败：${res?.sqlrest?.message || binding.lastError || '请检查 Manager'}`,
-        'warning',
-      )
-    } else {
-      showToast(`已保存草稿${form.id ? ` · ${form.id.slice(-6)}` : ''}`, 'success')
-    }
-    return binding
-  } catch (e) {
-    showToast(`保存失败：${e?.message || e}`, 'warning')
-    return null
-  } finally {
-    saving.value = false
-  }
+  })
 }
 
 async function doDebug() {
@@ -1756,33 +1997,35 @@ async function doDebug() {
 }
 
 async function submitPublishApply() {
-  // 申请须有绑定 id：有未保存变更或无 id 时先落草稿（与审批无关）
-  if (dirty.value || !form.id) {
-    const binding = await save()
-    if (!binding?.id && !form.id) return
-  }
-  const id = form.id
-  try {
-    const t = await createApplyTicket({
-      ticketType: 'api_publish',
-      title: `API 发布 · ${form.name || form.path}`,
-      reason: form.description || '数据服务发布审批',
-      apiBindingId: id,
-      publicPath: form.path,
-      method: form.method,
-      expireLabel: '长期',
-    })
-    form.publishTicketNo = t?.ticketNo || t?.data?.ticketNo || form.publishTicketNo || ''
-    form.publishTicketStatus = 'pending'
-    showToast(
-      form.publishTicketNo
-        ? `已申请发布 ${form.publishTicketNo}（待审核）。通过后将自动上线，驳回则按意见重改`
-        : '已提交发布申请，待审核通过后自动发布',
-      'success',
-    )
-  } catch (e) {
-    showToast(`提交申请失败：${e?.message || e}`, 'warning')
-  }
+  await runLocked('apply', async () => {
+    // 申请须有绑定 id：有未保存变更或无 id 时先落草稿（与审批无关）
+    if (dirty.value || !form.id) {
+      const binding = await save()
+      if (!binding?.id && !form.id) return
+    }
+    const id = form.id
+    try {
+      const t = await createApplyTicket({
+        ticketType: 'api_publish',
+        title: `API 发布 · ${form.name || form.path}`,
+        reason: form.description || '数据服务发布审批',
+        apiBindingId: id,
+        publicPath: form.path,
+        method: form.method,
+        expireLabel: '长期',
+      })
+      form.publishTicketNo = t?.ticketNo || t?.data?.ticketNo || form.publishTicketNo || ''
+      form.publishTicketStatus = 'pending'
+      showToast(
+        form.publishTicketNo
+          ? `已申请发布 ${form.publishTicketNo}（待审核）。通过后将自动上线，驳回则按意见重改`
+          : '已提交发布申请，待审核通过后自动发布',
+        'success',
+      )
+    } catch (e) {
+      showToast(`提交申请失败：${e?.message || e}`, 'warning')
+    }
+  })
 }
 
 async function refreshPublishTicket() {
@@ -1837,35 +2080,34 @@ async function saveAndPublish() {
     debugOpen.value = true
     return
   }
-  publishing.value = true
-  try {
-    const binding = await save()
-    if (!binding?.id) return
-    if (binding.lastError || !binding.sqlrestApiId) {
-      // detail card may not expose sqlrestApiId on binding from build response
+  await runLocked('publish', async () => {
+    try {
+      const binding = await save()
+      if (!binding?.id) return
+      if (binding.lastError || !binding.sqlrestApiId) {
+        // detail card may not expose sqlrestApiId on binding from build response
+      }
+      if (form.publishTicketStatus === 'pending') {
+        showToast('发布申请待审核中，通过后会自动上线；无需手动补发', 'warning')
+        return
+      }
+      if (form.publishTicketStatus === 'rejected') {
+        showToast('上一张发布单已驳回，请修改后重新「申请发布」', 'warning')
+        return
+      }
+      const pub = await publishDataapi(binding.id, undefined, form.publishTicketNo || undefined)
+      showToast(pub?.degraded ? `已发布（部分降级）` : '已发布', pub?.degraded ? 'warning' : 'success')
+      emit('publish', pub?.binding || binding)
+      close()
+    } catch (e) {
+      const msg = e?.message || String(e)
+      if (/尚未通过审批|须先有已审批|发布须/.test(msg)) {
+        showToast(`${msg}（可点「提交发布申请」或「刷新单号」）`, 'warning')
+      } else {
+        showToast(`发布失败：${msg}`, 'warning')
+      }
     }
-    if (form.publishTicketStatus === 'pending') {
-      showToast('发布申请待审核中，通过后会自动上线；无需手动补发', 'warning')
-      return
-    }
-    if (form.publishTicketStatus === 'rejected') {
-      showToast('上一张发布单已驳回，请修改后重新「申请发布」', 'warning')
-      return
-    }
-    const pub = await publishDataapi(binding.id, undefined, form.publishTicketNo || undefined)
-    showToast(pub?.degraded ? `已发布（部分降级）` : '已发布', pub?.degraded ? 'warning' : 'success')
-    emit('publish', pub?.binding || binding)
-    close()
-  } catch (e) {
-    const msg = e?.message || String(e)
-    if (/尚未通过审批|须先有已审批|发布须/.test(msg)) {
-      showToast(`${msg}（可点「提交发布申请」或「刷新单号」）`, 'warning')
-    } else {
-      showToast(`发布失败：${msg}`, 'warning')
-    }
-  } finally {
-    publishing.value = false
-  }
+  })
 }
 
 async function doGatewayProbe() {
@@ -2119,7 +2361,7 @@ async function applyTpl() {
               <div v-if="moreOpen" class="wb-more-menu" @click.stop>
                 <button type="button" class="wb-more-item" @click="openTplPicker('metric')">从指标生成 SQL</button>
                 <button type="button" class="wb-more-item" @click="openTplPicker('asset')">从资产生成 SQL</button>
-                <button type="button" class="wb-more-item" @click="openAiSql">AI 生成 SQL</button>
+                <button type="button" class="wb-more-item" @click="openAiChat">AI 对话生成脚本</button>
               </div>
             </div>
             <button type="button" class="btn btn-sm" @click="doGatewayProbe">Gateway 探针</button>
@@ -2127,7 +2369,9 @@ async function applyTpl() {
             <button type="button" class="btn btn-sm btn-primary" :disabled="saving" @click="save">
               {{ saving ? '保存中…' : '保存' }}
             </button>
-            <button type="button" class="btn btn-sm btn-primary" @click="submitPublishApply">申请发布</button>
+            <button type="button" class="btn btn-sm btn-primary" :disabled="saving || publishing" @click="submitPublishApply">
+              {{ busy('apply') ? '申请中…' : '申请发布' }}
+            </button>
             <button type="button" class="btn btn-sm" :disabled="publishing" :title="'异常补救：审批已通过但未上线时可用'" @click="saveAndPublish">
               {{ publishing ? '补发中…' : '手动补发' }}
             </button>
@@ -2245,6 +2489,14 @@ async function applyTpl() {
                 <span v-if="form.engine === 'SQL'" class="dialect-tag" :title="sqlDialect.quoteHint">
                   {{ sqlDialect.family ? `${sqlDialect.label} · ${sqlDialect.family}` : sqlDialect.label }}
                 </span>
+                <button
+                  type="button"
+                  class="btn btn-sm btn-primary"
+                  :title="form.datasourceId ? '打开 AI 对话生成 SQL/Groovy' : '请先选择已投影数据源'"
+                  @click="openAiChat"
+                >
+                  AI 助手
+                </button>
                 <button type="button" class="btn btn-sm btn-primary" @click="addSqlWindow">
                   {{ form.engine === 'GROOVY' ? '添加脚本窗口' : '添加SQL窗口' }}
                 </button>
@@ -2705,6 +2957,121 @@ async function applyTpl() {
             </div>
           </aside>
         </div>
+        <aside
+          v-if="aiOpen"
+          class="ai-drawer"
+          role="dialog"
+          aria-modal="true"
+          aria-label="AI 脚本助手"
+        >
+          <div class="ai-drawer-hd">
+            <div>
+              <div class="ai-drawer-title">AI 脚本助手</div>
+              <div class="ai-drawer-sub">{{ aiHint }}</div>
+            </div>
+            <div class="ai-drawer-hd-actions">
+              <select
+                v-model="aiSelectedModelId"
+                class="select input-sm ai-model-select"
+                title="留空则按 gov_ai_route（api_script → scene sql）；选择后写入 localStorage"
+                :disabled="aiGenerating"
+              >
+                <option value="">路由默认{{ aiRouteModelLabel ? `（${aiRouteModelLabel}）` : '' }}</option>
+                <option v-for="m in aiModelOptions" :key="m.id" :value="m.id">{{ m.label }}</option>
+              </select>
+              <button type="button" class="btn btn-sm" :disabled="aiGenerating" @click="clearAiConversation">
+                清空
+              </button>
+              <button type="button" class="btn btn-sm" @click="closeAiChat">关闭</button>
+            </div>
+          </div>
+          <div class="ai-drawer-meta tip">
+            引擎 <code>{{ form.engine }}</code>
+            · 左树 {{ metaSelLabel() }}
+            · ws <code>{{ currentWs || 'default' }}</code>
+            · 模型
+            <code>{{
+              aiSelectedModelId
+                ? aiModelOptions.find((m) => m.id === aiSelectedModelId)?.label || aiSelectedModelId
+                : aiRouteModelLabel || 'gov_ai_route / sql'
+            }}</code>
+          </div>
+          <div ref="aiChatBody" class="ai-drawer-body">
+            <div
+              v-for="(m, i) in aiMessages"
+              :key="i"
+              class="ai-bubble"
+              :class="m.role === 'user' ? 'is-user' : 'is-bot'"
+            >
+              <div v-if="m.role === 'user'" class="ai-bubble-text">{{ m.text }}</div>
+              <div v-else class="ai-bubble-html" v-html="m.html || '…'" />
+              <div v-if="m.actions?.length" class="ai-bubble-acts">
+                <button
+                  v-for="(act, j) in m.actions.filter((a) => a.type === 'apply_sql' || a.type === 'apply_script')"
+                  :key="j"
+                  type="button"
+                  class="btn btn-sm"
+                  :disabled="aiGenerating"
+                  @click="applyAiAction(act)"
+                >
+                  {{ act.label || 'Apply' }}
+                </button>
+              </div>
+            </div>
+            <p v-if="aiGenerating" class="tip">生成中…</p>
+            <p v-else-if="aiError" class="tip tip-warn">{{ aiError }}</p>
+          </div>
+          <div v-if="aiPending" class="ai-pending">
+            <div class="ai-pending-hd">
+              <span>待 Apply · {{ aiPending.kind }}（未写入）</span>
+              <button
+                type="button"
+                class="btn btn-sm btn-primary"
+                :disabled="aiGenerating"
+                @click="applyAiPending"
+              >
+                Apply 写入当前窗口
+              </button>
+            </div>
+            <pre class="ai-pending-pre">{{ aiPending.content }}</pre>
+          </div>
+          <div class="ai-drawer-chips">
+            <button
+              type="button"
+              class="tag-btn"
+              :disabled="aiGenerating || !form.datasourceId"
+              @click="aiQuick('sql')"
+            >
+              生成 SQL
+            </button>
+            <button
+              type="button"
+              class="tag-btn"
+              :disabled="aiGenerating || !form.datasourceId"
+              @click="aiQuick('groovy')"
+            >
+              生成 Groovy
+            </button>
+          </div>
+          <div class="ai-drawer-input">
+            <textarea
+              v-model="aiInput"
+              class="input ai-prompt"
+              rows="2"
+              placeholder="描述要生成的 SQL 或 Groovy…"
+              :disabled="aiGenerating || !form.datasourceId"
+              @keydown.enter.exact.prevent="sendAiChat()"
+            />
+            <button
+              type="button"
+              class="btn btn-sm btn-primary"
+              :disabled="aiGenerating || !form.datasourceId || !aiInput.trim()"
+              @click="sendAiChat()"
+            >
+              {{ aiGenerating ? '…' : '发送' }}
+            </button>
+          </div>
+        </aside>
       </div>
     </div>
 
@@ -2751,51 +3118,6 @@ async function applyTpl() {
         </div>
       </div>
     </div>
-
-    <div v-if="aiOpen" class="tpl-mask" @click.self="closeAiSql">
-      <div class="tpl-modal" role="dialog" aria-modal="true">
-        <div class="tpl-hd">
-          <div>
-            <div class="tpl-title">AI 生成 SQL</div>
-            <div class="tpl-sub">{{ aiHint }}</div>
-          </div>
-          <button type="button" class="btn btn-sm" @click="closeAiSql">关闭</button>
-        </div>
-        <div class="tpl-bd">
-          <label class="form-field">
-            <span class="form-label">自然语言需求</span>
-            <textarea
-              v-model="aiPrompt"
-              class="input ai-prompt"
-              rows="3"
-              placeholder="例：查近一天订单明细，按金额降序，LIMIT 100"
-              :disabled="aiGenerating"
-            />
-          </label>
-          <p class="tip">左树上下文：{{ metaSelLabel() }}（表行点 + / 列单击选用）</p>
-          <div v-if="aiPreview" class="tpl-preview">
-            <div class="tpl-preview-label">SQL 预览（未执行）</div>
-            <pre>{{ aiPreview }}</pre>
-          </div>
-          <p v-else-if="aiGenerating" class="tip">生成中…</p>
-          <p v-else-if="aiError" class="tip tip-warn">{{ aiError }}</p>
-        </div>
-        <div class="tpl-ft">
-          <button type="button" class="btn btn-sm" @click="closeAiSql">取消</button>
-          <button type="button" class="btn btn-sm" :disabled="aiGenerating" @click="runAiSqlGen">
-            {{ aiGenerating ? '生成中…' : '生成预览' }}
-          </button>
-          <button
-            type="button"
-            class="btn btn-sm btn-primary"
-            :disabled="aiGenerating || !aiPreview"
-            @click="applyAiSql"
-          >
-            写入当前 SQL 窗口
-          </button>
-        </div>
-      </div>
-    </div>
   </Teleport>
 </template>
 
@@ -2803,7 +3125,8 @@ async function applyTpl() {
 .wb-mask {
   position: fixed;
   inset: 0;
-  z-index: 1200;
+  /* 高于全局 AI FAB(1200)，避免同层叠遮挡工作台点击 */
+  z-index: 1250;
   background: rgba(15, 23, 42, 0.45);
   display: flex;
   padding: 12px;
@@ -2811,6 +3134,7 @@ async function applyTpl() {
 .wb {
   flex: 1;
   min-height: 0;
+  position: relative;
   background: var(--bg, #fff);
   border-radius: 10px;
   display: flex;
@@ -3061,8 +3385,139 @@ async function applyTpl() {
 .ai-prompt {
   width: 100%;
   resize: vertical;
-  min-height: 72px;
+  min-height: 56px;
   font-family: inherit;
+}
+.ai-drawer {
+  position: absolute;
+  top: 56px;
+  right: 12px;
+  bottom: 12px;
+  width: min(400px, 92%);
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg, #fff);
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 10px;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.16);
+  overflow: hidden;
+}
+.ai-drawer-hd {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border, #e5e7eb);
+}
+.ai-drawer-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+.ai-drawer-sub {
+  font-size: 11px;
+  color: var(--text-3, #94a3b8);
+  margin-top: 2px;
+  line-height: 1.4;
+}
+.ai-drawer-hd-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  justify-content: flex-end;
+}
+.ai-model-select {
+  max-width: 160px;
+  font-size: 12px;
+}
+.ai-drawer-meta {
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border, #e5e7eb);
+  font-size: 12px;
+}
+.ai-drawer-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: color-mix(in srgb, var(--bg-2, #f8fafc) 80%, transparent);
+}
+.ai-bubble {
+  max-width: 95%;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.45;
+  word-break: break-word;
+}
+.ai-bubble.is-user {
+  align-self: flex-end;
+  background: color-mix(in srgb, var(--primary, #2563eb) 14%, transparent);
+}
+.ai-bubble.is-bot {
+  align-self: flex-start;
+  background: var(--bg, #fff);
+  border: 1px solid var(--border, #e5e7eb);
+}
+.ai-bubble-html :deep(pre),
+.ai-bubble-html :deep(code) {
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+.ai-bubble-acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.ai-pending {
+  border-top: 1px solid var(--border, #e5e7eb);
+  padding: 8px 12px;
+  background: color-mix(in srgb, var(--primary, #2563eb) 6%, transparent);
+}
+.ai-pending-hd {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+.ai-pending-pre {
+  margin: 0;
+  max-height: 140px;
+  overflow: auto;
+  font-size: 11px;
+  white-space: pre-wrap;
+  background: var(--bg, #fff);
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 6px;
+  padding: 8px;
+}
+.ai-drawer-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 6px 12px 0;
+}
+.ai-drawer-input {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  padding: 8px 12px 12px;
+  border-top: 1px solid var(--border, #e5e7eb);
+}
+.ai-drawer-input .ai-prompt {
+  flex: 1;
+  min-height: 48px;
+}
+.ai-err {
+  color: #cf1322;
 }
 .tip-warn {
   color: var(--warn, #b45309);

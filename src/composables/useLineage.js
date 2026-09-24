@@ -122,18 +122,21 @@ export function useLineage() {
   async function loadFields(filters = {}) {
     const page = await fetchLineageFields(filters, { current: 1, size: 500 })
     fieldEdges.value = (page?.records || []).map(normalizeEdge).filter(Boolean)
+    graphPayload.value = null
+    impactPayload.value = null
     lastParsedAt.value = new Date().toLocaleString()
     return fieldEdges.value
   }
 
-  async function loadGraphImpact(focusId, upDepth, downDepth) {
+  async function loadGraphImpact(focusId, upDepth, downDepth, ws) {
     loading.value = true
     lastError.value = null
     const focus = focusApiKey(focusId)
     try {
+      const q = { focus, upDepth, downDepth, ws }
       const [g, imp] = await Promise.all([
-        fetchLineageGraph({ focus, upDepth, downDepth }),
-        fetchLineageImpact({ focus, upDepth, downDepth }),
+        fetchLineageGraph(q),
+        fetchLineageImpact(q),
       ])
       const edges = (g?.edges || []).map((e) =>
         Array.isArray(e) ? e : { from: e.from, to: e.to, transform: e.transform },
@@ -189,7 +192,7 @@ export function useLineage() {
         /* ignore */
       }
     }
-    await loadFields({})
+    await loadFields({ ws })
     syncInfo.value = {
       at: new Date().toLocaleString(),
       result,

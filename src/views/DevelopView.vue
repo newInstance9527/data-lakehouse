@@ -3,7 +3,8 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
 import { useToast } from '@/composables/useToast'
-import { useSession } from '@/composables/useSession'
+import { useWsListScope } from '@/composables/useWsListScope'
+import { useActionLock } from '@/composables/useActionLock'
 import { pageGuideOf } from '@/data/pageGuides'
 import DevelopSqlEditor from '@/components/develop/DevelopSqlEditor.vue'
 import { resolveEngineDialect } from '@/utils/engineSqlDialect'
@@ -12,6 +13,7 @@ import {
   commitScript,
   createRelease,
   createScript,
+  fetchReleasePrecheck,
   fetchScriptContent,
   fetchScriptKpis,
   fetchScriptRuns,
@@ -25,16 +27,20 @@ import { DEV_ENGINES, DEV_ENVS, lintTagClass, statusTagClass } from '@/data/deve
 const route = useRoute()
 const router = useRouter()
 const { showToast } = useToast()
-const { currentWs } = useSession()
+const { currentWs, showAll, listWsParams, watchListScope } = useWsListScope()
+const { busy, run: runLocked } = useActionLock()
 const guide = pageGuideOf('develop')
 
+const trialing = computed(() => busy('trial'))
+const saving = computed(() => busy('save'))
+const submitting = computed(() => busy('submit'))
+const creating = computed(() => busy('create'))
 const tree = ref([])
 const kpis = ref([])
 const udfs = ref([])
 const runs = ref([])
 const trialResult = ref(null)
 const resultTab = ref('table')
-const trialing = ref(false)
 const wsLabel = ref('default')
 const loadError = ref('')
 const activeId = ref('')
@@ -86,16 +92,20 @@ async function loadUdfs() {
 }
 
 async function loadBoard() {
-  const ws = currentWs.value || 'default'
-  wsLabel.value = ws
+  const params = listWsParams()
+  const wsForLabel = params.ws || '全部'
+  wsLabel.value = wsForLabel
   try {
-    const [treeResp, kpiResp] = await Promise.all([fetchScriptTree(ws), fetchScriptKpis(ws)])
+    const [treeResp, kpiResp] = await Promise.all([
+      fetchScriptTree(params.ws),
+      fetchScriptKpis(params.ws),
+    ])
     tree.value = (treeResp?.nodes || []).map((n) => ({
       ...n,
       open: n.type === 'folder' ? n.open !== false : undefined,
     }))
     kpis.value = kpiResp || []
-    wsLabel.value = treeResp?.ws || ws
+    wsLabel.value = treeResp?.ws || wsForLabel
     loadError.value = ''
     if (!files.value.some((f) => f.id === activeId.value)) {
       activeId.value = files.value[0]?.id || ''
@@ -141,48 +151,115 @@ function onFormat() {
 
 async function onSave() {
   const f = activeFile.value
-  if (!f) return
-  try {
-    const saved = await commitScript({
-      id: f.id,
-      ws: currentWs.value,
-      sql: sqlText.value,
-      engine: engine.value,
-      env: env.value,
-    })
-    applyLoaded(saved)
-    if (saved.remoteWarning) showToast(saved.remoteWarning, 'warning')
-    showToast(`已提交 Git ${saved.version || ''} ${f.name}`, 'success')
-    kpis.value = (await fetchScriptKpis(currentWs.value)) || kpis.value
-    return true
-  } catch (e) {
-    showToast(e?.message || '保存失败', 'warning')
-    return false
-  }
+  if (!f) return false
+  const ok = await runLocked('save', async () => {
+    try {
+      const saved = await commitScript({
+        id: f.id,
+        ws: currentWs.value,
+        sql: sqlText.value,
+        engine: engine.value,
+        env: env.value,
+      })
+      applyLoaded(saved)
+      if (saved.remoteWarning) showToast(saved.remoteWarning, 'warning')
+      showToast(`已提交 Git ${saved.version || ''} ${f.name}`, 'success')
+      kpis.value = (await fetchScriptKpis(currentWs.value)) || kpis.value
+      return true
+    } catch (e) {
+      showToast(e?.message || '保存失败', 'warning')
+      return false
+    }
+  })
+  return ok === true
 }
 
 async function onTrialRun() {
   const f = activeFile.value
-  if (!f || trialing.value) return
-  trialing.value = true
-  try {
-    const run = await runScript({
-      id: f.id,
-      ws: currentWs.value,
-      sql: sqlText.value,
-      engine: engine.value,
-      env: env.value,
-    })
-    dirty.value = false
-    applyLoaded(await fetchScriptContent(f.id))
-    await loadRuns(f.id)
-    showRunResult(run)
-    showToast(run.message || `试跑 ${run.runId}`, run.status === 'failed' ? 'warning' : 'info')
-  } catch (e) {
-    showToast(e?.message || '试跑失败', 'warning')
-  } finally {
-    trialing.value = false
-  }
+  if (!f) return
+  await runLocked('trial', async () => {
+    try {
+      const run = await runScript({
+        id: f.id,
+        ws: currentWs.value,
+        sql: sqlText.value,
+        engine: engine.value,
+        env: env.value,
+      })
+      dirty.value = false
+      applyLoaded(await fetchScriptContent(f.id))
+      await loadRuns(f.id)
+      showRunResult(run)
+      showToast(run.message || `试跑 ${run.runId}`, run.status === 'failed' ? 'warning' : 'info')
+    } catch (e) {
+      showToast(e?.message || '试跑失败', 'warning')
+    }
+  })
+}
+
+async function onSubmitPublish() {
+  const f = activeFile.value
+  if (!f) return
+  await runLocked('submit', async () => {
+    try {
+      if (dirty.value) {
+        const ok = await onSave()
+        if (!ok) return
+      }
+      const pre = await fetchReleasePrecheck({
+        scriptId: f.id,
+        engine: engine.value,
+        env: env.value,
+      })
+      if (!pre?.ok) {
+        const hint = pre?.hint || '门禁未通过，请先处理失败项后再提交上版'
+        showToast(hint, 'warning')
+        const trialBlocked = (pre?.blocked || []).some((g) => String(g?.name || '').includes('试跑'))
+        if (trialBlocked) {
+          resultTab.value = 'log'
+        }
+        return
+      }
+      const rel = await createRelease({
+        scriptId: f.id,
+        ws: currentWs.value,
+        engine: engine.value,
+        env: env.value,
+      })
+      showToast(
+        rel.reused
+          ? rel.hint || `已复用进行中的发布单 ${rel.pkg}`
+          : `已生成发布单 ${rel.pkg} · ${rel.result || '门禁中'}`,
+        rel.reused ? 'info' : 'success',
+      )
+      router.push({ path: '/publish', query: { id: rel.id } })
+    } catch (e) {
+      showToast(e?.message || '提交上版失败', 'warning')
+    }
+  })
+}
+
+async function onNewScript() {
+  const folderNode = tree.value.find((n) => n.type === 'folder' && n.open) || tree.value.find((n) => n.type === 'folder')
+  const name = `untitled_${new Date().toISOString().slice(11, 19).replace(/:/g, '')}.sql`
+  await runLocked('create', async () => {
+    try {
+      const created = await createScript({
+        ws: currentWs.value,
+        folder: folderNode?.name || 'default',
+        name,
+        engine: engine.value,
+        env: 'TEST',
+        sql: `-- ${name}\nSELECT 1;\n`,
+      })
+      await loadBoard()
+      activeId.value = created.id
+      applyLoaded(created)
+      showToast(`已新建脚本 ${created.name}`, 'success')
+    } catch (e) {
+      showToast(e?.message || '新建失败', 'warning')
+    }
+  })
 }
 
 function showRunResult(run) {
@@ -212,27 +289,6 @@ function cellText(row, key) {
   return String(value)
 }
 
-async function onSubmitPublish() {
-  const f = activeFile.value
-  if (!f) return
-  try {
-    if (dirty.value) {
-      const ok = await onSave()
-      if (!ok) return
-    }
-    const rel = await createRelease({
-      scriptId: f.id,
-      ws: currentWs.value,
-      engine: engine.value,
-      env: env.value,
-    })
-    showToast(`已生成发布单 ${rel.pkg} · ${rel.result}`, rel.status === 'REJECTED' ? 'warning' : 'success')
-    router.push({ path: '/publish', query: { id: rel.id } })
-  } catch (e) {
-    showToast(e?.message || '提交上版失败', 'warning')
-  }
-}
-
 function onOpenQueryValidate() {
   const sql = String(sqlText.value || '').trim()
   if (!sql) {
@@ -246,29 +302,6 @@ function onOpenQueryValidate() {
       name: activeFile.value?.name || '',
     },
   })
-}
-
-async function onNewScript() {
-  const folderNode = tree.value.find((n) => n.type === 'folder' && n.open) || tree.value.find((n) => n.type === 'folder')
-  const name = `untitled_${new Date().toISOString().slice(11, 19).replace(/:/g, '')}.sql`
-  try {
-    const created = await createScript({
-      ws: currentWs.value,
-      folder: folderNode?.name || 'default',
-      name,
-      engine: engine.value,
-      env: 'TEST',
-      sql: `-- ${name}\nSELECT 1;\n`,
-    })
-    await loadBoard()
-    activeId.value = created.id
-    applyLoaded(created)
-    showToast(`已新建脚本 ${created.name}`, 'success')
-    return created
-  } catch (e) {
-    showToast(e?.message || '新建失败', 'warning')
-    return null
-  }
 }
 
 function scriptFileName(raw) {
@@ -326,7 +359,7 @@ watch(engine, () => loadUdfs())
 watch(activeId, () => {
   trialResult.value = null
 })
-watch(currentWs, () => loadBoard())
+watchListScope(() => loadBoard())
 watch(
   () => `${route.query.importSql || ''}|${route.query.sql || ''}`,
   () => applyImportDeepLink(),
@@ -345,15 +378,23 @@ onMounted(async () => {
       :guide-title="guide.title"
       :guide="guide"
     >
-      <button class="btn btn-sm" @click="onSave">💾 自动保存</button>
+      <label class="ws-mine-chk" title="默认跟随顶栏当前空间；勾选后查看全部归属">
+        <input v-model="showAll" type="checkbox" />
+        查看全部
+      </label>
+      <button class="btn btn-sm" :disabled="saving || !activeFile" @click="onSave">
+        {{ saving ? '保存中…' : '💾 自动保存' }}
+      </button>
       <button class="btn btn-sm" :disabled="!sqlText.trim()" @click="onOpenQueryValidate">🔍 打开即席校验</button>
-      <button class="btn btn-sm" :disabled="trialing" @click="onTrialRun">
+      <button class="btn btn-sm" :disabled="trialing || !activeFile" @click="onTrialRun">
         {{ trialing ? '试跑中…' : `▶ 试跑(${engineLabel} · ${env})` }}
       </button>
-      <button class="btn btn-sm btn-primary" @click="onSubmitPublish">🚀 提交上版 →</button>
+      <button class="btn btn-sm btn-primary" :disabled="submitting || !activeFile" @click="onSubmitPublish">
+        {{ submitting ? '提交中…' : '🚀 提交上版 →' }}
+      </button>
     </PageHeader>
 
-    <div v-if="loadError" class="banner-soft">{{ loadError }}。需要 Flyway V26 并重启后端。</div>
+    <div v-if="loadError" class="banner-soft">{{ loadError }}</div>
 
     <div class="kpi-grid dev-kpi">
       <div v-for="(k, i) in kpis" :key="i" class="kpi-card">
@@ -396,7 +437,9 @@ onMounted(async () => {
           </button>
         </div>
         <div class="dev-tree-foot">
-          <button class="btn btn-sm" style="width: 100%" @click="onNewScript">＋ 新建 SQL 脚本</button>
+          <button class="btn btn-sm" style="width: 100%" :disabled="creating" @click="onNewScript">
+            {{ creating ? '创建中…' : '＋ 新建 SQL 脚本' }}
+          </button>
         </div>
       </aside>
 
@@ -432,7 +475,6 @@ onMounted(async () => {
               </select>
             </label>
             <button class="btn btn-sm" @click="onFormat">⚙️ 格式化</button>
-            <button class="btn btn-sm" @click="onSubmitPublish">🚀 提交上版</button>
           </div>
         </div>
 

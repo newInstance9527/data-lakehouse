@@ -7,8 +7,7 @@ import AppDrawer from '@/components/common/AppDrawer.vue'
 import ListPager from '@/components/common/ListPager.vue'
 import { useToast } from '@/composables/useToast'
 import { usePager } from '@/composables/usePager'
-import { useMetrics } from '@/composables/useMetrics'
-import { useWsListScope } from '@/composables/useWsListScope'
+import { useMetrics, sortMetricCatalog } from '@/composables/useMetrics'
 import { enrichMetricBindPayload, warmMetricBindAssets } from '@/data/metricBindAssets'
 import { METRIC_CREATE_FORM } from '@/data/createForms'
 import { pageGuideOf } from '@/data/pageGuides'
@@ -21,10 +20,19 @@ import {
   metricToFormPayload,
 } from '@/data/metrics'
 import { createApplyTicket, pageMyTickets } from '@/api/apply'
+import { useSession } from '@/composables/useSession'
+import { useActionLock } from '@/composables/useActionLock'
+import {
+  ensureWorkspaceUserOptions,
+  resolveWorkspaceUserId,
+  workspaceUserLabel,
+} from '@/data/workspaceUsers'
 
 const route = useRoute()
 const router = useRouter()
 const { showToast } = useToast()
+const { user, currentWs } = useSession()
+const { busy, run: runLocked } = useActionLock()
 const guide = pageGuideOf('metrics')
 
 const {
@@ -41,8 +49,6 @@ const {
   runMaterialize,
 } = useMetrics()
 
-const { currentWs, wsScope, listWs, setScope } = useWsListScope()
-
 const domainTab = ref('all')
 const typeTab = ref('all')
 const statusTab = ref('all')
@@ -51,20 +57,16 @@ const editOpen = ref(false)
 const detailOpen = ref(false)
 const editingId = ref('')
 const activeId = ref('')
-const saving = ref(false)
-const trialBusy = ref(false)
+const saving = computed(() => busy('save') || busy('publish') || busy('transition'))
+const trialBusy = computed(() => busy('trial'))
 const trialResult = ref(null)
 const trialDt = ref('')
 /** metricCode → 最近发布单 { ticketNo, status, remark } */
 const publishTickets = ref({})
 
 async function reloadMetrics() {
-  await loadAll({ ws: listWs.value })
+  await loadAll({ ws: currentWs.value || 'default' })
 }
-
-watch(listWs, () => {
-  reloadMetrics().catch((e) => showToast(e?.message || '加载指标目录失败', 'error'))
-})
 
 const TYPE_TABS = [
   { id: 'all', label: '全部类型' },
@@ -87,7 +89,7 @@ const filteredCatalog = computed(() => {
   if (domainTab.value !== 'all') rows = rows.filter((r) => r.domain === domainTab.value)
   if (typeTab.value !== 'all') rows = rows.filter((r) => r.type === typeTab.value)
   if (statusTab.value !== 'all') rows = rows.filter((r) => r.status === statusTab.value)
-  return rows
+  return sortMetricCatalog(rows)
 })
 
 const { page, pageSize, total, totalPages, paged, pageNums, goPage, resetPage } = usePager(filteredCatalog)
@@ -115,11 +117,30 @@ const editForm = computed(() => ({
   submitLabel: '保存修改',
 }))
 
-const editInitial = computed(() => (editing.value ? metricToFormPayload(editing.value) : null))
+/** 新建：默认负责人 = 当前登录用户 */
+const createInitial = computed(() => ({
+  owner: String(user.value?.id || ''),
+}))
+
+const editInitial = computed(() => {
+  if (!editing.value) return null
+  const payload = metricToFormPayload(editing.value)
+  payload.owner = resolveWorkspaceUserId(payload.owner, user.value?.id || '')
+  return payload
+})
+
+function metricOwnerDisplay(raw) {
+  return workspaceUserLabel(raw) || '—'
+}
 
 async function refreshPublishTickets() {
   try {
-    const page = await pageMyTickets({ current: 1, size: 100, ticketType: 'metric' })
+    const page = await pageMyTickets({
+      current: 1,
+      size: 100,
+      ticketType: 'metric',
+      ws: currentWs.value || 'default',
+    })
     const rows = page?.records || page?.rows || []
     const map = {}
     for (const t of rows) {
@@ -153,7 +174,12 @@ async function refreshPublishTickets() {
 
 onMounted(async () => {
   try {
-    await Promise.all([reloadMetrics(), warmMetricBindAssets().catch(() => {}), refreshPublishTickets()])
+    await Promise.all([
+      reloadMetrics(),
+      warmMetricBindAssets().catch(() => {}),
+      refreshPublishTickets(),
+      ensureWorkspaceUserOptions().catch(() => {}),
+    ])
     const q = typeof route.query.q === 'string' ? route.query.q.trim() : ''
     if (q) {
       const hit = catalog.value.find((r) => r.id === q || r.name?.includes(q))
@@ -164,29 +190,33 @@ onMounted(async () => {
   }
 })
 
-function newMetric() {
+watch(currentWs, () => {
+  Promise.all([reloadMetrics(), refreshPublishTickets()]).catch(() => {})
+})
+
+async function newMetric() {
+  await ensureWorkspaceUserOptions().catch(() => {})
   createOpen.value = true
   warmMetricBindAssets().catch(() => {})
 }
 
 async function onCreateMetric(payload) {
-  saving.value = true
-  try {
-    const row = await addMetric(
-      enrichMetricBindPayload({
-        ...payload,
-        ws: currentWs.value || 'default',
-      }),
-    )
-    resetPage()
-    showToast(`✅ 已保存草稿 ${row.id} ${row.name} · 可「申请发布」`, 'success')
-    createOpen.value = false
-    openDetail(row.id)
-  } catch (e) {
-    showToast(e?.message || '保存失败', 'warning')
-  } finally {
-    saving.value = false
-  }
+  await runLocked('save', async () => {
+    try {
+      const row = await addMetric(
+        enrichMetricBindPayload({
+          ...payload,
+          ws: currentWs.value || 'default',
+        }),
+      )
+      resetPage()
+      showToast(`✅ 已保存草稿 ${row.id} ${row.name} · 可「申请发布」`, 'success')
+      createOpen.value = false
+      openDetail(row.id)
+    } catch (e) {
+      showToast(e?.message || '保存失败', 'warning')
+    }
+  })
 }
 
 async function openDetail(id) {
@@ -208,26 +238,25 @@ function closeDetail() {
 async function doTrial() {
   const row = active.value
   if (!row) return
-  trialBusy.value = true
-  trialResult.value = null
-  try {
-    const params = {}
-    if (trialDt.value?.trim()) params.dt = trialDt.value.trim()
-    const res = await runTrial(row.id, { params, maxRows: 200 })
-    trialResult.value = res
-    if (res?.executed) {
-      showToast(`试跑完成 · ${res.rowCount ?? 0} 行 · ${res.durMs ?? 0}ms`, 'success')
-    } else if (res?.blocked || res?.status === 'blocked') {
-      showToast(res.message || res.statusLabel || '试跑被阻断', 'warning')
-    } else {
-      showToast(res?.message || '试跑未执行（检查 Trino）', 'warning')
+  await runLocked('trial', async () => {
+    trialResult.value = null
+    try {
+      const params = {}
+      if (trialDt.value?.trim()) params.dt = trialDt.value.trim()
+      const res = await runTrial(row.id, { params, maxRows: 200 })
+      trialResult.value = res
+      if (res?.executed) {
+        showToast(`试跑完成 · ${res.rowCount ?? 0} 行 · ${res.durMs ?? 0}ms`, 'success')
+      } else if (res?.blocked || res?.status === 'blocked') {
+        showToast(res.message || res.statusLabel || '试跑被阻断', 'warning')
+      } else {
+        showToast(res?.message || '试跑未执行（检查 Trino）', 'warning')
+      }
+    } catch (e) {
+      trialResult.value = { executed: false, message: e?.message || String(e), rows: [], columns: [] }
+      showToast(e?.message || '试跑失败', 'warning')
     }
-  } catch (e) {
-    trialResult.value = { executed: false, message: e?.message || String(e), rows: [], columns: [] }
-    showToast(e?.message || '试跑失败', 'warning')
-  } finally {
-    trialBusy.value = false
-  }
+  })
 }
 
 async function doMaterialize() {
@@ -248,11 +277,12 @@ async function doMaterialize() {
   }
 }
 
-function openEdit(row) {
+async function openEdit(row) {
   if (row.status !== 'draft' && row.status !== 'review') {
     showToast('仅草稿/待发布可直接编辑；已启用请使用「申请变更」', 'warning')
     return
   }
+  await ensureWorkspaceUserOptions().catch(() => {})
   editingId.value = row.id
   editOpen.value = true
   warmMetricBindAssets(row.table).catch(() => {})
@@ -261,16 +291,15 @@ function openEdit(row) {
 async function onEditMetric(payload) {
   const row = editing.value
   if (!row) return
-  saving.value = true
-  try {
-    await saveMetric(row.id, enrichMetricBindPayload(payload))
-    editOpen.value = false
-    showToast(`💾 已更新 ${row.id}`, 'success')
-  } catch (e) {
-    showToast(e?.message || '保存失败', 'warning')
-  } finally {
-    saving.value = false
-  }
+  await runLocked('save', async () => {
+    try {
+      await saveMetric(row.id, enrichMetricBindPayload(payload))
+      editOpen.value = false
+      showToast(`💾 已更新 ${row.id}`, 'success')
+    } catch (e) {
+      showToast(e?.message || '保存失败', 'warning')
+    }
+  })
 }
 
 function goApplyMetric(row, kind = 'query') {
@@ -307,43 +336,42 @@ function pendingRejectRemark(row) {
 /** 草稿 → 申请首次发布；已启用 → 申请口径变更发布 */
 async function submitPublishApply(row, kind = 'create') {
   if (!row?.id) return
-  saving.value = true
-  try {
-    let caliberDiff = ''
-    if (kind === 'change') {
-      const input = window.prompt('变更说明（新口径摘要）', row.caliber || '')
-      if (input === null) return
-      caliberDiff = input.trim() || row.caliber || ''
+  await runLocked('publish', async () => {
+    try {
+      let caliberDiff = ''
+      if (kind === 'change') {
+        const input = window.prompt('变更说明（新口径摘要）', row.caliber || '')
+        if (input === null) return
+        caliberDiff = input.trim() || row.caliber || ''
+      }
+      const t = await createApplyTicket({
+        ticketType: 'metric',
+        title:
+          kind === 'change'
+            ? `口径变更发布 · ${row.id} · ${row.name || ''}`
+            : `指标发布 · ${row.id} · ${row.name || ''}`,
+        reason:
+          kind === 'change'
+            ? caliberDiff || '口径变更发布审批'
+            : `申请发布指标 ${row.id} ${row.name || ''}`,
+        metricCode: row.id,
+        metricKind: kind,
+        caliberDiff: caliberDiff || undefined,
+        expireLabel: '长期',
+      })
+      const ticketNo = t?.ticketNo || t?.data?.ticketNo || ''
+      await Promise.all([reloadMetrics(), refreshPublishTickets()])
+      showToast(
+        ticketNo
+          ? `已申请发布 ${ticketNo}（待审核）。通过后将自动启用，驳回则按意见重改`
+          : '已提交发布申请，待审核通过后自动启用',
+        'success',
+      )
+      if (detailOpen.value) openDetail(row.id)
+    } catch (e) {
+      showToast(e?.message || '提交发布申请失败', 'warning')
     }
-    const t = await createApplyTicket({
-      ticketType: 'metric',
-      title:
-        kind === 'change'
-          ? `口径变更发布 · ${row.id} · ${row.name || ''}`
-          : `指标发布 · ${row.id} · ${row.name || ''}`,
-      reason:
-        kind === 'change'
-          ? caliberDiff || '口径变更发布审批'
-          : `申请发布指标 ${row.id} ${row.name || ''}`,
-      metricCode: row.id,
-      metricKind: kind,
-      caliberDiff: caliberDiff || undefined,
-      expireLabel: '长期',
-    })
-    const ticketNo = t?.ticketNo || t?.data?.ticketNo || ''
-    await Promise.all([reloadMetrics(), refreshPublishTickets()])
-    showToast(
-      ticketNo
-        ? `已申请发布 ${ticketNo}（待审核）。通过后将自动启用，驳回则按意见重改`
-        : '已提交发布申请，待审核通过后自动启用',
-      'success',
-    )
-    if (detailOpen.value) openDetail(row.id)
-  } catch (e) {
-    showToast(e?.message || '提交发布申请失败', 'warning')
-  } finally {
-    saving.value = false
-  }
+  })
 }
 
 async function runAction(row, action) {
@@ -374,19 +402,18 @@ async function runAction(row, action) {
   if (action === 'deprecate') {
     if (!window.confirm(`确认废弃 ${row.id}？废弃后禁止新引用。`)) return
   }
-  saving.value = true
-  try {
-    const next = await runTransition(row.id, action, '')
-    const tips = {
-      deprecate: `已废弃 ${row.id} · 禁止新引用`,
+  await runLocked('transition', async () => {
+    try {
+      const next = await runTransition(row.id, action, '')
+      const tips = {
+        deprecate: `已废弃 ${row.id} · 禁止新引用`,
+      }
+      showToast(tips[action] || `状态已更新 ${row.id}${next?.ver ? ' · ' + next.ver : ''}`, action === 'deprecate' ? 'warning' : 'success')
+      if (detailOpen.value) openDetail(row.id)
+    } catch (e) {
+      showToast(e?.message || '操作失败', 'warning')
     }
-    showToast(tips[action] || `状态已更新 ${row.id}${next?.ver ? ' · ' + next.ver : ''}`, action === 'deprecate' ? 'warning' : 'success')
-    if (detailOpen.value) openDetail(row.id)
-  } catch (e) {
-    showToast(e?.message || '操作失败', 'warning')
-  } finally {
-    saving.value = false
-  }
+  })
 }
 
 function actionLabel(a) {
@@ -465,6 +492,7 @@ async function refresh() {
     <CreateFormModal
       :open="createOpen"
       v-bind="METRIC_CREATE_FORM"
+      :initial-values="createInitial"
       @close="createOpen = false"
       @submit="onCreateMetric"
     />
@@ -478,20 +506,6 @@ async function refresh() {
     />
 
     <div class="met-domain-tabs">
-      <div class="ws-scope-tabs" role="group" aria-label="归属筛选">
-        <button
-          type="button"
-          class="ws-scope-tab"
-          :class="{ active: wsScope === 'team' }"
-          @click="setScope('team')"
-        >我的团队</button>
-        <button
-          type="button"
-          class="ws-scope-tab"
-          :class="{ active: wsScope === 'all' }"
-          @click="setScope('all')"
-        >查看全部</button>
-      </div>
       <button
         v-for="t in METRIC_DOMAIN_TABS"
         :key="t.id"
@@ -502,9 +516,6 @@ async function refresh() {
       >
         {{ t.label }}
       </button>
-      <span v-if="wsScope === 'team'" class="tip" style="align-self: center; margin-left: 4px">
-        当前 {{ currentWs || 'default' }}
-      </span>
     </div>
 
     <div class="kpi-grid met-kpi">
@@ -674,7 +685,7 @@ async function refresh() {
               <td class="met-caliber">{{ row.caliber }}</td>
               <td><code>{{ row.bind }}</code></td>
               <td class="met-latest" :style="volStyle(row.volCls)">{{ row.latest }}</td>
-              <td>{{ row.owner }}</td>
+              <td>{{ metricOwnerDisplay(row.owner) }}</td>
               <td><span class="tag tag-gray">{{ row.ver }}</span></td>
               <td class="met-acts" @click.stop>
                 <button
@@ -721,7 +732,7 @@ async function refresh() {
               <span class="tag" :class="active.statusCls">{{ active.statusLabel }}</span>
               <span class="tag" :class="active.typeCls">{{ active.type }}</span>
             </div>
-            <div class="met-drawer-sub">{{ active.name }} · {{ active.ver }} · Owner {{ active.owner }}</div>
+            <div class="met-drawer-sub">{{ active.name }} · {{ active.ver }} · Owner {{ metricOwnerDisplay(active.owner) }}</div>
           </div>
           <button type="button" class="btn btn-sm" @click="closeDetail">关闭</button>
         </div>

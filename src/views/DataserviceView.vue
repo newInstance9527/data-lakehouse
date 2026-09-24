@@ -11,6 +11,8 @@ import ProjectSyncListModal from '@/components/dataservice/ProjectSyncListModal.
 import { useToast } from '@/composables/useToast'
 import { usePager } from '@/composables/usePager'
 import { useDataservice } from '@/composables/useDataservice'
+import { useActionLock } from '@/composables/useActionLock'
+import { useSession } from '@/composables/useSession'
 import { pageGuideOf } from '@/data/pageGuides'
 import { apisixStatusMeta, routeOfApi } from '@/data/dataservice'
 import {
@@ -21,6 +23,7 @@ import {
 
 const router = useRouter()
 const { showToast } = useToast()
+const { busy, run: runLocked } = useActionLock()
 const guide = pageGuideOf('dataservice')
 const {
   apis,
@@ -44,7 +47,13 @@ const {
   exportOpenapi,
 } = useDataservice()
 
-onMounted(() => ensureLoaded())
+const { currentWs } = useSession()
+
+onMounted(() => ensureLoaded(true))
+
+watch(currentWs, () => {
+  ensureLoaded(true).catch(() => {})
+})
 
 const apiSearch = ref('')
 const createOpen = ref(false)
@@ -52,7 +61,7 @@ const editBindingId = ref('')
 const registerOpen = ref(false)
 const pendingListOpen = ref(false)
 const failedListOpen = ref(false)
-const projecting = ref(false)
+const projecting = computed(() => busy('project'))
 
 const detailOpen = ref(false)
 const detail = ref(null)
@@ -100,7 +109,7 @@ const detailSubs = computed(() => {
 const detailRoute = computed(() => {
   if (!detail.value) return null
   return (
-    routes.value.find((r) => r.path === detail.value.path) || routeOfApi(detail.value.path)
+    routes.value.find((r) => r.path === detail.value.path) || routeOfApi(detail.value.path, routes.value)
   )
 })
 const detailCallStat = computed(() => {
@@ -224,15 +233,17 @@ function fromPendingToDetail(row) {
 }
 
 async function syncFromSqlrest() {
-  try {
-    const r = await runSyncFromSqlrest()
-    showToast(
-      `已从 SQLREST 同步 · 写入 ${r?.upserted ?? 0} · 跳过 ${r?.skipped ?? 0}`,
-      'success',
-    )
-  } catch (e) {
-    showToast(`同步失败：${e?.message || e}`, 'warning')
-  }
+  await runLocked('sync', async () => {
+    try {
+      const r = await runSyncFromSqlrest()
+      showToast(
+        `已从 SQLREST 同步 · 写入 ${r?.upserted ?? 0} · 跳过 ${r?.skipped ?? 0}`,
+        'success',
+      )
+    } catch (e) {
+      showToast(`同步失败：${e?.message || e}`, 'warning')
+    }
+  })
 }
 
 async function projectByIds(ids, { successPrefix, emptyMsg } = {}) {
@@ -241,20 +252,19 @@ async function projectByIds(ids, { successPrefix, emptyMsg } = {}) {
     showToast(emptyMsg || '没有可处理的数据源', 'info')
     return
   }
-  projecting.value = true
-  try {
-    const r = await runProjectDs(list)
-    const fail = r?.errors ?? r?.failed ?? 0
-    const prefix = successPrefix || '投影完成'
-    showToast(
-      `${prefix} · 成功 ${r?.projected ?? 0} · 失败 ${fail}`,
-      fail > 0 || r?.ok === false ? 'warning' : 'success',
-    )
-  } catch (e) {
-    showToast(`投影失败：${e?.message || e}`, 'warning')
-  } finally {
-    projecting.value = false
-  }
+  await runLocked('project', async () => {
+    try {
+      const r = await runProjectDs(list)
+      const fail = r?.errors ?? r?.failed ?? 0
+      const prefix = successPrefix || '投影完成'
+      showToast(
+        `${prefix} · 成功 ${r?.projected ?? 0} · 失败 ${fail}`,
+        fail > 0 || r?.ok === false ? 'warning' : 'success',
+      )
+    } catch (e) {
+      showToast(`投影失败：${e?.message || e}`, 'warning')
+    }
+  })
 }
 
 function projectAllPending() {
@@ -345,7 +355,7 @@ async function downloadOpenapi(id) {
       :guide="guide"
     >
       <button type="button" class="btn btn-sm btn-primary" @click="buildApi">构建 API</button>
-      <button type="button" class="btn btn-sm" @click="syncFromSqlrest">同步接口目录</button>
+      <button type="button" class="btn btn-sm" :disabled="busy('sync')" @click="syncFromSqlrest">{{ busy('sync') ? '同步中…' : '同步接口目录' }}</button>
       <button type="button" class="btn btn-sm" @click="registerOpen = true">登记绑定</button>
       <button type="button" class="btn btn-sm" @click="downloadOpenapi()">导出 OpenAPI</button>
       <button type="button" class="btn btn-sm" @click="goApply()">申请调用凭证</button>
@@ -451,7 +461,7 @@ async function downloadOpenapi(id) {
         <div class="kpi-delta" :class="k.deltaCls">{{ k.delta }}</div>
       </div>
     </div>
-    <p v-if="degraded" class="tip" style="margin: -8px 0 12px">后端暂不可达，列表为本地演示数据</p>
+    <p v-if="degraded" class="tip" style="margin: -8px 0 12px">后端暂不可达，列表为空</p>
 
     <div class="card ds-pending-card">
       <div class="card-header">

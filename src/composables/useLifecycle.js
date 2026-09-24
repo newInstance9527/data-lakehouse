@@ -1,5 +1,6 @@
 /**
  * 生命周期主台 + 存储趋势（对接 /lh/lifecycle）
+ * API 失败：空/null + lastError；空策略保持空态（不自动写示例）。
  */
 import { computed, ref } from 'vue'
 import {
@@ -15,26 +16,7 @@ import {
   triggerLcExpire,
   upsertLcPolicy,
 } from '@/api/lifecycle'
-import {
-  LC_COMPACTION,
-  LC_JOBS,
-  LC_KPIS,
-  LC_ORPHAN,
-  LC_SNAPSHOT_POLICIES,
-  LC_STAGES,
-  LC_STORAGE,
-  lcJobStatusMeta,
-} from '@/data/lifecycle'
-import { LC_COMPLIANCE_PREVIEW } from '@/data/compliance'
-import {
-  ST_ADVICE,
-  ST_ANOMALIES,
-  ST_CAPACITY,
-  ST_DAILY,
-  ST_KPIS,
-  ST_LAYERS,
-  ST_TOP_GROWTH,
-} from '@/data/storageTrend'
+import { LC_STAGES, lcJobStatusMeta } from '@/data/lifecycle'
 
 const loading = ref(false)
 const loaded = ref(false)
@@ -45,7 +27,7 @@ const overview = ref(null)
 const jobsLatest = ref(null)
 const policies = ref([])
 const topStorage = ref([])
-const orphanRows = ref([...LC_ORPHAN])
+const orphanRows = ref([])
 const lastOrphanScan = ref(null)
 const storageTrend = ref(null)
 
@@ -95,46 +77,57 @@ function levelCls(level) {
   return 'tag-blue'
 }
 
-function applySeedBoard() {
-  overview.value = null
-  jobsLatest.value = {
-    steps: LC_JOBS.map((j) => ({
-      step: j.step,
-      name: j.name,
-      desc: j.desc,
-      detail: j.detail,
-      durationSec: null,
-      duration: j.duration,
-      status: j.status,
-    })),
-    status: 'success',
-  }
-  policies.value = LC_SNAPSHOT_POLICIES.map((p) => ({
-    tableFqn: p.table,
-    keepCount: p.keepCount,
-    keepDays: p.keepDays,
-    minSnapshots: p.minSnapshots,
-    daysTag: p.daysTag,
-    compactLevel: 'L2',
+const EMPTY_LC_KPIS = [
+  { icon: '💾', color: 'blue', value: '—', unit: 'TB', label: '总存储', trend: '—' },
+  { icon: '🧹', color: 'green', value: '—', unit: 'GB', label: '本月清理', trend: '—' },
+  { icon: '📦', color: 'purple', value: '—', unit: '次', label: '本月合并成功', trend: '—' },
+  { icon: '🗄️', color: 'orange', value: '—', unit: '分区', label: '归档候选', trend: '—' },
+  { icon: '⚠️', color: 'red', value: '—', unit: '项', label: '合规删除待审', trend: '—' },
+]
+
+const EMPTY_ST_KPIS = [
+  { icon: '💾', color: 'blue', value: '—', unit: '', label: '物理口径', trend: '—' },
+  { icon: '🔥', color: 'orange', value: '—', unit: '', label: 'ODS 层', trend: '—' },
+  { icon: '💧', color: 'green', value: '—', unit: '', label: 'DWD 层', trend: '—' },
+  { icon: '📦', color: 'purple', value: '—', unit: '', label: 'DWS 层', trend: '—' },
+  { icon: '📊', color: 'red', value: '—', unit: '', label: 'ADS 层', trend: '—' },
+]
+
+async function applyBoard(ws) {
+  const [ov, jobs, tablesPage, pols, trend] = await Promise.all([
+    fetchLcOverview(ws),
+    fetchLcJobsLatest(ws),
+    fetchLcStorageTables({
+      ws,
+      range: '30d',
+      sort: 'totalBytes',
+      order: 'desc',
+      page: 1,
+      size: 20,
+    }),
+    fetchLcPolicies(ws),
+    fetchLcStorageTrend(ws, '30d').catch(() => null),
+  ])
+  overview.value = ov
+  jobsLatest.value = jobs
+  const list = Array.isArray(tablesPage)
+    ? tablesPage
+    : tablesPage?.list || tablesPage?.records || []
+  topStorage.value = list.map((r) => ({
+    ...r,
+    tableFqn: r.fqtn || r.tableFqn,
+    sizeLabel: humanSizeSimple(r.totalBytes ?? r.activeBytes ?? r.sizeBytes),
+    growth7dPct: r.growthPct ?? r.growth7dPct,
   }))
-  topStorage.value = LC_STORAGE.map((r) => ({
-    tableFqn: r.table,
-    layer: r.layer,
-    sizeBytes: 0,
-    sizeLabel: r.size,
-    fileCount: r.files,
-    policyLabel: r.policy,
-    status: r.status,
-    growth7dPct: null,
-  }))
-  orphanRows.value = [...LC_ORPHAN]
-  storageTrend.value = null
+  policies.value = pols || []
+  storageTrend.value = trend
+  return { overview: ov, jobs, top: list, policies: pols, trend }
 }
 
 export function useLifecycle() {
   const liveKpis = computed(() => {
     const ov = overview.value
-    if (!ov) return LC_KPIS
+    if (!ov) return EMPTY_LC_KPIS
     const hot = ov.hotWarmCold || {}
     const reclaim = ov.reclaimableBytes != null ? humanSizeSimple(ov.reclaimableBytes) : null
     const active = ov.activeBytes != null ? humanSizeSimple(ov.activeBytes) : null
@@ -189,16 +182,7 @@ export function useLifecycle() {
 
   const jobSteps = computed(() => {
     const steps = jobsLatest.value?.steps
-    if (!steps?.length) {
-      return LC_JOBS.map((j) => ({
-        step: j.step,
-        name: j.name,
-        desc: j.desc,
-        detail: j.detail,
-        duration: j.duration,
-        status: j.status,
-      }))
-    }
+    if (!steps?.length) return []
     return steps.map((s) => ({
       step: s.step,
       name: s.name,
@@ -211,9 +195,8 @@ export function useLifecycle() {
     }))
   })
 
-  // 各表存储列：读 /lh/lifecycle/storage/tables（物理 + 窗口增速）
   const storageRows = computed(() => {
-    if (!topStorage.value.length) return LC_STORAGE
+    if (!topStorage.value.length) return []
     return topStorage.value.map((r) => ({
       table: r.fqtn || r.tableFqn,
       layer: r.layer || '—',
@@ -226,7 +209,7 @@ export function useLifecycle() {
   })
 
   const snapshotPolicies = computed(() => {
-    if (!policies.value.length) return LC_SNAPSHOT_POLICIES
+    if (!policies.value.length) return []
     return policies.value.map((p) => ({
       table: p.tableFqn,
       keepCount: p.keepCount,
@@ -239,11 +222,11 @@ export function useLifecycle() {
   })
 
   const compactionRows = computed(() => {
-    if (!policies.value.length && !topStorage.value.length) return LC_COMPACTION
+    if (!policies.value.length && !topStorage.value.length) return []
     const byTable = new Map(topStorage.value.map((s) => [s.tableFqn, s]))
     const rows = policies.value.length
       ? policies.value
-      : LC_COMPACTION.map((c) => ({ tableFqn: c.table, compactLevel: c.level }))
+      : topStorage.value.map((s) => ({ tableFqn: s.tableFqn, compactLevel: 'L2' }))
     return rows.map((p) => {
       const st = byTable.get(p.tableFqn) || byTable.get(String(p.tableFqn).split('.').pop())
       const level = p.compactLevel || 'L2'
@@ -264,12 +247,11 @@ export function useLifecycle() {
   })
 
   const stages = computed(() => LC_STAGES)
-  const compliancePreview = computed(() => LC_COMPLIANCE_PREVIEW)
+  const compliancePreview = computed(() => [])
 
   const trendKpis = computed(() => {
     const tr = storageTrend.value
-    if (!tr) return ST_KPIS
-    // 新契约：series(layer) + daily(totalBytes/activeBytes)；兼容旧 layers
+    if (!tr) return EMPTY_ST_KPIS
     const series = tr.series?.length ? tr.series : tr.layers || []
     const find = (name) =>
       series.find((l) => String(l.layer || l.key || '').toUpperCase() === name)
@@ -331,7 +313,7 @@ export function useLifecycle() {
     const series = storageTrend.value?.series?.length
       ? storageTrend.value.series
       : storageTrend.value?.layers
-    if (!series?.length) return ST_LAYERS
+    if (!series?.length) return []
     return series.map((l) => ({
       layer: l.layer || l.key,
       size: humanSizeSimple(l.activeBytes ?? l.sizeBytes ?? l.totalBytes),
@@ -344,7 +326,7 @@ export function useLifecycle() {
 
   const trendDaily = computed(() => {
     const daily = storageTrend.value?.daily
-    if (!daily?.length) return ST_DAILY
+    if (!daily?.length) return []
     return daily.map((d) => {
       if (d.day || d.date) {
         return {
@@ -366,9 +348,8 @@ export function useLifecycle() {
   })
 
   const trendAnomalies = computed(() => {
-    // 新契约 anomalies 已迁到 /storage/tables?filter=anomaly；兼容旧字段
     const list = storageTrend.value?.anomalies
-    if (!list?.length) return ST_ANOMALIES
+    if (!list?.length) return []
     return list.map((a) => {
       const advice =
         a.advice === 'expire' || a.suggestedAction === 'expire'
@@ -397,7 +378,7 @@ export function useLifecycle() {
 
   const trendAdvice = computed(() => {
     const anomalies = trendAnomalies.value.filter((a) => a.status === 'warn').slice(0, 3)
-    if (!anomalies.length) return ST_ADVICE
+    if (!anomalies.length) return []
     return anomalies.map((a, i) => ({
       pri: i === 0 ? 'P1' : 'P2',
       priCls: i === 0 ? 'tag-red' : 'tag-orange',
@@ -411,7 +392,7 @@ export function useLifecycle() {
 
   const trendTopGrowth = computed(() => {
     const list = storageTrend.value?.anomalies
-    if (!list?.length) return ST_TOP_GROWTH
+    if (!list?.length) return []
     return list.slice(0, 3).map((a) => ({
       table: a.fqtn || a.tableFqn,
       growth: growthLabel(a.growthPct ?? a.growth7dPct),
@@ -438,40 +419,18 @@ export function useLifecycle() {
     loading.value = true
     lastError.value = null
     try {
-      const [ov, jobs, tablesPage, pols, trend] = await Promise.all([
-        fetchLcOverview(ws),
-        fetchLcJobsLatest(ws),
-        fetchLcStorageTables({
-          ws,
-          range: '30d',
-          sort: 'totalBytes',
-          order: 'desc',
-          page: 1,
-          size: 20,
-        }),
-        fetchLcPolicies(ws),
-        fetchLcStorageTrend(ws, '30d').catch(() => null),
-      ])
-      overview.value = ov
-      jobsLatest.value = jobs
-      const list = Array.isArray(tablesPage)
-        ? tablesPage
-        : tablesPage?.list || tablesPage?.records || []
-      topStorage.value = list.map((r) => ({
-        ...r,
-        tableFqn: r.fqtn || r.tableFqn,
-        // 主台「存储」列用物理口径，与 KPI 总存储同源
-        sizeLabel: humanSizeSimple(r.totalBytes ?? r.activeBytes ?? r.sizeBytes),
-        growth7dPct: r.growthPct ?? r.growth7dPct,
-      }))
-      policies.value = pols || []
-      storageTrend.value = trend
+      const result = await applyBoard(ws)
       loaded.value = true
-      return { overview: ov, jobs, top: list, policies: pols, trend }
+      return result
     } catch (e) {
       lastError.value = e
       console.error('[lifecycle] load failed', e)
-      applySeedBoard()
+      overview.value = null
+      jobsLatest.value = null
+      policies.value = []
+      topStorage.value = []
+      orphanRows.value = []
+      storageTrend.value = null
       loaded.value = true
       throw e
     } finally {
@@ -574,7 +533,7 @@ export function useLifecycle() {
     trendAnomalies,
     trendAdvice,
     trendTopGrowth,
-    capacity: ST_CAPACITY,
+    capacity: [],
     ensureLoaded,
     loadBoard,
     loadTrend,

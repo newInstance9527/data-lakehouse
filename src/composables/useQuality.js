@@ -11,6 +11,7 @@ import {
   fetchQualityTypeDist,
   upsertQualityRule,
 } from '@/api/quality'
+import { useSession } from '@/composables/useSession'
 
 const overview = ref(null)
 const trend = ref([])
@@ -160,16 +161,19 @@ export function useQuality() {
   const ruleList = computed(() => rules.value)
   const ruleTotal = computed(() => rules.value.length)
 
-  async function loadAll(range = '30') {
+  async function loadAll(range = '30', ws) {
     loading.value = true
     lastError.value = null
     try {
+      const { currentWs } = useSession()
+      const workspace = ws || currentWs.value || 'default'
+      const q = { ws: workspace, range }
       const [ov, tr, td, g, page] = await Promise.all([
-        fetchQualityOverview({ range }),
-        fetchQualityTrend({ range }),
-        fetchQualityTypeDist(),
-        fetchQualityGold({ limit: 5 }),
-        fetchQualityRules({}, { current: 1, size: 200 }),
+        fetchQualityOverview(q),
+        fetchQualityTrend(q),
+        fetchQualityTypeDist({ ws: workspace }),
+        fetchQualityGold({ ws: workspace, limit: 5 }),
+        fetchQualityRules({ ws: workspace }, { current: 1, size: 200 }),
       ])
       overview.value = ov
       trend.value = tr || []
@@ -202,6 +206,7 @@ export function useQuality() {
   }
 
   async function createRule(form) {
+    const { currentWs } = useSession()
     const name = String(form.name || '')
       .replace(/\s+/g, '_')
       .toUpperCase()
@@ -215,14 +220,16 @@ export function useQuality() {
       fieldName: field,
       exprText: form.expr || `${form.rtype} · 待配置`,
       severity: form.sev,
+      ws: form.ws || currentWs.value || 'default',
     })
     const row = normalizeRule(saved)
     const idx = rules.value.findIndex((r) => r.id === row.id)
     if (idx >= 0) rules.value[idx] = row
     else rules.value.unshift(row)
     try {
-      overview.value = await fetchQualityOverview({})
-      typeDist.value = await fetchQualityTypeDist()
+      const workspace = form.ws || currentWs.value || 'default'
+      overview.value = await fetchQualityOverview({ ws: workspace })
+      typeDist.value = await fetchQualityTypeDist({ ws: workspace })
     } catch {
       /* ignore */
     }

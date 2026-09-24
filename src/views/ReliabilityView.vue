@@ -5,18 +5,6 @@ import PageHeader from '@/components/common/PageHeader.vue'
 import { useToast } from '@/composables/useToast'
 import { pageGuideOf } from '@/data/pageGuides'
 import { fetchMetricBoard, fetchReconPartition, runReconPartition } from '@/api/metric'
-import {
-  COMPACTION_TABLES,
-  HA_COMPONENTS,
-  REL_BACKUP_LOG,
-  REL_BACKUP_ROWS,
-  REL_DELIST_FLOW,
-  REL_KPIS,
-  REL_RECONCILE_HISTORY,
-  REL_RECONCILE_RULES,
-  compactionSlaMeta,
-  haStatusMeta,
-} from '@/data/reliability'
 
 const router = useRouter()
 const { showToast } = useToast()
@@ -28,9 +16,64 @@ const boardCards = ref([])
 const boardReady = ref(0)
 const boardBlocked = ref(0)
 const reconLoading = ref(false)
+const loadError = ref('')
+
+const kpis = computed(() => {
+  const total = reconRows.value.length
+  const pass = reconSummary.value.passCount ?? 0
+  const fail = reconSummary.value.failCount ?? 0
+  return [
+    {
+      icon: '🔁',
+      color: 'green',
+      value: total ? String(pass) : '—',
+      unit: total ? `/${total}` : '',
+      label: '对账通过',
+      trend: total ? `${fail} 失败` : '暂无',
+      trendUp: fail === 0,
+      trendWarn: fail > 0,
+    },
+    {
+      icon: '📊',
+      color: 'blue',
+      value: boardReady.value || boardCards.value.length ? String(boardReady.value) : '—',
+      unit: '',
+      label: '看板就绪',
+      trend: boardBlocked.value ? `${boardBlocked.value} 阻断` : total ? '全部就绪' : '暂无',
+      trendUp: boardBlocked.value === 0,
+    },
+    {
+      icon: '⚠️',
+      color: 'orange',
+      value: fail ? String(fail) : '—',
+      unit: '条',
+      label: '对账失败',
+      trend: loadError.value || (total ? '近窗分区对账' : '暂无'),
+      trendWarn: fail > 0,
+    },
+    {
+      icon: '🚦',
+      color: 'purple',
+      value: boardBlocked.value ? String(boardBlocked.value) : '0',
+      unit: '个',
+      label: '摘牌指标',
+      trend: boardCards.value.length ? `共 ${boardCards.value.length} 卡` : '暂无',
+      trendUp: boardBlocked.value === 0,
+    },
+    {
+      icon: '📋',
+      color: 'red',
+      value: total ? String(total) : '—',
+      unit: '条',
+      label: '对账历史',
+      trend: reconLoading.value ? '加载中' : '来自 recon API',
+      trendUp: true,
+    },
+  ]
+})
 
 const liveHistory = computed(() => {
-  if (!reconRows.value.length) return REL_RECONCILE_HISTORY
+  if (!reconRows.value.length) return []
   return reconRows.value.map((r) => {
     const lake = r.lakeMetric?.rows ?? '—'
     const ck = r.ckMetric?.rows ?? '—'
@@ -55,10 +98,33 @@ const liveHistory = computed(() => {
   })
 })
 
+const ruleRows = computed(() => {
+  const byMetric = new Map()
+  for (const r of reconRows.value) {
+    const key = r.metricCode || r.ckTable || r.lakeTable
+    if (!key || byMetric.has(key)) continue
+    const ok = r.pass || r.status === 'pass'
+    byMetric.set(key, {
+      table: r.ckTable || r.lakeTable || key,
+      rule: '分区对账',
+      content: `partition=${r.partitionKey || '—'}`,
+      threshold: '近窗',
+      job: r.job || '—',
+      ok,
+      statusLabel: ok ? '通过' : '失败',
+    })
+  }
+  return [...byMetric.values()]
+})
+
 const delistHint = computed(() => {
   const fails = boardCards.value.filter((c) => !c.ready)
   if (!fails.length) {
-    return { title: '当前无摘牌指标', desc: '核心看板分区对账均通过', tone: 'ok' }
+    return {
+      title: '当前无摘牌指标',
+      desc: boardCards.value.length ? '核心看板分区对账均通过' : '暂无看板数据',
+      tone: 'ok',
+    }
   }
   const first = fails[0]
   return {
@@ -80,9 +146,10 @@ function formatCheckedAt(t) {
 
 async function loadReconBoard() {
   reconLoading.value = true
+  loadError.value = ''
   try {
     const [recon, board] = await Promise.all([
-      fetchReconPartition({ limit: 30 }).catch(() => null),
+      fetchReconPartition({ limit: 30 }),
       fetchMetricBoard().catch(() => null),
     ])
     if (recon) {
@@ -91,12 +158,23 @@ async function loadReconBoard() {
         passCount: recon.passCount ?? 0,
         failCount: recon.failCount ?? 0,
       }
+    } else {
+      reconRows.value = []
     }
     if (board) {
       boardCards.value = board.cards || []
       boardReady.value = board.readyCount ?? 0
       boardBlocked.value = board.blockedCount ?? 0
+    } else {
+      boardCards.value = []
+      boardReady.value = 0
+      boardBlocked.value = 0
     }
+  } catch (e) {
+    reconRows.value = []
+    boardCards.value = []
+    loadError.value = e?.message || '对账数据拉取失败'
+    showToast(loadError.value, 'warning')
   } finally {
     reconLoading.value = false
   }
@@ -107,30 +185,30 @@ onMounted(() => {
 })
 
 function degradeDrill() {
-  showToast('🎭 Gravitino 降级演练 · 模拟 Catalog 挂 → 只读缓存 → 验证查询不中断', 'info')
+  showToast('Gravitino 降级演练 · 需后端预案接口', 'info')
 }
 
 function backupLog() {
-  showToast(`📊 备份记录\n${REL_BACKUP_LOG}`, 'info')
+  showToast('暂无备份记录 API', 'info')
 }
 
 function goOps() {
   router.push('/ops')
 }
 
-function goCatalog(table) {
-  router.push({ path: '/catalog', query: { q: table } })
-}
-
 function newReconcileRule() {
-  showToast('＋ 新建对账规则（演示）· 选表 → 规则类型 → 阈值 → 绑 DS 作业', 'info')
+  showToast('新建对账规则 · 请到指标中心配置分区对账', 'info')
 }
 
 async function rerunReconcile() {
   try {
-    const code = boardCards.value.find((c) => c.metricCode)?.metricCode || 'M-0001'
+    const code = boardCards.value.find((c) => c.metricCode)?.metricCode || reconRows.value[0]?.metricCode
+    if (!code) {
+      showToast('暂无可重跑的指标', 'warning')
+      return
+    }
     await runReconPartition({ metricCode: code })
-    showToast(`↻ 已登记分区对账 · ${code}`, 'success')
+    showToast(`已登记分区对账 · ${code}`, 'success')
     await loadReconBoard()
   } catch (e) {
     showToast(e?.message || '对账登记失败', 'warning')
@@ -139,11 +217,11 @@ async function rerunReconcile() {
 
 function drillDiff(row) {
   if (!row.drillDetail) return
-  showToast(`🔍 差异下钻 · ${row.table}\n${row.drillDetail}`, 'info')
+  showToast(`差异下钻 · ${row.table}\n${row.drillDetail}`, 'info')
 }
 
 function forceReimport() {
-  showToast('🔧 强制重导 CK · 以 Iceberg 为准 → 重导后自动对账 → 通过则恢复黄金', 'success')
+  showToast('强制重导 CK · 以 Iceberg 为准', 'info')
 }
 </script>
 
@@ -154,13 +232,15 @@ function forceReimport() {
       subtitle="组件 HA · 降级预案 · 备份恢复 · 流式 compaction SLA · Gravitino 只读缓存"
       :guide="guide"
     >
-      <button type="button" class="btn btn-sm" @click="degradeDrill">🎭 降级演练</button>
-      <button type="button" class="btn btn-sm" @click="backupLog">📊 备份记录</button>
-      <button type="button" class="btn btn-sm btn-primary" @click="goOps">🔗 任务运维</button>
+      <button type="button" class="btn btn-sm" @click="degradeDrill">降级演练</button>
+      <button type="button" class="btn btn-sm" @click="backupLog">备份记录</button>
+      <button type="button" class="btn btn-sm btn-primary" @click="goOps">任务运维</button>
     </PageHeader>
 
+    <div v-if="loadError" class="tip" style="margin-bottom: 12px">{{ loadError }}</div>
+
     <div class="kpi-grid rel-kpi">
-      <div v-for="(k, i) in REL_KPIS" :key="i" class="kpi-card" :class="k.color">
+      <div v-for="(k, i) in kpis" :key="i" class="kpi-card" :class="k.color">
         <div class="kpi-icon" :class="k.color">{{ k.icon }}</div>
         <div class="kpi-value">
           {{ k.value }}<span class="kpi-unit">{{ k.unit }}</span>
@@ -177,91 +257,29 @@ function forceReimport() {
 
     <div class="card rel-section">
       <div class="card-header">
-        <div class="card-title">🛡️ 组件可用性与降级预案 <span class="tip">· 8 个核心组件</span></div>
+        <div class="card-title">组件可用性与降级预案</div>
       </div>
-      <div class="card-body rel-ha-body">
-        <div class="grid grid-3 rel-ha-grid">
-          <div v-for="c in HA_COMPONENTS" :key="c.name" class="ha-card">
-            <div class="ha-head">
-              <div class="ha-name">{{ c.icon }} {{ c.name }}</div>
-              <span class="tag" :class="haStatusMeta(c.status).tag" style="font-size: 10px">
-                {{ haStatusMeta(c.status).label }}
-              </span>
-            </div>
-            <div class="ha-rows">
-              <div><b>HA：</b>{{ c.ha }}</div>
-              <div><b>降级：</b>{{ c.degrade }}</div>
-            </div>
-          </div>
-        </div>
+      <div class="card-body">
+        <div class="tip">暂无组件 HA 实时数据（待观测 API）</div>
       </div>
     </div>
 
     <div class="grid grid-2 rel-section">
       <div class="card">
         <div class="card-header">
-          <div class="card-title">💾 备份策略</div>
+          <div class="card-title">备份策略</div>
         </div>
-        <div class="card-body" style="padding: 0">
-          <table class="table">
-            <thead>
-              <tr>
-                <th>对象</th>
-                <th>策略</th>
-                <th>RPO</th>
-                <th>最近备份</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="r in REL_BACKUP_ROWS" :key="r.object">
-                <td>{{ r.object }}</td>
-                <td style="font-size: 11px">{{ r.strategy }}</td>
-                <td style="font-size: 11px">{{ r.rpo }}</td>
-                <td>
-                  <span class="tag" :class="r.lastTag" style="font-size: 10px">{{ r.last }}</span>
-                </td>
-              </tr>
-            </tbody>
-          </table>
+        <div class="card-body">
+          <div class="tip">暂无备份策略数据</div>
         </div>
       </div>
 
       <div class="card">
         <div class="card-header">
-          <div class="card-title">⚡ 流式 compaction SLA</div>
+          <div class="card-title">流式 compaction SLA</div>
         </div>
         <div class="card-body" style="padding: 14px">
-          <div class="rel-compact-hint">
-            Flink equality delete 制造小文件，必须按表定义 compaction 间隔。
-          </div>
-          <table class="table">
-            <thead>
-              <tr>
-                <th>表</th>
-                <th>ingest 速率</th>
-                <th>compaction 间隔</th>
-                <th>文件数</th>
-                <th>SLA</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="t in COMPACTION_TABLES" :key="t.table">
-                <td>
-                  <button type="button" class="btn-link" @click="goCatalog(t.table)">
-                    {{ t.table }}
-                  </button>
-                </td>
-                <td style="font-size: 11px">{{ t.rate }}</td>
-                <td style="font-size: 11px"><b>{{ t.interval }}</b></td>
-                <td style="text-align: center">{{ t.files }}</td>
-                <td>
-                  <span class="tag" :class="compactionSlaMeta(t.sla).tag" style="font-size: 10px">
-                    {{ compactionSlaMeta(t.sla).label }}
-                  </span>
-                </td>
-              </tr>
-            </tbody>
-          </table>
+          <div class="tip">暂无 compaction SLA 数据（可至生命周期中心查看）</div>
         </div>
       </div>
     </div>
@@ -269,24 +287,25 @@ function forceReimport() {
     <div class="card rel-section">
       <div class="card-header">
         <div class="card-title">
-          🔍 湖/CK 对账规则 · §33.1 <span class="tip">· 按表配置 · 导入后 30min 执行</span>
+          湖/CK 对账规则 · §33.1 <span class="tip">· 按指标近窗对账聚合</span>
         </div>
-        <button type="button" class="btn btn-sm" @click="newReconcileRule">＋ 新建对账规则</button>
+        <button type="button" class="btn btn-sm" @click="newReconcileRule">新建对账规则</button>
       </div>
       <div class="card-body" style="padding: 0">
-        <table class="table">
+        <div v-if="!ruleRows.length" class="tip" style="padding: 12px">暂无</div>
+        <table v-else class="table">
           <thead>
             <tr>
               <th>表</th>
               <th>规则</th>
               <th>比对内容</th>
-              <th>阈值</th>
+              <th>频率</th>
               <th>DS 作业</th>
               <th>状态</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(r, i) in REL_RECONCILE_RULES" :key="i">
+            <tr v-for="(r, i) in ruleRows" :key="i">
               <td><code>{{ r.table }}</code></td>
               <td>{{ r.rule }}</td>
               <td style="font-size: 11px">{{ r.content }}</td>
@@ -306,11 +325,12 @@ function forceReimport() {
     <div class="grid grid-2 rel-section">
       <div class="card">
         <div class="card-header">
-          <div class="card-title">📋 对账执行历史 · §33.2 <span class="tip">· 差异根因下钻</span></div>
-          <button type="button" class="btn btn-sm" @click="rerunReconcile">↻ 重跑对账</button>
+          <div class="card-title">对账执行历史 · §33.2 <span class="tip">· 差异根因下钻</span></div>
+          <button type="button" class="btn btn-sm" @click="rerunReconcile">重跑对账</button>
         </div>
         <div class="card-body rel-history-body">
-          <table class="table">
+          <div v-if="!liveHistory.length" class="tip" style="padding: 12px">暂无</div>
+          <table v-else class="table">
             <thead>
               <tr>
                 <th>时间</th>
@@ -321,7 +341,7 @@ function forceReimport() {
               </tr>
             </thead>
             <tbody>
-          <tr v-for="(h, i) in liveHistory" :key="i">
+              <tr v-for="(h, i) in liveHistory" :key="i">
                 <td style="font-size: 11px">{{ h.time }}</td>
                 <td><code>{{ h.table }}</code></td>
                 <td>{{ h.rule }}</td>
@@ -336,7 +356,7 @@ function forceReimport() {
                     class="btn-link btn-sm"
                     @click="drillDiff(h)"
                   >
-                    🔍 下钻
+                    下钻
                   </button>
                   <span v-else class="tag tag-green" style="font-size: 10px">✓</span>
                 </td>
@@ -348,24 +368,12 @@ function forceReimport() {
 
       <div class="card rel-delist-card">
         <div class="card-header">
-          <div class="card-title">🚦 摘牌与恢复闭环 · §33.3 <span class="tip">· 以 Iceberg 为准</span></div>
+          <div class="card-title">摘牌与恢复闭环 · §33.3 <span class="tip">· 以 Iceberg 为准</span></div>
           <span class="tag" :class="boardBlocked > 0 ? 'tag-red' : 'tag-green'">
             {{ reconLoading ? '…' : boardBlocked > 0 ? `${boardBlocked} 未就绪` : '全部就绪' }}
           </span>
         </div>
         <div class="card-body rel-delist-body">
-          <div class="flow-chain rel-flow">
-            <template v-for="(node, ni) in REL_DELIST_FLOW" :key="ni">
-              <div v-if="ni > 0" class="flow-arrow">→</div>
-              <div class="flow-node" :class="node.tone">
-                <div class="fn-icon">{{ node.icon }}</div>
-                <div class="fn-title">{{ node.title }}</div>
-                <div v-if="node.sub" class="fn-sub" :class="{ warn: node.tone === 'warning' }">
-                  {{ node.sub }}
-                </div>
-              </div>
-            </template>
-          </div>
           <div class="rel-delist-alert">
             <div class="rel-delist-title">{{ delistHint.title }}</div>
             <div class="rel-delist-desc">{{ delistHint.desc }}</div>
@@ -376,10 +384,10 @@ function forceReimport() {
           </div>
           <div style="margin-top: 8px">
             <button type="button" class="btn btn-sm btn-primary" @click="forceReimport">
-              🔧 强制重导 CK
+              强制重导 CK
             </button>
             <button type="button" class="btn btn-sm" style="margin-left: 6px" @click="rerunReconcile">
-              ↻ 重跑对账
+              重跑对账
             </button>
           </div>
         </div>
@@ -387,6 +395,7 @@ function forceReimport() {
     </div>
   </div>
 </template>
+
 
 <style scoped>
 .rel-kpi {

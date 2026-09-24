@@ -7,6 +7,7 @@ import {
   ASSET_LEVELS,
   buildAssetIdentity,
 } from '@/data/assetMeta'
+import { ensureWorkspaceUserOptions, workspaceUserById, workspaceUserOptions } from '@/data/workspaceUsers'
 import { fetchAssetPage } from '@/api/catalog'
 import { useDatasources } from '@/composables/useDatasources'
 import { useSession } from '@/composables/useSession'
@@ -44,6 +45,27 @@ const identityTouched = ref(false)
 /** 当前数据源已注册为资产的源对象名（小写） */
 const registeredNames = ref(new Set())
 const registeredLoading = ref(false)
+/** 触发 owner 选项重算（ensureWorkspaceUserOptions 完成后） */
+const ownerOptionsTick = ref(0)
+
+const ownerOptions = computed(() => {
+  void ownerOptionsTick.value
+  const list = [...workspaceUserOptions()]
+  const pushFallback = (raw, sub) => {
+    const cur = String(raw || '').trim()
+    if (!cur || list.some((o) => String(o.value) === cur)) return
+    list.unshift({
+      value: cur,
+      label: cur,
+      sub,
+      account: '',
+      name: cur,
+    })
+  }
+  pushFallback(form.owner, '当前技术 Owner')
+  pushFallback(form.bizOwner, '当前业务 Owner')
+  return list
+})
 
 const sourceSelectOptions = computed(() =>
   [...sources.value]
@@ -135,7 +157,20 @@ async function loadRegisteredObjects(dsId) {
   }
 }
 
-function resetForm() {
+/** 历史数据可能存展示名：尽量解析为用户 id；未命中则原样保留供兜底展示 */
+function resolveOwnerId(raw, { allowEmpty = false } = {}) {
+  const v = String(raw || '').trim()
+  if (!v) return allowEmpty ? '' : user.value?.id || ''
+  if (workspaceUserById(v)) return v
+  const hit = workspaceUserOptions().find(
+    (o) => o.account === v || o.name === v || o.label === v,
+  )
+  return hit?.value || v
+}
+
+async function resetForm() {
+  await ensureWorkspaceUserOptions()
+  ownerOptionsTick.value += 1
   const preset =
     (props.presetSourceId && getSource(props.presetSourceId)) ||
     (props.presetSourceName &&
@@ -152,7 +187,7 @@ function resetForm() {
     name: '',
     cnName: '',
     desc: '',
-    owner: user.value?.id || '',
+    owner: resolveOwnerId(user.value?.id || ''),
     bizOwner: '',
     level: '内部',
   })
@@ -286,8 +321,9 @@ function submit() {
     layer: form.layer,
     domain: form.domain,
     desc: form.desc || form.cnName || form.tableName,
-    owner: form.owner,
-    bizOwner: form.bizOwner,
+    owner: resolveOwnerId(form.owner),
+    techOwner: resolveOwnerId(form.owner),
+    bizOwner: resolveOwnerId(form.bizOwner, { allowEmpty: true }),
     level: form.level,
     engine: defaultEngine(s.type),
     sourceId: s.id,
@@ -409,24 +445,26 @@ function submit() {
                   </option>
                 </select>
               </label>
-              <label class="form-field">
+              <div class="form-field">
                 <span class="form-label">技术 Owner</span>
-                <input
+                <SearchSelect
                   v-model="form.owner"
-                  class="input"
-                  style="width: 100%"
-                  placeholder="默认当前用户；可改删/预览的技术负责人"
+                  :options="ownerOptions"
+                  placeholder="搜索姓名 / 账号；默认当前用户"
+                  sub-key="sub"
+                  :search-keys="['name', 'account', 'label', 'sub']"
                 />
-              </label>
-              <label class="form-field">
+              </div>
+              <div class="form-field">
                 <span class="form-label">业务 Owner</span>
-                <input
+                <SearchSelect
                   v-model="form.bizOwner"
-                  class="input"
-                  style="width: 100%"
-                  placeholder="可选；业务负责人，同样计拥有者"
+                  :options="ownerOptions"
+                  placeholder="可选；搜索姓名 / 账号"
+                  sub-key="sub"
+                  :search-keys="['name', 'account', 'label', 'sub']"
                 />
-              </label>
+              </div>
               <label class="form-field wide">
                 <span class="form-label">描述</span>
                 <textarea v-model="form.desc" class="textarea" rows="2" placeholder="资产用途说明" />

@@ -1,39 +1,38 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRouter } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
 import CreateFormModal from '@/components/common/CreateFormModal.vue'
+import AppDrawer from '@/components/common/AppDrawer.vue'
 import ListPager from '@/components/common/ListPager.vue'
 import { useToast } from '@/composables/useToast'
 import { usePager } from '@/composables/usePager'
 import { useAiModels } from '@/composables/useAiModels'
+import { useActionLock } from '@/composables/useActionLock'
 import { AI_MODEL_EDIT_FORM, AI_MODEL_FORM } from '@/data/createForms'
 import { pageGuideOf } from '@/data/pageGuides'
+import { ensureOnce } from '@/composables/useEnsureSamples'
+import { SAMPLE_AI_MODEL } from '@/data/sampleSeeds'
+import { createAiModel } from '@/api/ai'
 import {
-  AI_MODELS,
-  AI_MODEL_KPIS,
-  AI_ROUTES,
-  AI_USAGE_BARS,
-  formatAiPrice,
   formatUsageCalls,
-  maskApiKey,
+  modelKindLabel,
   modelStatusTag,
   routeStatusTag,
 } from '@/data/ai'
 
 const router = useRouter()
-const route = useRoute()
 const { showToast } = useToast()
+const { busy, run: runLocked } = useActionLock()
 const guide = pageGuideOf('aimodel')
 const api = useAiModels()
-
-/** ?demo=1 强制本地演示；否则优先真 API（空列表也算接真，不再用 AI_MODELS 垫底） */
-const forceDemo = computed(() => String(route.query.demo || '') === '1')
 
 const createOpen = ref(false)
 const editOpen = ref(false)
 const editingId = ref('')
-const useDemo = ref(false)
+const detailOpen = ref(false)
+const detailModel = ref(null)
+const detailLoading = ref(false)
 const loadError = ref('')
 const models = ref([])
 const routeRows = ref([])
@@ -43,35 +42,14 @@ const kpiCards = ref([
   { icon: '✅', color: 'green', value: '—', unit: '', label: '连通性', trend: '', trendUp: true },
   { icon: '💬', color: 'purple', value: '—', unit: '', label: '本月调用', trend: '按空间分摊', trendUp: true },
   { icon: '💰', color: 'orange', value: '—', unit: '', label: '本月成本', trend: '按空间分摊', trendUp: true },
-  { icon: '⚡', color: 'red', value: '—', unit: 's', label: '平均响应', trend: 'P95 ≤ 3s', trendUp: true },
+  { icon: '⚡', color: 'red', value: '—', unit: 's', label: '平均响应', trend: '本月均值', trendUp: true },
 ])
 const gatewayHint = ref('')
 
 const { page, pageSize, total, totalPages, paged, pageNums, goPage, resetPage } = usePager(models)
 const enabledCount = computed(() => models.value.filter((m) => m.enabled).length)
 
-const vendorMeta = {
-  OpenAI: { logo: '🟢', bg: '#e6f7ff' },
-  Anthropic: { logo: '🟣', bg: '#f3e5ff' },
-  DeepSeek: { logo: '🟠', bg: '#fff7e6' },
-  阿里云: { logo: '🔵', bg: '#e6f7ff' },
-  通义: { logo: '🔵', bg: '#e6f7ff' },
-  GLM: { logo: '🟠', bg: '#fff7e6' },
-  自建: { logo: '⚪', bg: '#f5f5f5' },
-}
-
-function applyDemoData() {
-  useDemo.value = true
-  models.value = AI_MODELS.map((m) => ({ ...m }))
-  routeRows.value = AI_ROUTES.map((r) => ({ ...r }))
-  usageBars.value = AI_USAGE_BARS.map((b) => ({ ...b }))
-  kpiCards.value = AI_MODEL_KPIS.map((k) => ({ ...k }))
-  gatewayHint.value = '演示数据（?demo=1 或 API 不可用）'
-  resetPage()
-}
-
 function applyApiPayload() {
-  useDemo.value = false
   models.value = (api.models.value || []).map((m) => ({ ...m }))
   routeRows.value = (api.routes.value || []).map((r) => ({
     scene: r.scene,
@@ -101,16 +79,45 @@ function applyApiPayload() {
 }
 
 onMounted(async () => {
-  if (forceDemo.value) {
-    applyDemoData()
-    return
-  }
   try {
     await api.loadAll()
     applyApiPayload()
+    const findDatagoo = () =>
+      models.value.find(
+        (m) =>
+          m.id === SAMPLE_AI_MODEL.id ||
+          m.modelName === SAMPLE_AI_MODEL.modelId ||
+          String(m.endpoint || m.baseUrl || '').includes('ai.datagoo.cn'),
+      )
+    // 仅在完全没有 DataGoo 模型时创建一次；禁止每次进页 rotate 覆盖用户已保存的 Vault Key
+    await ensureOnce(
+      'ai_datagoo_dsflash',
+      () => !findDatagoo(),
+      () =>
+        createAiModel({
+          vendor: SAMPLE_AI_MODEL.provider,
+          name: SAMPLE_AI_MODEL.name,
+          modelName: SAMPLE_AI_MODEL.modelId,
+          baseUrl: SAMPLE_AI_MODEL.baseUrl,
+          ...(SAMPLE_AI_MODEL.apiKey ? { key: SAMPLE_AI_MODEL.apiKey } : {}),
+          roleLabel: SAMPLE_AI_MODEL.remark,
+          kind: 'chat',
+          enabled: true,
+          egressApproved: true,
+          priceUnit: 'cny_1m',
+        }),
+      async () => {
+        await api.loadAll()
+        applyApiPayload()
+      },
+    )
   } catch (e) {
     loadError.value = e?.message || '加载失败'
-    applyDemoData()
+    models.value = []
+    routeRows.value = []
+    usageBars.value = []
+    gatewayHint.value = ''
+    showToast(loadError.value, 'warning')
   }
 })
 
@@ -164,7 +171,7 @@ function applyOverviewKpi(ov) {
       value: lat,
       unit: 's',
       label: '平均响应',
-      trend: 'P95 ≤ 3s',
+      trend: lat !== '—' ? '本月均值' : '暂无样本',
       trendUp: true,
     },
   ]
@@ -175,65 +182,49 @@ const editInitial = computed(() => {
   if (!m) return null
   return {
     vendor: m.vendor,
-    model: m.name,
+    // 上游 model id（测试/调用用），不是展示名
+    model: m.modelName || m.name,
     baseURL: m.endpoint,
     key: '',
     context: m.context || '128K',
     priceUnit: m.priceUnit || (m.input === '免费' ? 'free' : 'usd_1m'),
     inputRate: m.inputRate ?? 0,
     outputRate: m.outputRate ?? 0,
+    tokenQuota: m.tokenQuota != null && Number(m.tokenQuota) > 0 ? m.tokenQuota : 0,
+    costQuota: m.costQuota != null && Number(m.costQuota) > 0 ? m.costQuota : 0,
     use: m.role || '',
+    kind: m.kind || 'chat',
+    supportsVision: m.supportsVision ? '1' : '0',
+    supportsImageOutput: m.supportsImageOutput || m.kind === 'image' ? '1' : '0',
     egressApproved: m.egressApproved || m.egressKind === 'local' ? '1' : '0',
   }
 })
+
+function egressLabel(m) {
+  if (!m) return '—'
+  if (m.egressKind === 'local') return '内网 / 本地'
+  return m.egressApproved ? '外发 · 已评估' : '外发 · 未评估'
+}
+
+function capabilityLabel(m) {
+  if (!m) return '—'
+  const base = modelKindLabel(m.kind)
+  if (m.kind === 'chat' && m.supportsVision) return `${base} · 视觉输入`
+  if (m.kind === 'image' && m.supportsImageOutput) return `${base} · 生图`
+  return base
+}
 
 function addModel() {
   createOpen.value = true
 }
 
-function applyPricing(payload) {
-  const unit = payload.priceUnit || 'usd_1m'
-  const inputRate = unit === 'free' ? 0 : Number(payload.inputRate) || 0
-  const outputRate = unit === 'free' ? 0 : Number(payload.outputRate) || 0
-  return {
-    priceUnit: unit,
-    inputRate,
-    outputRate,
-    input: formatAiPrice(unit, inputRate),
-    output: formatAiPrice(unit, outputRate),
-  }
-}
-
 async function onAddModel(payload) {
   try {
-    if (!useDemo.value) {
-      const n = await api.addModel(payload)
-      models.value.unshift(n)
-      if (n?.litellmSyncMessage) {
-        showToast(`✅ 模型已接入：${payload.model} · ${n.litellmSyncMessage}`, n.litellmSyncOk ? 'success' : 'info')
-      } else {
-        showToast(`✅ 模型已接入：${payload.model}`, 'success')
-      }
+    const n = await api.addModel(payload)
+    models.value.unshift(n)
+    if (n?.litellmSyncMessage) {
+      showToast(`✅ 模型已接入：${payload.model} · ${n.litellmSyncMessage}`, n.litellmSyncOk ? 'success' : 'info')
     } else {
-      const meta = vendorMeta[payload.vendor] || vendorMeta['自建']
-      const pricing = applyPricing(payload)
-      models.value.unshift({
-        id: `m_${Date.now().toString(36)}`,
-        name: payload.model,
-        vendor: payload.vendor,
-        logo: meta.logo,
-        bg: meta.bg,
-        endpoint: payload.baseURL,
-        key: maskApiKey(payload.key),
-        context: payload.context || '128K',
-        ...pricing,
-        enabled: true,
-        status: 'ok',
-        latency: '—',
-        calls: '0',
-        cost: '¥0',
-        role: payload.use || '新接入',
-      })
       showToast(`✅ 模型已接入：${payload.model}`, 'success')
     }
     createOpen.value = false
@@ -250,36 +241,69 @@ function editModel(m) {
 
 async function onEditModel(payload) {
   try {
-    if (!useDemo.value) {
-      const saved = await api.editModel(editingId.value, payload)
-      const idx = models.value.findIndex((x) => x.id === editingId.value)
-      if (idx >= 0) {
-        models.value[idx] = { ...models.value[idx], ...saved }
-        if (String(payload.key || '').trim()) {
-          models.value[idx].key = maskApiKey(payload.key)
-        }
-      }
-    } else {
-      const m = models.value.find((x) => x.id === editingId.value)
-      if (m) {
-        const meta = vendorMeta[payload.vendor] || vendorMeta['自建']
-        const pricing = applyPricing(payload)
-        m.name = payload.model
-        m.vendor = payload.vendor
-        m.logo = meta.logo
-        m.bg = meta.bg
-        m.endpoint = payload.baseURL
-        m.context = payload.context || m.context
-        m.role = payload.use || m.role
-        Object.assign(m, pricing)
-        if (String(payload.key || '').trim()) m.key = maskApiKey(payload.key)
-      }
+    const saved = await api.editModel(editingId.value, payload)
+    const idx = models.value.findIndex((x) => x.id === editingId.value)
+    if (idx >= 0) {
+      models.value[idx] = { ...models.value[idx], ...saved }
     }
     editOpen.value = false
     editingId.value = ''
-    showToast(`✅ 已更新：${payload.model}`, 'success')
+    showToast(
+      String(payload.key || '').trim()
+        ? `✅ 已更新模型与 Key：${payload.model}`
+        : `✅ 已更新：${payload.model}`,
+      'success',
+    )
+    // 重新拉列表，避免本地缓存与 Vault/model_name 不一致
+    try {
+      await api.loadAll()
+      applyApiPayload()
+    } catch {
+      /* ignore */
+    }
   } catch (e) {
     showToast(e?.message || '更新失败', 'error')
+  }
+}
+
+async function openDetail(m) {
+  if (!m?.id) {
+    showToast('模型尚未持久化，无法查看详情', 'warning')
+    return
+  }
+  detailModel.value = { ...m }
+  detailOpen.value = true
+  detailLoading.value = true
+  try {
+    const d = await api.getDetail(m.id)
+    detailModel.value = d
+  } catch (e) {
+    showToast(e?.message || '加载详情失败', 'error')
+  } finally {
+    detailLoading.value = false
+  }
+}
+
+function closeDetail() {
+  detailOpen.value = false
+  detailModel.value = null
+  detailLoading.value = false
+}
+
+async function removeModel(m) {
+  if (!m?.id) {
+    showToast('模型尚未持久化，无法删除', 'warning')
+    return
+  }
+  if (!window.confirm(`确认删除模型「${m.name || m.id}」？删除后列表不再展示。`)) return
+  try {
+    await api.removeModel(m.id)
+    models.value = models.value.filter((x) => x.id !== m.id)
+    if (detailModel.value?.id === m.id) closeDetail()
+    showToast(`已删除：${m.name || m.id}`, 'success')
+    resetPage()
+  } catch (e) {
+    showToast(e?.message || '删除失败', 'error')
   }
 }
 
@@ -292,34 +316,41 @@ function goChat() {
 }
 
 async function testModel(m) {
-  try {
-    if (!useDemo.value && m.id) {
+  if (!m?.id) {
+    showToast('模型尚未持久化，无法测试', 'warning')
+    return
+  }
+  const key = `test:${m.id}`
+  await runLocked(key, async () => {
+    try {
       const r = await api.test(m.id)
-      showToast(`🔧 测试 · ${m.name} · ${r?.status || 'ok'} · ${r?.latencyMs ?? '—'}ms`, 'success')
       if (r?.latencyMs != null) m.latency = `${(r.latencyMs / 1000).toFixed(1)}s`
       if (r?.status) m.status = r.status
-    } else {
-      showToast(`🔧 测试连通性 · ${m.name || m} · 正常（演示）`, 'success')
+      const detail = r?.message || r?.status || ''
+      if (r?.ok === true) {
+        showToast(`测试成功 · ${m.name}${detail ? ` · ${detail}` : ''} · ${r?.latencyMs ?? '—'}ms`, 'success')
+      } else {
+        showToast(`测试失败 · ${m.name}${detail ? ` · ${detail}` : ''}`, 'error')
+      }
+    } catch (e) {
+      showToast(e?.message || '测试失败', 'error')
     }
-  } catch (e) {
-    showToast(e?.message || '测试失败', 'error')
-  }
+  })
 }
 
 async function toggleModel(m) {
-  try {
-    if (!useDemo.value) {
+  if (!m?.id) return
+  const key = `toggle:${m.id}`
+  await runLocked(key, async () => {
+    try {
       const saved = await api.toggle(m.id, !m.enabled)
       Object.assign(m, saved)
       const syncBit = saved?.litellmSyncMessage ? ` · ${saved.litellmSyncMessage}` : ''
       showToast(`${m.enabled ? '启用' : '停用'}模型 · ${m.name}${syncBit}`, 'info')
-    } else {
-      m.enabled = !m.enabled
-      showToast(`${m.enabled ? '启用' : '停用'}模型 · ${m.name}`, 'info')
+    } catch (e) {
+      showToast(e?.message || '操作失败', 'error')
     }
-  } catch (e) {
-    showToast(e?.message || '操作失败', 'error')
-  }
+  })
 }
 
 function addPolicy() {
@@ -329,13 +360,9 @@ function addPolicy() {
 watch(
   () => api.models.value,
   (list) => {
-    if (!useDemo.value && Array.isArray(list)) models.value = list.map((m) => ({ ...m }))
+    if (Array.isArray(list)) models.value = list.map((m) => ({ ...m }))
   },
 )
-
-watch(forceDemo, (v) => {
-  if (v) applyDemoData()
-})
 </script>
 
 <template>
@@ -351,10 +378,9 @@ watch(forceDemo, (v) => {
     </PageHeader>
 
     <div v-if="gatewayHint || loadError" class="aim-banner tip">
-      <span v-if="useDemo">演示模式</span>
-      <span v-else>在线</span>
-      <span v-if="gatewayHint"> · {{ gatewayHint }}</span>
-      <span v-if="loadError"> · {{ loadError }}</span>
+      <span v-if="loadError">{{ loadError }}</span>
+      <span v-if="loadError && gatewayHint"> · </span>
+      <span v-if="gatewayHint">{{ gatewayHint }}</span>
     </div>
 
     <CreateFormModal
@@ -371,6 +397,93 @@ watch(forceDemo, (v) => {
       @close="editOpen = false"
       @submit="onEditModel"
     />
+
+    <AppDrawer
+      :open="detailOpen"
+      storage-key="aimodel-drawer"
+      :default-width="520"
+      @close="closeDetail"
+    >
+      <div v-if="detailModel" class="aim-drawer">
+        <div class="aim-drawer-hd">
+          <div>
+            <div class="aim-drawer-title">
+              {{ detailModel.name }}
+              <span class="tag" :class="modelStatusTag(detailModel).cls">{{ modelStatusTag(detailModel).text }}</span>
+            </div>
+            <div class="aim-drawer-sub tip">
+              {{ detailModel.vendor }} · {{ capabilityLabel(detailModel) }}
+              <span v-if="detailLoading"> · 刷新中…</span>
+            </div>
+          </div>
+          <button type="button" class="btn btn-sm" @click="closeDetail">关闭</button>
+        </div>
+
+        <div class="aim-kv">
+          <div class="aim-kv-row"><span>ID</span><div><code>{{ detailModel.id }}</code></div></div>
+          <div class="aim-kv-row"><span>名称</span><div>{{ detailModel.name || '—' }}</div></div>
+          <div class="aim-kv-row"><span>厂商</span><div>{{ detailModel.vendor || '—' }}</div></div>
+          <div class="aim-kv-row"><span>功能类别</span><div>{{ modelKindLabel(detailModel.kind) }}</div></div>
+          <div class="aim-kv-row"><span>视觉输入</span><div>{{ detailModel.supportsVision ? '支持上传图片' : '否' }}</div></div>
+          <div class="aim-kv-row"><span>图片输出</span><div>{{ detailModel.supportsImageOutput ? '是' : '否' }}</div></div>
+          <div class="aim-kv-row"><span>Model ID</span><div><code>{{ detailModel.modelName || '—' }}</code></div></div>
+          <div class="aim-kv-row"><span>Base URL</span><div class="break">{{ detailModel.endpoint || '—' }}</div></div>
+          <div class="aim-kv-row"><span>启用</span><div>{{ detailModel.enabled ? '是' : '否' }}</div></div>
+          <div class="aim-kv-row"><span>外发</span><div>{{ egressLabel(detailModel) }}</div></div>
+          <div class="aim-kv-row"><span>备注</span><div>{{ detailModel.role || '—' }}</div></div>
+          <div class="aim-kv-row"><span>状态</span><div>{{ detailModel.status || '—' }}</div></div>
+          <div class="aim-kv-row"><span>延迟</span><div>{{ detailModel.latency || '—' }}</div></div>
+          <div class="aim-kv-row"><span>API Key</span><div>{{ detailModel.key || '（Vault）' }}</div></div>
+          <div class="aim-kv-row"><span>上下文</span><div>{{ detailModel.context || '—' }}</div></div>
+          <div class="aim-kv-row"><span>输入价</span><div>{{ detailModel.input || '—' }}</div></div>
+          <div class="aim-kv-row"><span>输出价</span><div>{{ detailModel.output || '—' }}</div></div>
+          <div class="aim-kv-row">
+            <span>Token 总限额</span>
+            <div>
+              已用 {{ detailModel.tokenUsed ?? 0 }}
+              / 上限 {{ detailModel.tokenQuota != null ? detailModel.tokenQuota : '不限' }}
+              <template v-if="detailModel.tokenQuota != null">
+                · 剩余 {{ detailModel.tokenRemaining ?? '—' }}
+              </template>
+            </div>
+          </div>
+          <div class="aim-kv-row">
+            <span>成本总限额</span>
+            <div>
+              已用 {{ detailModel.costUsed ?? 0 }}
+              / 上限 {{ detailModel.costQuota != null ? detailModel.costQuota : '不限' }}
+              <template v-if="detailModel.costQuota != null">
+                · 剩余 {{ detailModel.costRemaining ?? '—' }}
+              </template>
+            </div>
+          </div>
+          <div v-if="detailModel.vaultPath" class="aim-kv-row">
+            <span>Vault</span>
+            <div><code>{{ detailModel.vaultPath }}</code></div>
+          </div>
+          <div v-if="detailModel.litellmAlias" class="aim-kv-row">
+            <span>LiteLLM</span>
+            <div><code>{{ detailModel.litellmAlias }}</code></div>
+          </div>
+        </div>
+
+        <div class="aim-drawer-acts">
+          <button type="button" class="btn btn-sm" :disabled="detailLoading" @click="openDetail(detailModel)">
+            {{ detailLoading ? '刷新中…' : '刷新用量' }}
+          </button>
+          <button type="button" class="btn btn-sm" @click="editModel(detailModel); closeDetail()">✎ 编辑</button>
+          <button
+            type="button"
+            class="btn btn-sm"
+            :disabled="busy(`test:${detailModel.id}`)"
+            @click="testModel(detailModel)"
+          >
+            {{ busy(`test:${detailModel.id}`) ? '测试中…' : '🔧 测试' }}
+          </button>
+          <button type="button" class="btn btn-sm btn-danger" @click="removeModel(detailModel)">删除</button>
+        </div>
+      </div>
+    </AppDrawer>
 
     <div class="kpi-grid aim-kpi">
       <div v-for="(k, i) in kpiCards" :key="i" class="kpi-card" :class="k.color">
@@ -401,8 +514,19 @@ watch(forceDemo, (v) => {
               <div class="mc-logo" :style="{ background: m.bg }">{{ m.logo }}</div>
               <div style="flex: 1">
                 <div class="mc-name">
-                  {{ m.name }}
+                  <button type="button" class="btn-link mc-name-link" @click="openDetail(m)">{{ m.name }}</button>
                   <span class="tag" :class="modelStatusTag(m).cls">{{ modelStatusTag(m).text }}</span>
+                  <span class="tag tag-cyan" :title="capabilityLabel(m)">{{ modelKindLabel(m.kind) }}</span>
+                  <span
+                    v-if="m.supportsVision"
+                    class="tag tag-purple"
+                    title="对话模型支持图片上传 / 视觉输入"
+                  >视觉</span>
+                  <span
+                    v-else-if="m.kind === 'image' && m.supportsImageOutput"
+                    class="tag tag-purple"
+                    title="图片生成"
+                  >生图</span>
                   <span
                     v-if="m.egressKind === 'local'"
                     class="tag tag-green"
@@ -431,17 +555,27 @@ watch(forceDemo, (v) => {
             </div>
             <div class="mc-foot">
               <span class="mc-stats">📊 {{ m.calls }} 调用 · ⏱ {{ m.latency }} · 💰 {{ m.cost }}</span>
-              <div class="flex gap-8">
+              <div class="flex gap-8 mc-acts">
+                <button type="button" class="btn btn-sm" @click="openDetail(m)">详情</button>
                 <button type="button" class="btn btn-sm" @click="editModel(m)">✎ 编辑</button>
-                <button type="button" class="btn btn-sm" @click="testModel(m)">🔧 测试</button>
+                <button
+                  type="button"
+                  class="btn btn-sm"
+                  :disabled="busy(`test:${m.id}`)"
+                  @click="testModel(m)"
+                >
+                  {{ busy(`test:${m.id}`) ? '测试中…' : '🔧 测试' }}
+                </button>
                 <button
                   type="button"
                   class="btn btn-sm"
                   :class="{ 'btn-primary': !m.enabled }"
+                  :disabled="busy(`toggle:${m.id}`)"
                   @click="toggleModel(m)"
                 >
-                  {{ m.enabled ? '停用' : '启用' }}
+                  {{ busy(`toggle:${m.id}`) ? '…' : m.enabled ? '停用' : '启用' }}
                 </button>
+                <button type="button" class="btn btn-sm btn-danger" @click="removeModel(m)">删除</button>
               </div>
             </div>
           </div>
@@ -570,6 +704,21 @@ watch(forceDemo, (v) => {
   gap: 6px;
   flex-wrap: wrap;
 }
+.btn-link {
+  color: var(--primary, #1677ff);
+  font: inherit;
+  font-size: 12px;
+  background: none;
+  border: none;
+  padding: 0;
+}
+.btn-link:hover {
+  text-decoration: underline;
+}
+.mc-name-link {
+  font-weight: 600;
+  font-size: inherit;
+}
 .mc-vendor {
   font-size: 12px;
   color: var(--text-secondary, #888);
@@ -594,6 +743,9 @@ watch(forceDemo, (v) => {
   gap: 8px;
   align-items: center;
   justify-content: space-between;
+}
+.mc-acts {
+  flex-wrap: wrap;
 }
 .mc-stats {
   font-size: 11px;
@@ -624,5 +776,62 @@ watch(forceDemo, (v) => {
 .cbr-val {
   text-align: right;
   color: var(--text-secondary, #888);
+}
+.aim-drawer {
+  padding: 16px 20px 24px;
+  height: 100%;
+  overflow: auto;
+}
+.aim-drawer-hd {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.aim-drawer-title {
+  font-size: 16px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.aim-drawer-sub {
+  margin-top: 4px;
+  font-size: 12px;
+}
+.aim-kv {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 13px;
+}
+.aim-kv-row {
+  display: grid;
+  grid-template-columns: 88px 1fr;
+  gap: 8px;
+  align-items: start;
+}
+.aim-kv-row > span {
+  color: var(--text-secondary, #888);
+}
+.aim-kv-row .break {
+  word-break: break-all;
+}
+.aim-drawer-acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 20px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border, #e8e8e8);
+}
+.btn-danger {
+  color: #cf1322;
+  border-color: #ffa39e;
+}
+.btn-danger:hover {
+  background: #fff1f0;
 }
 </style>

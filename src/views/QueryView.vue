@@ -25,17 +25,12 @@ import {
   saveQueryScript,
 } from '@/api/query'
 import { useSession } from '@/composables/useSession'
-import { useWsListScope } from '@/composables/useWsListScope'
-import {
-  QUERY_CATALOG,
-  QUERY_HISTORY,
-  RESULT_COLUMNS,
-  buildDemoResultRows,
-} from '@/data/query'
+import { ensureOnce } from '@/composables/useEnsureSamples'
+import { SAMPLE_QUERY_SCRIPT } from '@/data/sampleSeeds'
+import { RESULT_COLUMNS } from '@/data/query'
 
 const { showToast } = useToast()
 const { currentWs } = useSession()
-const { wsScope, listWs, setScope } = useWsListScope()
 const guide = pageGuideOf('query')
 const route = useRoute()
 const router = useRouter()
@@ -217,13 +212,6 @@ function resolveExecSql() {
   return sel || all
 }
 
-function seedCatalogFallback() {
-  const tree = structuredClone(QUERY_CATALOG).filter((n) => !n.locked)
-  calmLargeSchemas(tree)
-  catalog.splice(0, catalog.length, ...tree)
-  catalogDegraded.value = true
-}
-
 function nodeBlob(node) {
   const cols = (node.columns || []).map((c) => `${c.name || ''} ${c.comment || ''}`).join(' ')
   return `${node.name || ''} ${node.fqn || ''} ${node.hint || ''} ${node.engine || ''} ${cols}`.toLowerCase()
@@ -318,7 +306,7 @@ function hiddenTableCount(sch, hit) {
 
 async function loadSchemaTree() {
   try {
-    const tree = await fetchSchemaTree()
+    const tree = await fetchSchemaTree(currentWs.value || 'default')
     if (Array.isArray(tree)) {
       calmLargeSchemas(tree)
       catalog.splice(0, catalog.length, ...tree)
@@ -326,11 +314,14 @@ async function loadSchemaTree() {
       apiOnline.value = true
       return
     }
-  } catch {
-    /* fallback */
+    catalog.splice(0, catalog.length)
+    catalogDegraded.value = false
+  } catch (e) {
+    catalog.splice(0, catalog.length)
+    catalogDegraded.value = true
+    apiOnline.value = false
+    showToast(e?.message || 'Schema 树拉取失败', 'warning')
   }
-  seedCatalogFallback()
-  apiOnline.value = false
 }
 
 async function loadHistory() {
@@ -338,17 +329,38 @@ async function loadHistory() {
     const list = await fetchQueryHistory({
       limit: 30,
       mineOnly: true,
-      ws: listWs.value,
+      ws: currentWs.value || 'default',
     })
     if (Array.isArray(list)) {
       history.value = list
       apiOnline.value = true
+      if (!list.length && typeof saveQueryScript === 'function') {
+        await ensureOnce(
+          'query_sample_script',
+          () => history.value.length === 0,
+          () =>
+            saveQueryScript({
+              ...SAMPLE_QUERY_SCRIPT,
+              ws: currentWs.value || 'default',
+            }),
+          async () => {
+            await loadSavedScripts()
+            const again = await fetchQueryHistory({
+              limit: 30,
+              mineOnly: true,
+              ws: currentWs.value || 'default',
+            }).catch(() => null)
+            if (Array.isArray(again)) history.value = again
+          },
+        )
+      }
       return
     }
-  } catch {
-    /* fallback */
+    history.value = []
+  } catch (e) {
+    history.value = []
+    showToast(e?.message || '查询历史拉取失败', 'warning')
   }
-  if (!history.value.length) history.value = [...QUERY_HISTORY]
 }
 
 let appliedLinkKey = ''
@@ -406,12 +418,7 @@ async function loadElevateStatus() {
 }
 
 watch(currentWs, () => {
-  loadSavedScripts()
-  if (wsScope.value === 'team') loadHistory()
-})
-
-watch(listWs, () => {
-  loadHistory()
+  Promise.all([loadSchemaTree(), loadHistory(), loadSavedScripts()]).catch(() => {})
 })
 
 function onCatResizeStart(e) {
@@ -533,7 +540,7 @@ async function onExport() {
     await exportQueryAudit({
       queryId: lastMeta.value.queryId,
       rowCount: resultRows.value.length,
-      ws: 'default',
+      ws: currentWs.value || 'default',
     })
   } catch {
     /* 审计失败仍允许本地下载 */
@@ -559,7 +566,7 @@ function onSaveDataset() {
       }))
       const data = await saveQueryDataset({
         name: name.trim(),
-        ws: 'default',
+        ws: currentWs.value || 'default',
         queryId: lastMeta.value.queryId,
         sql: sqlText.value,
         columns: cols,
@@ -595,7 +602,7 @@ async function onExplain() {
   try {
     const data = await explainQuery({
       sql,
-      ws: 'default',
+      ws: currentWs.value || 'default',
       maxRows: 500,
       params: buildParamsPayload(),
     })
@@ -889,47 +896,6 @@ function applyExecResult(data, sql) {
   }
 }
 
-async function runQueryDemo(sql) {
-  const qid = `demo_${String(Date.now()).slice(-8)}`
-  lastMeta.value.queryId = qid
-  lastMeta.value.trinoQueryId = ''
-  running.value = true
-  showResult.value = true
-  resultRows.value = []
-  await new Promise((r) => setTimeout(r, 400))
-  resultColumns.value = RESULT_COLUMNS.map((c) => ({ ...c }))
-  resultRows.value = buildDemoResultRows()
-  lastMeta.value = {
-    queryId: qid,
-    trinoQueryId: '',
-    status: 'ok',
-    statusLabel: '✓ · 脱敏 1列（演示）',
-    duration: '2.48s',
-    scan: '1.2 GB',
-    scanBytes: 1.2 * 1024 * 1024 * 1024,
-    scanLimitBytes: ADHOC_SCAN_LIMIT_BYTES,
-    scanOverLimit: false,
-    maskCols: ['buyer_mobile'],
-    authHint: '演示模式',
-    message: '',
-  }
-  running.value = false
-  history.value.unshift({
-    id: `h_${Date.now()}`,
-    time: new Date().toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).replace(/\//g, '-'),
-    user: '我',
-    summary: summarize(sql),
-    duration: '2.48s',
-    scan: '1.2 GB',
-    rows: String(resultRows.value.length),
-    status: 'ok',
-    statusLabel: '✓ · 脱敏 1列（演示）',
-    tagClass: 'tag-green',
-    sql,
-  })
-  showToast('演示模式：未连后端，结果为本地样例', 'info')
-}
-
 async function runQuery() {
   if (running.value) return
   const sql = resolveExecSql()
@@ -964,7 +930,7 @@ async function runQuery() {
 
   const payload = {
     sql,
-    ws: 'default',
+    ws: currentWs.value || 'default',
     maxRows: 1000,
     elevated: !!elevateScan.value,
     params: selParams.length ? Object.fromEntries(selParams.map((n) => [n, sqlParams[n]])) : undefined,
@@ -1010,20 +976,17 @@ async function runQuery() {
       return
     }
     const msg = e?.message || '执行失败'
-    if (!e?.sse && (/网络|Failed to fetch|401|登录/i.test(msg) || !apiOnline.value)) {
-      await runQueryDemo(sql)
-    } else {
-      showResult.value = true
-      lastMeta.value.status = 'failed'
-      lastMeta.value.statusLabel = '失败'
-      lastMeta.value.message = msg
-      showToast(msg, 'error')
-      if (/cannot impersonate|IMPERSONATION/i.test(msg)) {
-        showToast('Trino 代执行未开通（admin 无法冒充映射主体），请配置 rules.json impersonation', 'warning')
-      } else if (/未授权|无权限|denied|Forbidden|ACCESS_DENIED/i.test(msg)) {
-        const go = window.confirm('可能未授权。是否前往申请中心？')
-        if (go) goApplySelect(sql)
-      }
+    showResult.value = true
+    lastMeta.value.status = 'failed'
+    lastMeta.value.statusLabel = '失败'
+    lastMeta.value.message = msg
+    resultRows.value = []
+    showToast(msg, 'error')
+    if (/cannot impersonate|IMPERSONATION/i.test(msg)) {
+      showToast('Trino 代执行未开通（admin 无法冒充映射主体），请配置 rules.json impersonation', 'warning')
+    } else if (/未授权|无权限|denied|Forbidden|ACCESS_DENIED/i.test(msg)) {
+      const go = window.confirm('可能未授权。是否前往申请中心？')
+      if (go) goApplySelect(sql)
     }
   } finally {
     running.value = false
@@ -1083,10 +1046,8 @@ function cellClass(col, row) {
       </button>
     </PageHeader>
 
-    <div v-if="catalogDegraded || !apiOnline" class="banner-soft">
-      {{ catalogDegraded ? 'Schema 树为降级/演示数据；' : '' }}
-      {{ apiOnline ? '' : '后端未连通时执行将走本地演示结果。' }}
-      限额：adhoc 默认 10GB / 硬顶 50GB。
+    <div v-if="catalogDegraded" class="banner-soft">
+      Schema 树拉取失败，目录为空；请检查后端连通后刷新。限额：adhoc 默认 10GB / 硬顶 50GB。
     </div>
 
     <div class="banner-soft query-elevate-bar">
@@ -1446,20 +1407,6 @@ function cellClass(col, row) {
           <div class="card-header">
             <div class="card-title">近 {{ history.length }} 条查询历史</div>
             <div style="display: flex; gap: 8px; align-items: center">
-              <div class="ws-scope-tabs" role="group" aria-label="归属筛选">
-                <button
-                  type="button"
-                  class="ws-scope-tab"
-                  :class="{ active: wsScope === 'team' }"
-                  @click="setScope('team')"
-                >我的团队</button>
-                <button
-                  type="button"
-                  class="ws-scope-tab"
-                  :class="{ active: wsScope === 'all' }"
-                  @click="setScope('all')"
-                >查看全部</button>
-              </div>
               <button type="button" class="btn btn-sm" @click="loadHistory">刷新</button>
             </div>
           </div>

@@ -1,4 +1,4 @@
-/** ETL 执行记录 / 节点日志 · 演示数据生成 */
+/** ETL 执行记录 / 节点日志格式化 */
 
 export const RUN_STATUS_META = {
   SUCCESS: { label: '成功', tag: 'tag-green', color: '#52c41a' },

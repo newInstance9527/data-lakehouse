@@ -123,8 +123,8 @@ export function fetchQueryHistory(params = {}) {
   })
 }
 
-export function fetchSchemaTree() {
-  return http.get(`${Q}/schema-tree`)
+export function fetchSchemaTree(ws) {
+  return http.get(`${Q}/schema-tree`, { ws })
 }
 
 /** 懒加载表列。优先 assetId；fqn 为平台 layer.domain.assetCode */

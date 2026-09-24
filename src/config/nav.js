@@ -77,6 +77,8 @@ export const NAV_GROUPS = [
   {
     title: '⑨ 系统管理',
     items: [
+      { id: 'sys-org', label: '部门管理', icon: '🏢', path: '/sys/org' },
+      { id: 'sys-position', label: '职位管理', icon: '💼', path: '/sys/position' },
       { id: 'sys-users', label: '用户管理', icon: '👤', path: '/sys/users' },
       { id: 'sys-roles', label: '角色管理', icon: '🎭', path: '/sys/roles' },
       { id: 'sys-menus', label: '菜单管理', icon: '📋', path: '/sys/menus' },

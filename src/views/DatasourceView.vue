@@ -21,13 +21,15 @@ import { schemaSummary, tablesToSchema } from '@/utils/schemaList'
 import { pageGuideOf } from '@/data/pageGuides'
 import { fetchDatasourceDetail, fetchDatasourceKpi } from '@/api/datasource'
 import { confirmDelete } from '@/composables/useConfirmDelete'
+import { useActionLock } from '@/composables/useActionLock'
 import { displayUser } from '@/utils/displayUser'
 
 const dsGuide = pageGuideOf('datasource')
 
 const router = useRouter()
 const { showToast } = useToast()
-const { canEditDatasource, canDeleteDatasource, canManageDatasource, refreshManageGrant } = useSession()
+const { busy, run: runLocked } = useActionLock()
+const { canEditDatasource, canDeleteDatasource, canManageDatasource, refreshManageGrant, currentWs } = useSession()
 const {
   sources,
   getSource,
@@ -64,7 +66,7 @@ async function retrySqlrest(s) {
         : `已投影到 SQLREST · ${ok}`,
       err > 0 ? 'warning' : 'success',
     )
-    await loadSources()
+    await reloadSources()
     if (current.value?.id === s.id) current.value = getSource(s.id)
   } catch (e) {
     showToast(`投影失败：${e?.message || e}`, 'error')
@@ -82,6 +84,10 @@ function goApplyManageDs(s) {
       name: s.name || '',
     },
   })
+}
+
+async function reloadSources(extra = {}) {
+  await loadSources({ ws: currentWs.value || 'default', ...extra })
 }
 
 function assertEditOrGuide(s, action = '编辑') {
@@ -113,11 +119,23 @@ const kpiRemote = ref(null)
 
 onMounted(async () => {
   try {
-    await loadSources()
+    await reloadSources()
     await Promise.all(
       (sources.value || []).slice(0, 50).map((s) => refreshManageGrant('datasource', s.id, s)),
     )
-    kpiRemote.value = await fetchDatasourceKpi()
+    kpiRemote.value = await fetchDatasourceKpi(currentWs.value || 'default')
+  } catch (e) {
+    showToast(`加载数据源失败：${e.message || e}`, 'error')
+  }
+})
+
+watch(currentWs, async () => {
+  try {
+    await reloadSources()
+    kpiRemote.value = await fetchDatasourceKpi(currentWs.value || 'default')
+    await Promise.all(
+      (sources.value || []).slice(0, 50).map((s) => refreshManageGrant('datasource', s.id, s)),
+    )
   } catch (e) {
     showToast(`加载数据源失败：${e.message || e}`, 'error')
   }
@@ -252,7 +270,7 @@ async function test(id) {
 }
 
 async function onTested(id) {
-  await loadSources()
+  await reloadSources()
   if (current.value?.id === id) current.value = getSource(id)
 }
 
@@ -308,7 +326,7 @@ async function toggleStatus(id) {
     if (next === 'paused') showToast(`⏸ 已停用 ${s.name}`, 'warning')
     else showToast(`▶ 已启用 ${s.name}`, 'success')
     if (current.value?.id === id) current.value = getSource(id)
-    kpiRemote.value = await fetchDatasourceKpi()
+    kpiRemote.value = await fetchDatasourceKpi(currentWs.value || 'default')
   } catch (e) {
     if (isNeedOwnerApplyError(e)) {
       showToast(e.message || '非拥有者不可启停', 'warning')
@@ -332,45 +350,52 @@ async function onDeleteSource(id) {
     confirmLabel: '确认删除',
   })
   if (!ok) return
-  try {
-    await removeSource(id)
-    if (current.value?.id === id) {
-      current.value = null
-      drawerOpen.value = false
+  await runLocked(`delete:${id}`, async () => {
+    try {
+      await removeSource(id)
+      if (current.value?.id === id) {
+        current.value = null
+        drawerOpen.value = false
+      }
+      showToast(`已删除数据源 ${s.name}`, 'success')
+      kpiRemote.value = await fetchDatasourceKpi(currentWs.value || 'default').catch(() => kpiRemote.value)
+    } catch (e) {
+      if (isNeedOwnerApplyError(e)) {
+        showToast(e.message || '非拥有者不可删除', 'warning')
+        goApplyManageDs(s)
+      } else {
+        showToast(`删除失败：${e.message || e}`, 'error')
+      }
     }
-    showToast(`已删除数据源 ${s.name}`, 'success')
-    kpiRemote.value = await fetchDatasourceKpi().catch(() => kpiRemote.value)
-  } catch (e) {
-    if (isNeedOwnerApplyError(e)) {
-      showToast(e.message || '非拥有者不可删除', 'warning')
-      goApplyManageDs(s)
-    } else {
-      showToast(`删除失败：${e.message || e}`, 'error')
-    }
-  }
+  })
 }
 
 async function onRegisterSubmit(payload) {
-  const existed = !!getSource(payload.id)
+  const body = {
+    ...payload,
+    ws: payload.ws || currentWs.value || 'default',
+  }
+  const existed = !!getSource(body.id)
   if (existed) {
-    const s = getSource(payload.id)
+    const s = getSource(body.id)
     if (s && !assertEditOrGuide(s, '更新')) {
       goApplyManageDs(s)
       return
     }
   }
   try {
-    const saved = await upsertSource(payload)
+    const saved = await upsertSource(body)
     // 新建时前端曾带临时 id，以服务端返回为准
     if (!existed && saved?.id) page.value = 1
-    if (existed) showToast(`✅ 已更新数据源 ${payload.name}`, 'success')
-    else showToast(`✅ 已注册 ${payload.name}（门户已保存；Grav/OM 按类型尽力同步）`, 'success')
-    await loadSources()
-    kpiRemote.value = await fetchDatasourceKpi()
+    if (existed) showToast(`✅ 已更新数据源 ${body.name}`, 'success')
+    else showToast(`✅ 已注册 ${body.name}（门户已保存；Grav/OM 按类型尽力同步）`, 'success')
+    await reloadSources()
+    kpiRemote.value = await fetchDatasourceKpi(currentWs.value || 'default')
   } catch (e) {
     if (isNeedOwnerApplyError(e)) {
       showToast(e.message || '非拥有者不可保存', 'warning')
-      if (s) goApplyManageDs(s)
+      const src = getSource(body.id)
+      if (src) goApplyManageDs(src)
     } else {
       showToast(`保存失败：${e.message || e}`, 'error')
     }
@@ -379,21 +404,23 @@ async function onRegisterSubmit(payload) {
 
 async function batchSync() {
   const ids = list.value.map((s) => s.id)
-  showToast(`🔄 批量同步 ${ids.length} 个数据源 Schema…`, 'info')
-  try {
-    const res = await apiBatchSync(ids)
-    showToast(
-      `✅ 同步完成：${res?.tableAdded ?? 0} 张表 · 约 ${res?.columnEstimate ?? 0} 列`,
-      'success',
-    )
-    await loadSources()
-  } catch (e) {
-    if (isNeedOwnerApplyError(e)) {
-      showToast(e.message || '无编辑权不可批量同步，请申请操作权限', 'warning')
-    } else {
-      showToast(`批量同步失败：${e.message || e}`, 'error')
+  await runLocked('batch-sync', async () => {
+    showToast(`🔄 批量同步 ${ids.length} 个数据源 Schema…`, 'info')
+    try {
+      const res = await apiBatchSync(ids)
+      showToast(
+        `✅ 同步完成：${res?.tableAdded ?? 0} 张表 · 约 ${res?.columnEstimate ?? 0} 列`,
+        'success',
+      )
+      await reloadSources()
+    } catch (e) {
+      if (isNeedOwnerApplyError(e)) {
+        showToast(e.message || '无编辑权不可批量同步，请申请操作权限', 'warning')
+      } else {
+        showToast(`批量同步失败：${e.message || e}`, 'error')
+      }
     }
-  }
+  })
 }
 
 function goPage(p) {
@@ -410,7 +437,7 @@ function goPage(p) {
       :guide-title="dsGuide.title"
       :guide="dsGuide"
     >
-      <button class="btn btn-sm" @click="batchSync">🔄 批量同步</button>
+      <button class="btn btn-sm" :disabled="busy('batch-sync')" @click="batchSync">{{ busy('batch-sync') ? '同步中…' : '🔄 批量同步' }}</button>
       <button class="btn btn-sm btn-primary" @click="openRegister">＋ 注册数据源</button>
     </PageHeader>
 

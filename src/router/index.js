@@ -54,6 +54,13 @@ const routes = [
   { path: '/aiassistant', name: 'aiassistant', component: () => import('@/views/AiAssistantView.vue'), meta: { id: 'aiassistant' } },
   { path: '/aimodel', name: 'aimodel', component: () => import('@/views/AiModelView.vue'), meta: { id: 'aimodel' } },
   { path: '/knowledge', name: 'knowledge', component: () => import('@/views/KnowledgeView.vue'), meta: { id: 'knowledge' } },
+  { path: '/sys/org', name: 'sys-org', component: () => import('@/views/SysOrgView.vue'), meta: { id: 'sys-org' } },
+  {
+    path: '/sys/position',
+    name: 'sys-position',
+    component: () => import('@/views/SysPositionView.vue'),
+    meta: { id: 'sys-position' },
+  },
   { path: '/sys/users', name: 'sys-users', component: () => import('@/views/SysUserView.vue'), meta: { id: 'sys-users' } },
   { path: '/sys/roles', name: 'sys-roles', component: () => import('@/views/SysRoleView.vue'), meta: { id: 'sys-roles' } },
   { path: '/sys/menus', name: 'sys-menus', component: () => import('@/views/SysMenuView.vue'), meta: { id: 'sys-menus' } },

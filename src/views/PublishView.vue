@@ -4,7 +4,8 @@ import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
 import { useToast } from '@/composables/useToast'
 import { usePublish } from '@/composables/usePublish'
-import { useSession } from '@/composables/useSession'
+import { useWsListScope } from '@/composables/useWsListScope'
+import { useActionLock } from '@/composables/useActionLock'
 import { pageGuideOf } from '@/data/pageGuides'
 import {
   PUBLISH_ENV_STAGES,
@@ -15,10 +16,17 @@ import {
 const route = useRoute()
 const router = useRouter()
 const { showToast } = useToast()
-const { currentWs } = useSession()
+const { currentWs, showAll, listWs, watchListScope } = useWsListScope()
+const { busy, run: runLocked } = useActionLock()
 const guide = pageGuideOf('publish')
 const { items, gateList, focus, focusId, refresh, publish, rollback, select } = usePublish()
 const loadError = ref('')
+
+const publishing = computed(() => busy('publish'))
+const rolling = computed(() => busy('rollback'))
+
+const focusRow = computed(() => items.value.find((r) => r.id === focusId.value) || null)
+const focusStatus = computed(() => focusRow.value?.status || '')
 
 const kpis = computed(() => {
   const list = items.value
@@ -27,7 +35,7 @@ const kpis = computed(() => {
   const rolled = list.filter((r) => r.status === 'ROLLED_BACK').length
   const rejected = list.filter((r) => r.status === 'REJECTED').length
   return [
-    { icon: '🧪', color: 'orange', value: String(review), unit: '单', label: '门禁中', trend: '静态检查 + 试跑' },
+    { icon: '🧪', color: 'orange', value: String(review), unit: '单', label: '门禁中', trend: 'MR + SCR 审批' },
     { icon: '📦', color: 'green', value: String(published), unit: '单', label: '已发布', trend: 'Git tag + 调度投影' },
     { icon: '🔄', color: 'purple', value: String(rolled), unit: '单', label: '已回滚', trend: '指向更早 tag' },
     { icon: '✗', color: 'red', value: String(rejected), unit: '单', label: '未通过', trend: '不能标已发布' },
@@ -35,11 +43,9 @@ const kpis = computed(() => {
   ]
 })
 
-const focusStatus = computed(() => items.value.find((r) => r.id === focusId.value)?.status || '')
-
 async function load() {
   try {
-    await refresh(currentWs.value || 'default')
+    await refresh(listWs.value)
     loadError.value = ''
     const id = typeof route.query.id === 'string' ? route.query.id : ''
     if (id) {
@@ -58,27 +64,33 @@ function goDevelop() {
 
 async function onPublish() {
   if (!focusId.value) return
-  try {
-    const row = await publish(focusId.value)
-    showToast(`已发布 ${row.pkg} · ${row.tag}`, 'success')
-  } catch (e) {
-    showToast(e?.message || '发布失败', 'warning')
-  }
+  await runLocked('publish', async () => {
+    try {
+      const row = await publish(focusId.value)
+      showToast(`已发布 ${row.pkg} · ${row.tag}`, 'success')
+      if (row.remoteWarning) showToast(row.remoteWarning, 'warning')
+    } catch (e) {
+      showToast(e?.message || '发布失败', 'warning')
+    }
+  })
 }
 
 async function onRollback() {
   if (!focusId.value) return
   if (!window.confirm('回滚会按上一 Git tag 重新投影调度，不会改调度器里的 SQL。继续？')) return
-  try {
-    const row = await rollback(focusId.value)
-    showToast(`已回滚到 ${row.rolledToTag || row.tag}`, 'success')
-  } catch (e) {
-    showToast(e?.message || '回滚失败', 'warning')
-  }
+  await runLocked('rollback', async () => {
+    try {
+      const row = await rollback(focusId.value)
+      showToast(`已回滚到 ${row.rolledToTag || row.tag}`, 'success')
+      if (row.remoteWarning) showToast(row.remoteWarning, 'warning')
+    } catch (e) {
+      showToast(e?.message || '回滚失败', 'warning')
+    }
+  })
 }
 
 onMounted(load)
-watch(currentWs, load)
+watchListScope(load)
 watch(
   () => route.query.id,
   () => {
@@ -98,9 +110,21 @@ watch(
       :guide-title="guide.title"
       :guide="guide"
     >
+      <label class="ws-mine-chk" title="默认跟随顶栏当前空间；勾选后查看全部归属">
+        <input v-model="showAll" type="checkbox" />
+        查看全部
+      </label>
       <button class="btn btn-sm" @click="goDevelop">＋ 从脚本提交</button>
-      <button class="btn btn-sm" :disabled="!focusId || focusStatus === 'PUBLISHED'" @click="onPublish">发布</button>
-      <button class="btn btn-sm" :disabled="!focusId" @click="onRollback">回滚上一 tag</button>
+      <button
+        class="btn btn-sm"
+        :disabled="!focusId || focusStatus === 'PUBLISHED' || publishing"
+        @click="onPublish"
+      >
+        {{ publishing ? '发布中…' : '发布' }}
+      </button>
+      <button class="btn btn-sm" :disabled="!focusId || rolling" @click="onRollback">
+        {{ rolling ? '回滚中…' : '回滚上一 tag' }}
+      </button>
       <button class="btn btn-sm btn-primary" @click="goDevelop">🔗 数据开发</button>
     </PageHeader>
 
@@ -153,6 +177,11 @@ watch(
           </span>
         </div>
         <div class="card-body" style="padding: 0">
+          <div v-if="focusRow?.applyTicketNo || focusRow?.prUrl" class="gate-meta">
+            <span v-if="focusRow.applyTicketNo">申请单 <code>{{ focusRow.applyTicketNo }}</code></span>
+            <a v-if="focusRow.prUrl" :href="focusRow.prUrl" target="_blank" rel="noopener">PR #{{ focusRow.prNumber || '—' }} · {{ focusRow.prState || 'open' }}</a>
+            <span v-else-if="focusRow.prNumber">PR #{{ focusRow.prNumber }} · {{ focusRow.prState || '—' }}</span>
+          </div>
           <div
             v-for="g in gateList"
             :key="g.step"
@@ -340,6 +369,22 @@ watch(
 .gate-step.run .gs-icon { background: var(--primary); color: #fff; }
 .gs-name { font-weight: 600; color: var(--text-1); }
 .gs-detail { font-size: 11px; color: var(--text-3); margin-top: 2px; }
+
+.gate-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  padding: 10px 14px;
+  font-size: 12px;
+  color: var(--text-2);
+  border-bottom: 1px solid var(--border);
+}
+.gate-meta a {
+  color: var(--primary);
+}
+.gate-meta code {
+  font-size: 11px;
+}
 
 .pkg {
   font-size: 11px;

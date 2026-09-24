@@ -11,7 +11,10 @@ import {
   sensitivityToLevel,
   updateAssetMeta as apiUpdateMeta,
 } from '@/api/catalog'
+import { fetchDatasourcePage, fetchTablePage } from '@/api/datasource'
 import { domainMeta, layerMeta, levelClass } from '@/data/assetMeta'
+import { ensureOnce } from '@/composables/useEnsureSamples'
+import { SAMPLE_ASSET } from '@/data/sampleSeeds'
 
 const assets = ref([])
 const loaded = ref(false)
@@ -42,6 +45,42 @@ export function useAssets() {
       const page = await fetchAssetPage(filters, { current: 1, size: 500 })
       assets.value = (page?.records || []).map(normalizeAsset)
       loaded.value = true
+      await ensureOnce(
+        'catalog_sample_asset',
+        async () => {
+          if (assets.value.length > 0) return false
+          const dsPage = await fetchDatasourcePage({}, { current: 1, size: 1 }).catch(() => null)
+          const ds = dsPage?.records?.[0]
+          if (!ds?.id) return false
+          // 须先有 ig_ds_table，否则注册会被后端拒绝
+          const tp = await fetchTablePage(ds.id, { current: 1, size: 1 }).catch(() => null)
+          return !!(tp?.records?.length)
+        },
+        async () => {
+          const dsPage = await fetchDatasourcePage({}, { current: 1, size: 1 })
+          const ds = dsPage?.records?.[0]
+          if (!ds?.id) throw new Error('无可用数据源，跳过资产示例')
+          const tp = await fetchTablePage(ds.id, { current: 1, size: 5 })
+          const row = (tp?.records || [])[0]
+          const objectName = String(row?.tableName || row?.name || '').trim()
+          if (!objectName) throw new Error('数据源表清单为空，请先同步后再登记')
+          const safeCode = objectName.replace(/[^\w.]+/g, '_').slice(0, 96)
+          await apiAddAsset({
+            ...SAMPLE_ASSET,
+            objectName,
+            assetCode: `ods_demo.${safeCode}`,
+            name: objectName,
+            cnName: row?.cnName || SAMPLE_ASSET.cnName,
+            dsId: ds.id,
+            sourceId: ds.id,
+            ws: filters.ws,
+          })
+        },
+        async () => {
+          const page2 = await fetchAssetPage(filters, { current: 1, size: 500 })
+          assets.value = (page2?.records || []).map(normalizeAsset)
+        },
+      )
       return assets.value
     } catch (e) {
       loadError = e
@@ -202,6 +241,9 @@ export function normalizeAsset(vo) {
     quality,
     qualityClass: qualityClassOf(quality),
     isGold: !!vo.isGold,
+    visibility: vo.visibility || 'private_ws',
+    shareStatus: vo.shareStatus || 'none',
+    ws: vo.ws || '',
     engine: vo.engine || '',
     storage: vo.storage || '',
     tags,

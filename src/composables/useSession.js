@@ -6,6 +6,7 @@
 import { computed, readonly, ref } from 'vue'
 import { clearToken, getLoginUser, getToken, loginMenu, doLogout as apiLogout } from '@/api/auth'
 import { http } from '@/api/http'
+import { fetchWsCurrent } from '@/api/workspace'
 import { NAV_GROUPS } from '@/config/nav'
 import { collectMenuNavIds } from '@/utils/menuNav'
 
@@ -333,6 +334,13 @@ export function useSession() {
       }
       const raw = await getLoginUser()
       currentUser.value = mapUser(raw)
+      // 当前协作 ws：以 /lh/workspace/current 为准（软偏好，非 ACL）
+      try {
+        const cur = await fetchWsCurrent()
+        if (cur?.wsCode) setCurrentWs(cur.wsCode)
+      } catch {
+        /* 保留 localStorage / default */
+      }
       try {
         const tree = await loginMenu()
         const ids = collectMenuNavIds(tree)

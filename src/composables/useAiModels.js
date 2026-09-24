@@ -4,7 +4,9 @@
 import { computed, ref } from 'vue'
 import {
   createAiModel,
+  deleteAiModel,
   enableAiModel,
+  fetchAiModel,
   fetchAiModelOverview,
   fetchAiModels,
   fetchAiRoutes,
@@ -13,6 +15,10 @@ import {
   updateAiModel,
 } from '@/api/ai'
 import { formatAiPrice, maskApiKey } from '@/data/ai'
+
+function asBoolFlag(v) {
+  return v === true || v === 1 || v === '1'
+}
 
 const models = ref([])
 const routes = ref([])
@@ -39,6 +45,7 @@ export function normalizeAiModel(row) {
   const inputRate = Number(row.inputRate) || 0
   const outputRate = Number(row.outputRate) || 0
   const meta = vendorMeta[row.vendor] || vendorMeta['自建']
+  const kind = String(row.kind || 'chat').toLowerCase()
   return {
     id: row.id,
     name: row.name || row.modelName,
@@ -60,7 +67,9 @@ export function normalizeAiModel(row) {
     calls: formatCalls(row.callsTotal),
     cost: formatCost(row.costTotal),
     role: row.roleLabel || row.role || '',
-    kind: row.kind || 'chat',
+    kind,
+    supportsVision: kind === 'chat' && asBoolFlag(row.supportsVision),
+    supportsImageOutput: asBoolFlag(row.supportsImageOutput) || kind === 'image',
     modelName: row.modelName,
     vaultPath: row.vaultPath,
     litellmAlias: row.litellmAlias,
@@ -69,6 +78,28 @@ export function normalizeAiModel(row) {
     litellmSyncMessage: row.litellmSyncMessage,
     egressKind: row.egressKind || 'egress',
     egressApproved: row.egressApproved === true || row.egressApproved === 1 || row.egressKind === 'local',
+    tokenQuota: row.tokenQuota != null && Number(row.tokenQuota) > 0 ? Number(row.tokenQuota) : null,
+    costQuota: row.costQuota != null && Number(row.costQuota) > 0 ? Number(row.costQuota) : null,
+    tokenUsed: Number(row.tokenUsed) || 0,
+    costUsed: Number(row.costUsed) || 0,
+    tokenRemaining: row.tokenRemaining != null ? Number(row.tokenRemaining) : null,
+    costRemaining: row.costRemaining != null ? Number(row.costRemaining) : null,
+    tokenPct: Number(row.tokenPct) || 0,
+    costPct: Number(row.costPct) || 0,
+    quotaLimited: Boolean(row.quotaLimited),
+  }
+}
+
+function capabilityPayload(payload) {
+  const kind = payload.kind || 'chat'
+  return {
+    kind,
+    supportsVision: kind === 'chat' && asBoolFlag(payload.supportsVision),
+    supportsImageOutput:
+      kind === 'image' &&
+      (payload.supportsImageOutput === undefined ||
+        payload.supportsImageOutput === '' ||
+        asBoolFlag(payload.supportsImageOutput)),
   }
 }
 
@@ -173,6 +204,7 @@ export function useAiModels() {
   }
 
   async function addModel(payload) {
+    const caps = capabilityPayload(payload)
     const saved = await createAiModel({
       vendor: payload.vendor,
       name: payload.model,
@@ -183,8 +215,12 @@ export function useAiModels() {
       priceUnit: payload.priceUnit,
       inputRate: payload.inputRate,
       outputRate: payload.outputRate,
+      tokenQuota: Number(payload.tokenQuota) > 0 ? Math.floor(Number(payload.tokenQuota)) : 0,
+      costQuota: Number(payload.costQuota) > 0 ? Number(payload.costQuota) : 0,
       roleLabel: payload.use,
-      kind: payload.kind || 'chat',
+      kind: caps.kind,
+      supportsVision: caps.supportsVision,
+      supportsImageOutput: caps.supportsImageOutput,
       ws: payload.ws,
       egressApproved: payload.egressApproved === true || payload.egressApproved === 1 || payload.egressApproved === '1',
     })
@@ -194,6 +230,7 @@ export function useAiModels() {
   }
 
   async function editModel(id, payload) {
+    const caps = capabilityPayload(payload)
     const saved = await updateAiModel(id, {
       vendor: payload.vendor,
       name: payload.model,
@@ -204,8 +241,12 @@ export function useAiModels() {
       priceUnit: payload.priceUnit,
       inputRate: payload.inputRate,
       outputRate: payload.outputRate,
+      tokenQuota: Number(payload.tokenQuota) > 0 ? Math.floor(Number(payload.tokenQuota)) : 0,
+      costQuota: Number(payload.costQuota) > 0 ? Number(payload.costQuota) : 0,
       roleLabel: payload.use,
-      kind: payload.kind || 'chat',
+      kind: caps.kind,
+      supportsVision: caps.supportsVision,
+      supportsImageOutput: caps.supportsImageOutput,
       egressApproved: payload.egressApproved === true || payload.egressApproved === 1 || payload.egressApproved === '1',
     })
     const n = normalizeAiModel(saved)
@@ -224,6 +265,22 @@ export function useAiModels() {
 
   async function test(id) {
     return testAiModel(id)
+  }
+
+  async function getDetail(id) {
+    const row = await fetchAiModel(id)
+    return normalizeAiModel(row)
+  }
+
+  async function removeModel(id) {
+    await deleteAiModel(id)
+    models.value = models.value.filter((m) => m.id !== id)
+    // 后端可能级联停用路由；刷新列表与路由，避免本地假成功
+    try {
+      await loadAll()
+    } catch {
+      /* 删除已成功，列表已本地剔除 */
+    }
   }
 
   return {
@@ -247,6 +304,8 @@ export function useAiModels() {
     ensureLoaded,
     addModel,
     editModel,
+    removeModel,
+    getDetail,
     toggle,
     test,
   }

@@ -30,27 +30,37 @@ function goLogin() {
   }, 800)
 }
 
-async function request(method, path, { params, body, skipAuth } = {}) {
+async function request(method, path, { params, body, skipAuth, formData, headers: extraHeaders, idempotencyKey } = {}) {
   let url = `${API_BASE}${path}`
   if (params && typeof params === 'object') {
     const qs = new URLSearchParams()
     Object.entries(params).forEach(([k, v]) => {
-      if (v === undefined || v === null || v === '') return
+      // 仅跳过未传值；空串要保留（如 orgTreeSelector 的 searchKey='' → 全量嵌套树）
+      if (v === undefined || v === null) return
       qs.set(k, String(v))
     })
     const s = qs.toString()
     if (s) url += (url.includes('?') ? '&' : '?') + s
   }
-  const headers = {}
-  if (body != null) headers['Content-Type'] = 'application/json'
+  const headers = { ...(extraHeaders || {}) }
+  if (body != null && !formData) headers['Content-Type'] = 'application/json'
+  if (idempotencyKey) headers['Idempotency-Key'] = String(idempotencyKey)
   if (!skipAuth) {
     const token = getToken()
     if (token) headers.token = token
   }
+  let payload
+  if (formData) {
+    payload = formData
+  } else if (body != null) {
+    payload = JSON.stringify(body)
+  } else {
+    payload = undefined
+  }
   const res = await fetch(url, {
     method,
     headers: Object.keys(headers).length ? headers : undefined,
-    body: body != null ? JSON.stringify(body) : undefined,
+    body: payload,
   })
   const text = await res.text()
   let json
@@ -75,4 +85,6 @@ export const http = {
   post: (path, body, opts) => request('POST', path, { body, ...opts }),
   put: (path, body, opts) => request('PUT', path, { body, ...opts }),
   delete: (path, params, opts) => request('DELETE', path, { params, ...opts }),
+  /** multipart：勿手动设 Content-Type，由浏览器带 boundary */
+  postForm: (path, formData, opts) => request('POST', path, { formData, ...opts }),
 }

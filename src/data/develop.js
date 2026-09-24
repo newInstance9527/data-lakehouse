@@ -1,4 +1,4 @@
-/** 数据开发 / SQL 工作台 · 演示数据 */
+/** 数据开发 / SQL 工作台 · 引擎与状态标签 */
 
 export const DEV_KPIS = [
   { label: '工作空间脚本数', value: '286', unit: '个', delta: '↑ 12 本月新增', tone: '' },

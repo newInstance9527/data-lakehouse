@@ -36,12 +36,15 @@ import { fetchEtlDags } from '@/api/etl'
 import { useApplyBoard, pushExportApply, approveExportOnBoard, hydrateApplyBoardFromServer } from '@/composables/useApplyBoard'
 import { useMetrics } from '@/composables/useMetrics'
 import { useAssets } from '@/composables/useAssets'
-import { PUBLISH_HISTORY } from '@/data/publish'
+import { fetchReleases } from '@/api/compute'
+import { useSession } from '@/composables/useSession'
+import { useActionLock } from '@/composables/useActionLock'
 import { OPS_RESOURCE_ENABLED, opsResourceLabel } from '@/data/opsResourceTypes'
 
 const route = useRoute()
 const router = useRouter()
 const { showToast } = useToast()
+const { busy, run: runLocked } = useActionLock()
 const guide = pageGuideOf('apply')
 const { pending, mine } = useApplyBoard()
 
@@ -111,7 +114,7 @@ const applyKpis = computed(() => {
 
 async function refreshApplyKpi() {
   try {
-    kpiRemote.value = await fetchApplyKpi()
+    kpiRemote.value = await fetchApplyKpi({ ws: currentWs.value || 'default' })
   } catch {
     kpiRemote.value = null
   }
@@ -119,13 +122,15 @@ async function refreshApplyKpi() {
 
 /** 刷新看板列表 + KPI */
 async function syncApplyBoard() {
-  await hydrateApplyBoardFromServer().catch(() => false)
+  await hydrateApplyBoardFromServer(currentWs.value || 'default').catch(() => false)
   await refreshApplyKpi()
 }
 const { catalog: metricCatalog, ensureLoaded: ensureMetricsLoaded } = useMetrics()
 const { list: assetList, ensureLoaded: ensureAssetsLoaded } = useAssets()
+const { currentWs } = useSession()
 const assetsLive = ref(false)
 const assetsLoadError = ref('')
+const releaseHistory = ref([])
 
 onMounted(async () => {
   await syncApplyBoard()
@@ -139,6 +144,20 @@ onMounted(async () => {
   loadOpsResourceOptions()
   loadPublishedApiOptions()
   ensureMetricsLoaded()
+  fetchReleases(currentWs.value || 'default')
+    .then((list) => {
+      const rows = Array.isArray(list) ? list : []
+      releaseHistory.value = rows.map((r) => ({
+        pkg: r.pkg || r.name || r.id,
+        tag: r.tag || r.version || '—',
+        env: r.env || r.targetEnv || '—',
+        result: r.result || r.status || '—',
+        time: r.publishedAt || r.updatedAt || r.createdAt || '',
+      }))
+    })
+    .catch(() => {
+      releaseHistory.value = []
+    })
   try {
     await ensureAssetsLoaded()
     assetsLive.value = true
@@ -151,15 +170,19 @@ onMounted(async () => {
   } catch (e) {
     assetsLive.value = false
     assetsLoadError.value = e?.message || '资产列表加载失败'
-    showToast('申请可选表加载失败：请确认已登录且 /lh/catalog 可用（不再回落演示表）', 'warning')
+    showToast('申请可选表加载失败：请确认已登录且 /lh/catalog 可用', 'warning')
   }
+})
+
+watch(currentWs, () => {
+  syncApplyBoard().catch(() => {})
 })
 
 const TYPE_LABEL = Object.fromEntries(APPLY_TYPE_OPTIONS.map((o) => [o.value, o.label]))
 const SIDE_LABEL = { pending: '处理中', approved: '已通过', rejected: '已驳回' }
 const METRIC_OPTIONS = computed(() => buildApplyMetricOptions(metricCatalog.value))
 const ASSET_OPTIONS = computed(() => buildApplyAssetOptions(assetList.value))
-const RELEASE_OPTIONS = buildApplyReleaseOptions(PUBLISH_HISTORY)
+const RELEASE_OPTIONS = computed(() => buildApplyReleaseOptions(releaseHistory.value))
 const EXPORT_OPTIONS = computed(() => buildApplyExportOptions(assetList.value))
 const SCOPE_LABEL = Object.fromEntries(APPLY_METRIC_SCOPES.map((o) => [o.value, o.label]))
 const PERM_LEVEL_CLS = Object.fromEntries(APPLY_PERM_LEVELS.map((o) => [o.value, o.cls]))
@@ -189,7 +212,7 @@ function emptyForm() {
     columns: '',
     tableKind: 'read',
     tableNameNew: '',
-    releasePkg: RELEASE_OPTIONS[0]?.value || '',
+    releasePkg: RELEASE_OPTIONS.value[0]?.value || '',
     publishEnv: 'stg',
     rollbackPlan: '',
     exportTable: '',
@@ -206,7 +229,8 @@ const creating = ref(false)
 const form = ref(emptyForm())
 const tokenModal = ref(null)
 const rejectModal = ref(null) // { ticket, remark }
-const rejectSubmitting = ref(false)
+const rejectSubmitting = computed(() => busy('reject'))
+const submitting = computed(() => busy('submit'))
 const detailOpen = ref(false)
 const detail = ref(null)
 const apiPreview = ref(null)
@@ -242,7 +266,7 @@ async function loadPublishedApiOptions() {
       }
     }
   } catch {
-    /* 保留演示选项 */
+    /* 保留下拉选项 */
   }
 }
 
@@ -308,7 +332,7 @@ function onOpsEtlPicked(id) {
 
 const selectedMetric = computed(() => METRIC_OPTIONS.value.find((o) => o.value === form.value.metricId) || null)
 const selectedAsset = computed(() => ASSET_OPTIONS.value.find((o) => o.value === form.value.asset) || null)
-const selectedRelease = computed(() => RELEASE_OPTIONS.find((o) => o.value === form.value.releasePkg) || null)
+const selectedRelease = computed(() => RELEASE_OPTIONS.value.find((o) => o.value === form.value.releasePkg) || null)
 
 /** 深链 / 即席带入：按 id、assetCode、fqn 末段匹配已登记资产 */
 function resolveAssetPrefill(assetId, assetCode, fqn) {
@@ -642,6 +666,7 @@ function purposePlaceholder() {
 }
 
 async function submitApply() {
+  await runLocked('submit', async () => {
   if (form.value.type === 'api_publish') {
     showToast('API 发布申请请到「数据服务 → 构建工作台」保存后发起', 'warning')
     router.push('/dataservice')
@@ -756,45 +781,10 @@ async function submitApply() {
       activeTab.value = 'api'
       return
     } catch (e) {
-      showToast(e?.message || '订阅申请提交失败，已落本地演示单', 'warning')
+      showToast(e?.message || '订阅申请提交失败', 'danger')
+      creating.value = false
+      return
     }
-    mine.value.unshift({
-      id,
-      type: 'api',
-      side: 'pending',
-      titleHtml: `<span class="tag tag-orange">处理中</span> 我申请 ${path} 调用权限`,
-      time: now,
-      desc: `应用：${app} · 申请方 ${form.value.qps} QPS · 时效 ${form.value.expire} · ${purpose}`,
-      apiPath: path,
-      app,
-      qps: form.value.qps,
-      expire: form.value.expire,
-      timeline: [
-        { label: '✓ 提交', cls: 'done' },
-        { label: '● API Owner 审批中', cls: 'current' },
-        { label: '签发令牌', cls: '' },
-      ],
-    })
-    pending.value.unshift({
-      id,
-      type: 'api',
-      side: 'pending',
-      titleHtml: `<span class="tag tag-green">API</span> ${app} 申请 ${path} 调用权限`,
-      statusTag: '待 API Owner',
-      statusCls: 'tag-orange',
-      desc: `应用：${app} · Token 鉴权 · 申请方 ${form.value.qps} QPS（受接口全局上限约束）· 时效 ${form.value.expire} · 用途：${purpose}`,
-      apiPath: path,
-      app,
-      qps: form.value.qps,
-      expire: form.value.expire,
-      applicant: '我',
-      timeline: [
-        { label: '✓ 提交', cls: 'done' },
-        { label: '● API Owner', cls: 'current' },
-        { label: '签发令牌', cls: '' },
-        { label: 'Gateway 生效', cls: '' },
-      ],
-    })
   } else if (form.value.type === 'metric') {
     await submitMetricApply(id, now, purpose)
     creating.value = false
@@ -850,13 +840,42 @@ async function submitApply() {
       const sid = server?.id || server?.ticketNo || id
       submitPermApply(sid, now, purpose, { fromServer: true, serverId: server?.id })
     } catch (e) {
-      showToast(e?.message || '后端申请接口暂不可用，已落本地演示单', 'warning')
-      submitPermApply(id, now, purpose)
+      showToast(e?.message || '表读权限申请提交失败', 'danger')
+      creating.value = false
+      return
     }
   } else if (form.value.type === 'table') {
-    submitTableApply(id, now, purpose)
+    showToast('建表/改表申请请走资产目录或工单 API', 'warning')
+    creating.value = false
+    return
   } else if (form.value.type === 'publish') {
-    submitPublishApply(id, now, purpose)
+    try {
+      const pkg = form.value.releasePkg
+      const env = form.value.publishEnv
+      const server = await createApplyTicket({
+        ticketType: 'script_publish',
+        title: `脚本发布 · ${pkg} → ${env}`,
+        reason: purpose,
+        resourceId: selectedRelease.value?.id || pkg,
+        resourceType: 'cp_release',
+        publishEnv: env,
+        rollbackPlan: form.value.rollbackPlan.trim(),
+        expireLabel: form.value.expire,
+      })
+      showToast(
+        `✅ 发布包申请已提交：${server?.ticketNo || server?.id || ''}，审批通过后到「环境与发布」点发布`,
+        'success',
+        { duration: 8000 },
+      )
+      await syncApplyBoard()
+      activeTab.value = 'publish'
+    } catch (e) {
+      showToast(e?.message || '发布包申请失败', 'danger')
+      creating.value = false
+      return
+    }
+    creating.value = false
+    return
   } else if (form.value.type === 'export') {
     try {
       const r = await pushExportApply({
@@ -866,10 +885,11 @@ async function submitApply() {
         expire: form.value.expire,
         applicant: '我',
       })
-      const tip = r.degraded
-        ? `⚠️ 出湖申请已落本地：${r.ticketNo}（${r.message || '后端暂不可用'}）`
-        : `✅ 出湖申请已提交：${r.ticketNo} · 请在「待我审批」通过后，将单号填回 ETL ticketNo`
-      showToast(tip, r.degraded ? 'warning' : 'success', { duration: 8000 })
+      showToast(
+        `✅ 出湖申请已提交：${r.ticketNo} · 请在「待我审批」通过后，将单号填回 ETL ticketNo`,
+        'success',
+        { duration: 8000 },
+      )
     } catch (e) {
       showToast(e?.message || '出湖申请提交失败', 'danger')
     }
@@ -897,22 +917,14 @@ async function submitApply() {
     creating.value = false
     return
   } else {
-    mine.value.unshift({
-      id,
-      type: form.value.type,
-      side: 'pending',
-      titleHtml: `<span class="tag tag-orange">处理中</span> 我申请 ${form.value.asset}`,
-      time: now,
-      desc: `用途：${purpose} · 时效 ${form.value.expire}`,
-      timeline: [
-        { label: '✓ 提交', cls: 'done' },
-        { label: '● Owner 审批中', cls: 'current' },
-      ],
-    })
+    showToast(`不支持的申请类型：${form.value.type}`, 'warning')
+    creating.value = false
+    return
   }
 
   creating.value = false
   showToast(`✅ 申请已提交：${id}（${typeLabel}）已通知审批人`, 'success')
+  })
 }
 
 async function submitMetricApply(id, now, purpose) {
@@ -942,43 +954,7 @@ async function submitMetricApply(id, now, purpose) {
     await syncApplyBoard()
     activeTab.value = 'metric'
   } catch (e) {
-    showToast(e?.message || '指标权限申请提交失败，已落本地演示单', 'warning')
-    const scopeLabel = SCOPE_LABEL[form.value.metricScope] || form.value.metricScope
-    const base = {
-      id,
-      type: 'metric',
-      side: 'pending',
-      metricKind: kind,
-      metricId,
-      metricName,
-      metricScope: form.value.metricScope,
-      purpose,
-      applicant: '我',
-      expire: form.value.expire,
-    }
-    mine.value.unshift({
-      ...base,
-      titleHtml: `<span class="tag tag-orange">处理中</span> 我申请 ${metricId} ${metricName} · 查询权限`,
-      time: now,
-      desc: `场景：${scopeLabel} · 时效 ${form.value.expire} · ${purpose}`,
-      timeline: [
-        { label: '✓ 提交', cls: 'done' },
-        { label: '● 指标 Owner 审批中', cls: 'current' },
-        { label: '写入授权', cls: '' },
-      ],
-    })
-    pending.value.unshift({
-      ...base,
-      titleHtml: `<span class="tag tag-blue">指标</span> ${metricId} ${metricName} · 查询权限`,
-      statusTag: '待指标 Owner',
-      statusCls: 'tag-orange',
-      desc: `场景：${scopeLabel} · 时效 ${form.value.expire} · ${purpose}`,
-      timeline: [
-        { label: '✓ 提交', cls: 'done' },
-        { label: '● 指标 Owner', cls: 'current' },
-        { label: '写入授权', cls: '' },
-      ],
-    })
+    showToast(e?.message || '指标权限申请提交失败', 'danger')
   }
 }
 
@@ -1175,6 +1151,7 @@ function submitPublishApply(id, now, purpose) {
 }
 
 async function approveTicket(id) {
+  await runLocked(`approve:${id}`, async () => {
   const idx = pending.value.findIndex((w) => w.id === id)
   if (idx < 0) return
   const ticket = pending.value[idx]
@@ -1324,7 +1301,7 @@ async function approveTicket(id) {
   }
 
   if (ticket.type === 'metric') {
-    // 仅本地演示单；服务端 metric 已在上方走 apiApproveTicket
+    // 仅服务端工单；metric 审批已在上方走 apiApproveTicket，此处不应再有本地假单
     pending.value.splice(idx, 1)
     const now = new Date().toLocaleString('zh-CN', {
       hour12: false,
@@ -1494,6 +1471,7 @@ async function approveTicket(id) {
 
   pending.value.splice(idx, 1)
   showToast(`✅ 已通过 ${id}`, 'success')
+  })
 }
 
 function openRejectModal(id) {
@@ -1509,7 +1487,7 @@ function openRejectModal(id) {
 }
 
 function closeRejectModal() {
-  if (rejectSubmitting.value) return
+  if (busy('reject')) return
   rejectModal.value = null
 }
 
@@ -1525,61 +1503,60 @@ async function confirmReject() {
     showToast('驳回意见过短，请说明需修改的内容', 'warning')
     return
   }
-  const ticket = modal.ticket
-  const id = ticket.id
-  rejectSubmitting.value = true
-  try {
-    if (ticket.fromServer || ticket.serverId) {
-      await apiRejectTicket(ticket.serverId || ticket.id, remark)
-      await syncApplyBoard()
-      showToast(
-        ticket.type === 'api_publish' || (ticket.type === 'metric' && ticket.metricKind !== 'query')
-          ? `已退回重改 ${ticket.ticketNo || id} · 驳回意见已写入`
-          : `已驳回 ${ticket.ticketNo || id} · 驳回意见已写入`,
-        'warning',
-      )
+  await runLocked('reject', async () => {
+    const ticket = modal.ticket
+    const id = ticket.id
+    try {
+      if (ticket.fromServer || ticket.serverId) {
+        await apiRejectTicket(ticket.serverId || ticket.id, remark)
+        await syncApplyBoard()
+        showToast(
+          ticket.type === 'api_publish' || (ticket.type === 'metric' && ticket.metricKind !== 'query')
+            ? `已退回重改 ${ticket.ticketNo || id} · 驳回意见已写入`
+            : `已驳回 ${ticket.ticketNo || id} · 驳回意见已写入`,
+          'warning',
+        )
+        rejectModal.value = null
+        if (detail.value?.id === id) closeDetail()
+        return
+      }
+
+      const idx = pending.value.findIndex((w) => w.id === id)
+      if (idx >= 0) pending.value.splice(idx, 1)
+      const mineIdx = mine.value.findIndex((m) => m.id === ticket.id && m.side === 'pending')
+      if (mineIdx >= 0) {
+        const now = new Date()
+          .toLocaleString('zh-CN', {
+            hour12: false,
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+          })
+          .replace(/\//g, '-')
+        mine.value.splice(mineIdx, 1, {
+          ...ticket,
+          side: 'rejected',
+          remark,
+          titleHtml: `<span class="tag tag-red">已驳回</span> ${ticket.asset || ticket.apiPath || ticket.ticketNo || ticket.id}`,
+          time: now,
+          desc: `驳回意见：${remark} · 原单号 ${ticket.ticketNo || ticket.id}`,
+          statusTag: '已驳回·请重改',
+          statusCls: 'tag-red',
+          timeline: [
+            { label: '✓ 提交', cls: 'done' },
+            { label: '✗ 已驳回', cls: 'done' },
+            { label: '改后重提', cls: 'current' },
+          ],
+        })
+      }
+      showToast(`已驳回 ${id} · 驳回意见已记录`, 'warning')
       rejectModal.value = null
       if (detail.value?.id === id) closeDetail()
-      return
+    } catch (e) {
+      showToast(e?.message || '驳回失败', 'danger')
     }
-
-    const idx = pending.value.findIndex((w) => w.id === id)
-    if (idx >= 0) pending.value.splice(idx, 1)
-    const mineIdx = mine.value.findIndex((m) => m.id === ticket.id && m.side === 'pending')
-    if (mineIdx >= 0) {
-      const now = new Date()
-        .toLocaleString('zh-CN', {
-          hour12: false,
-          month: '2-digit',
-          day: '2-digit',
-          hour: '2-digit',
-          minute: '2-digit',
-        })
-        .replace(/\//g, '-')
-      mine.value.splice(mineIdx, 1, {
-        ...ticket,
-        side: 'rejected',
-        remark,
-        titleHtml: `<span class="tag tag-red">已驳回</span> ${ticket.asset || ticket.apiPath || ticket.ticketNo || ticket.id}`,
-        time: now,
-        desc: `驳回意见：${remark} · 原单号 ${ticket.ticketNo || ticket.id}`,
-        statusTag: '已驳回·请重改',
-        statusCls: 'tag-red',
-        timeline: [
-          { label: '✓ 提交', cls: 'done' },
-          { label: '✗ 已驳回', cls: 'done' },
-          { label: '改后重提', cls: 'current' },
-        ],
-      })
-    }
-    showToast(`已驳回 ${id} · 驳回意见已记录`, 'warning')
-    rejectModal.value = null
-    if (detail.value?.id === id) closeDetail()
-  } catch (e) {
-    showToast(e?.message || '驳回失败', 'danger')
-  } finally {
-    rejectSubmitting.value = false
-  }
+  })
 }
 
 function rejectTicket(id) {
@@ -1825,7 +1802,7 @@ function displayToken() {
       <div class="card-header">
         <div class="card-title">+ 新建申请</div>
         <p v-if="assetsLoadError" class="tip" style="margin: 0 0 8px">
-          可选表未加载：{{ assetsLoadError }}（不会回落演示数据）
+          可选表未加载：{{ assetsLoadError }}
         </p>
         <p v-else-if="assetsLive && !ASSET_OPTIONS.length" class="tip" style="margin: 0 0 8px">
           资产目录暂无已登记表 · 请先在
@@ -2153,7 +2130,8 @@ function displayToken() {
           只读走表 ACL；登记上架写入资产目录；结构变更需 Owner + 平台确认后元数据生效。
         </p>
         <p v-else-if="form.type === 'publish'" class="apply-api-hint">
-          <strong>发布包审批</strong>（ETL/制品上线，非数据服务 API）。API 上线请用「API 发布申请」。prod 必须填写回滚预案。
+          <strong>发布包审批</strong>（脚本/ETL 上线，单号 SCR-）。提交发布申请后也可从「数据开发」一键创建发布单（自动开 MR + SCR）。API 上线请用「API 发布申请」。prod 须填回滚预案。
+          <button type="button" class="btn-link" @click="router.push('/publish')">前往环境与发布</button>
         </p>
         <button
           v-if="form.type === 'api_publish'"
@@ -2171,7 +2149,15 @@ function displayToken() {
         >
           前往指标中心
         </button>
-        <button v-else type="button" class="btn btn-sm btn-primary" @click="submitApply">提交申请</button>
+        <button
+          v-else
+          type="button"
+          class="btn btn-sm btn-primary"
+          :disabled="submitting"
+          @click="submitApply"
+        >
+          {{ submitting ? '提交中…' : '提交申请' }}
+        </button>
       </div>
     </div>
 
@@ -2213,10 +2199,22 @@ function displayToken() {
               </div>
               <div class="wf-actions">
                 <button type="button" class="btn btn-sm" @click="openDetail(w)">详情</button>
-                <button type="button" class="btn btn-sm btn-primary" @click="approveTicket(w.id)">
-                  {{ approveBtnLabel(w) }}
+                <button
+                  type="button"
+                  class="btn btn-sm btn-primary"
+                  :disabled="busy('approve:' + w.id)"
+                  @click="approveTicket(w.id)"
+                >
+                  {{ busy('approve:' + w.id) ? '处理中…' : approveBtnLabel(w) }}
                 </button>
-                <button type="button" class="btn btn-sm" @click="rejectTicket(w.id)">驳回 / 退回重改</button>
+                <button
+                  type="button"
+                  class="btn btn-sm"
+                  :disabled="busy('approve:' + w.id) || rejectSubmitting"
+                  @click="rejectTicket(w.id)"
+                >
+                  驳回 / 退回重改
+                </button>
               </div>
             </div>
           </div>

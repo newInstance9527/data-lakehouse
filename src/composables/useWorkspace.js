@@ -1,27 +1,28 @@
 /**
- * 工作空间：对接 /lh/workspace/*，失败时回退演示数据
+ * 工作空间：对接 /lh/workspace/*（禁止 Fail→Mock）
  */
 import { computed, ref } from 'vue'
 import {
   addWsMember,
+  addWsTag,
   createWsSpace,
+  deleteWsSpace,
+  fetchWsCurrent,
   fetchWsMembers,
   fetchWsOverview,
+  fetchWsQuota,
   fetchWsQuotas,
   fetchWsSpaces,
   removeWsMember,
+  removeWsTag,
   setWsCurrent,
+  syncWsGitRemote,
+  updateWsQuota,
 } from '@/api/workspace'
 import { useSession } from '@/composables/useSession'
-import {
-  SHARED_CATALOG,
-  WORKSPACES,
-  WS_KPIS,
-  WS_QUOTA,
-  membersOf,
-  wsQuotaBarColor,
-  wsQuotaStatusMeta,
-} from '@/data/workspace'
+import { switchWsWithMemberGuard } from '@/composables/useWsSwitch'
+import { SHARED_CATALOG, wsQuotaBarColor, wsQuotaStatusMeta } from '@/data/workspace'
+import { workspaceUserById } from '@/data/workspaceUsers'
 
 const spaces = ref([])
 const quotas = ref([])
@@ -29,7 +30,6 @@ const membersByWs = ref({})
 const overview = ref(null)
 const loading = ref(false)
 const loaded = ref(false)
-const usingMock = ref(false)
 const lastError = ref(null)
 let loadPromise = null
 
@@ -74,6 +74,9 @@ export function normalizeWsSpace(row) {
     gravitino: row.sharedCatalog || SHARED_CATALOG.gravitino,
     preferredSchemas: row.preferredSchemas || '—',
     icebergDb: row.preferredSchemas || '—',
+    gitRemoteUrl: row.gitRemoteUrlDisplay || row.gitRemoteUrl || '',
+    gitRemoteUrlDisplay: row.gitRemoteUrlDisplay || row.gitRemoteUrl || '',
+    gitRemoteCustom: Boolean(row.gitRemoteCustom),
     createdAt: row.createTime ? String(row.createTime).slice(0, 10) : '—',
     tags: Array.isArray(row.tags) ? row.tags : [],
     current: Boolean(row.current),
@@ -86,6 +89,7 @@ export function normalizeWsSpace(row) {
       quota: Number(row.cuQuota) || 200,
     },
     domain: row.domainCode || '—',
+    myRole: row.myRole || null,
     role: row.myRole || '—',
     rg: row.trinoRg || '—',
     status: row.status || 'active',
@@ -103,7 +107,12 @@ export function normalizeWsMember(row) {
     roleCls: roleCls(row.roleCode),
     scope: row.scopeNote || '门户协作角色 · 非引擎 ACL',
     last: formatLast(row.lastLogin),
-    action: row.roleCode === 'Owner' || row.roleCode === 'SecurityOfficer' ? 'audit' : row.roleCode === 'ServiceAccount' ? 'rotate' : 'remove',
+    action:
+      row.roleCode === 'Owner' || row.roleCode === 'SecurityOfficer'
+        ? 'audit'
+        : row.roleCode === 'ServiceAccount'
+          ? 'rotate'
+          : 'remove',
     subjectId: row.subjectId,
     subjectType: row.subjectType,
     raw: row,
@@ -112,6 +121,24 @@ export function normalizeWsMember(row) {
 
 export function normalizeWsQuota(row) {
   if (!row) return null
+  const tokenQuota = row.aiTokenQuota != null ? Number(row.aiTokenQuota) : null
+  const costQuota = row.aiCostQuota != null ? Number(row.aiCostQuota) : null
+  const tokenUsed = Number(row.aiTokenUsed) || 0
+  const costUsed = Number(row.aiCostUsed) || 0
+  const limitTok = tokenQuota != null && tokenQuota > 0
+  const limitCost = costQuota != null && costQuota > 0
+  const tokenRemaining =
+    row.aiTokenRemaining != null
+      ? Number(row.aiTokenRemaining)
+      : limitTok
+        ? Math.max(0, tokenQuota - tokenUsed)
+        : null
+  const costRemaining =
+    row.aiCostRemaining != null
+      ? Number(row.aiCostRemaining)
+      : limitCost
+        ? Math.max(0, costQuota - costUsed)
+        : null
   return {
     ws: row.wsCode,
     storage: row.storageLabel || `${row.storageUsedTb}/${row.storageQuotaTb} TB`,
@@ -120,7 +147,21 @@ export function normalizeWsQuota(row) {
     cPct: Number(row.cuPct) || 0,
     trino: row.trinoLabel || `${row.trinoUsed}/${row.trinoQuota}`,
     api: row.apiLabel || `${row.apiQpsUsed}/${row.apiQpsQuota}`,
+    aiTokenQuota: limitTok ? tokenQuota : null,
+    aiTokenUsed: tokenUsed,
+    aiTokenRemaining: tokenRemaining,
+    aiToken: row.aiTokenLabel || (limitTok ? `${tokenUsed}/${tokenQuota}` : `${tokenUsed}/不限`),
+    aiTokenPct: Number(row.aiTokenPct) || 0,
+    aiCostQuota: limitCost ? costQuota : null,
+    aiCostUsed: costUsed,
+    aiCostRemaining: costRemaining,
+    aiCost: row.aiCostLabel || (limitCost ? `${costUsed}/${costQuota}` : `${costUsed}/不限`),
+    aiCostPct: Number(row.aiCostPct) || 0,
+    aiLimited: row.aiLimited != null
+      ? Boolean(row.aiLimited)
+      : limitTok || limitCost,
     status: row.status || 'ok',
+    raw: row,
   }
 }
 
@@ -142,22 +183,23 @@ function buildKpis(ov, list) {
   ]
 }
 
-function applyMock() {
-  usingMock.value = true
-  spaces.value = WORKSPACES.map((w) => ({ ...w }))
-  quotas.value = WS_QUOTA.map((q) => ({ ...q }))
-  const mem = {}
-  WORKSPACES.forEach((w) => {
-    mem[w.id] = membersOf(w.id)
-  })
-  membersByWs.value = mem
-  overview.value = null
+async function applyLiveData() {
+  const [ov, list, qlist, cur] = await Promise.all([
+    fetchWsOverview(),
+    fetchWsSpaces(),
+    fetchWsQuotas(),
+    fetchWsCurrent().catch(() => null),
+  ])
+  overview.value = ov
+  spaces.value = (list || []).map(normalizeWsSpace).filter(Boolean)
+  quotas.value = (qlist || []).map(normalizeWsQuota).filter(Boolean)
+  return { ov, cur }
 }
 
 export function useWorkspace() {
   const { setCurrentWs, currentWs } = useSession()
 
-  const kpis = computed(() => (usingMock.value ? WS_KPIS : buildKpis(overview.value, spaces.value)))
+  const kpis = computed(() => buildKpis(overview.value, spaces.value))
 
   async function ensureLoaded(force = false) {
     if (loaded.value && !force) return
@@ -166,22 +208,21 @@ export function useWorkspace() {
     lastError.value = null
     loadPromise = (async () => {
       try {
-        const [ov, list, qlist] = await Promise.all([
-          fetchWsOverview(),
-          fetchWsSpaces(),
-          fetchWsQuotas(),
-        ])
-        overview.value = ov
-        spaces.value = (list || []).map(normalizeWsSpace).filter(Boolean)
-        quotas.value = (qlist || []).map(normalizeWsQuota).filter(Boolean)
-        usingMock.value = false
-        const cur = spaces.value.find((s) => s.current)?.id || ov?.currentWs
-        if (cur) setCurrentWs(cur)
+        const { ov, cur } = await applyLiveData()
+        const wsCode =
+          cur?.wsCode ||
+          spaces.value.find((s) => s.current)?.id ||
+          ov?.currentWs ||
+          null
+        if (wsCode) setCurrentWs(wsCode)
         loaded.value = true
       } catch (e) {
         lastError.value = e
-        applyMock()
+        spaces.value = []
+        quotas.value = []
+        overview.value = null
         loaded.value = true
+        throw e
       } finally {
         loading.value = false
         loadPromise = null
@@ -192,11 +233,6 @@ export function useWorkspace() {
 
   async function loadMembers(wsCode) {
     if (!wsCode) return []
-    if (usingMock.value) {
-      const list = membersOf(wsCode)
-      membersByWs.value = { ...membersByWs.value, [wsCode]: list }
-      return list
-    }
     try {
       const raw = await fetchWsMembers(wsCode)
       const list = (raw || []).map(normalizeWsMember).filter(Boolean)
@@ -204,49 +240,47 @@ export function useWorkspace() {
       return list
     } catch (e) {
       lastError.value = e
-      return membersByWs.value[wsCode] || []
+      throw e
     }
   }
 
   async function switchCurrent(wsCode) {
-    if (usingMock.value) {
-      spaces.value = spaces.value.map((s) => ({ ...s, current: s.id === wsCode }))
-      setCurrentWs(wsCode)
-      return
-    }
-    await setWsCurrent(wsCode)
+    const hit = spaces.value.find((s) => s.id === wsCode || s.wsCode === wsCode)
+    await switchWsWithMemberGuard(wsCode, { label: hit?.name || wsCode })
     setCurrentWs(wsCode)
     spaces.value = spaces.value.map((s) => ({ ...s, current: s.id === wsCode }))
     try {
       overview.value = await fetchWsOverview()
     } catch {
-      /* ignore */
+      /* ignore refresh */
     }
   }
 
   async function createSpace(payload) {
-    if (usingMock.value) {
-      throw new Error('当前为演示数据，无法创建；请先启动后端并执行 Flyway V22')
-    }
     const quotasMap = {
       '小(存储2TB·CU400)': { storageQuotaTb: 2, cuQuota: 400 },
       '中(存储4TB·CU800)': { storageQuotaTb: 4, cuQuota: 800 },
       '大(存储8TB·CU2000)': { storageQuotaTb: 8, cuQuota: 2000 },
     }
     const q = quotasMap[payload.res] || quotasMap['中(存储4TB·CU800)']
-    const members = payload.members
+    const rawMembers = Array.isArray(payload.members)
       ? payload.members
+      : String(payload.members || '')
           .split(/[,，]/)
           .map((s) => s.trim())
           .filter(Boolean)
-          .map((name) => ({
-            subjectType: 'user',
-            subjectId: name,
-            displayName: name,
-            roleCode: 'Developer',
-            scopeNote: '可登记/开发 · 读数需申请',
-          }))
-      : []
+    const members = rawMembers.map((idOrName) => {
+      const hit = workspaceUserById(idOrName)
+      const subjectId = hit?.value || String(idOrName)
+      const displayName = hit?.name || hit?.label || String(idOrName)
+      return {
+        subjectType: 'user',
+        subjectId,
+        displayName,
+        roleCode: 'Developer',
+        scopeNote: '可登记/开发 · 读数需申请',
+      }
+    })
     const created = await createWsSpace({
       name: payload.name,
       domainCode: payload.tpl === '自定义' ? '自定义' : payload.tpl,
@@ -260,19 +294,120 @@ export function useWorkspace() {
     return normalizeWsSpace(created)
   }
 
+  /**
+   * 删除空间（软删）。若删的是当前上下文，先切到 default。
+   */
+  async function deleteSpace(wsCode) {
+    if (!wsCode) throw new Error('缺少空间编码')
+    if (wsCode === 'default') throw new Error('默认空间不可删除')
+    const wasCurrent = currentWs.value === wsCode
+    await deleteWsSpace(wsCode)
+    if (wasCurrent) {
+      try {
+        await setWsCurrent('default')
+        setCurrentWs('default')
+      } catch {
+        setCurrentWs('default')
+      }
+    }
+    delete membersByWs.value[wsCode]
+    await ensureLoaded(true)
+  }
+
   async function inviteMember(wsCode, payload) {
-    if (usingMock.value) return null
-    const m = await addWsMember(wsCode, payload)
+    const hit = workspaceUserById(payload.subjectId)
+    const body = {
+      subjectType: 'user',
+      subjectId: String(payload.subjectId || '').trim(),
+      displayName: hit?.name || hit?.label || String(payload.subjectId || '').trim(),
+      roleCode: payload.roleCode || 'Developer',
+      scopeNote: undefined,
+    }
+    const m = await addWsMember(wsCode, body)
     await loadMembers(wsCode)
     await ensureLoaded(true)
     return normalizeWsMember(m)
   }
 
   async function dropMember(wsCode, memberId) {
-    if (usingMock.value) return
     await removeWsMember(wsCode, memberId)
     await loadMembers(wsCode)
     await ensureLoaded(true)
+  }
+
+  async function syncGitRemote(wsCode) {
+    const row = await syncWsGitRemote(wsCode)
+    await ensureLoaded(true)
+    return normalizeWsSpace(row)
+  }
+
+  /** 追加展示标签；成功后刷新列表中的 tags */
+  async function addTag(wsCode, payload) {
+    if (!wsCode) throw new Error('缺少空间编码')
+    const text = String(payload?.text || '').trim()
+    if (!text) throw new Error('请输入标签文案')
+    const row = await addWsTag(wsCode, {
+      text,
+      cls: payload?.cls || 'tag-blue',
+    })
+    const normalized = normalizeWsSpace(row)
+    patchSpaceTags(wsCode, normalized?.tags)
+    return normalized
+  }
+
+  async function removeTag(wsCode, text) {
+    if (!wsCode) throw new Error('缺少空间编码')
+    const t = String(text || '').trim()
+    if (!t) throw new Error('请指定要移除的标签')
+    const row = await removeWsTag(wsCode, t)
+    const normalized = normalizeWsSpace(row)
+    patchSpaceTags(wsCode, normalized?.tags)
+    return normalized
+  }
+
+  function patchSpaceTags(wsCode, tags) {
+    const idx = spaces.value.findIndex((s) => s.id === wsCode)
+    if (idx < 0) return
+    const next = spaces.value.slice()
+    next[idx] = { ...next[idx], tags: Array.isArray(tags) ? tags : [] }
+    spaces.value = next
+  }
+
+  /** 刷新单个空间配额（今日 AI 用量实时汇总，无本地缓存） */
+  async function refreshQuota(wsCode) {
+    if (!wsCode) return null
+    const raw = await fetchWsQuota(wsCode)
+    const normalized = normalizeWsQuota(raw)
+    if (!normalized) return null
+    const idx = quotas.value.findIndex((q) => q.ws === wsCode)
+    if (idx >= 0) {
+      const next = quotas.value.slice()
+      next[idx] = normalized
+      quotas.value = next
+    } else {
+      quotas.value = [...quotas.value, normalized]
+    }
+    return normalized
+  }
+
+  /**
+   * 更新配额（Owner/超管）。payload 字段省略=不改；AI 传 0=不限。
+   */
+  async function updateQuota(wsCode, payload) {
+    if (!wsCode) throw new Error('缺少空间编码')
+    const raw = await updateWsQuota(wsCode, payload || {})
+    const normalized = normalizeWsQuota(raw)
+    const idx = quotas.value.findIndex((q) => q.ws === wsCode)
+    if (normalized) {
+      if (idx >= 0) {
+        const next = quotas.value.slice()
+        next[idx] = normalized
+        quotas.value = next
+      } else {
+        quotas.value = [...quotas.value, normalized]
+      }
+    }
+    return normalized
   }
 
   function membersOfWs(wsCode) {
@@ -290,7 +425,6 @@ export function useWorkspace() {
     kpis,
     loading,
     loaded,
-    usingMock,
     lastError,
     currentWs,
     sharedCatalog: SHARED_CATALOG,
@@ -300,8 +434,14 @@ export function useWorkspace() {
     loadMembers,
     switchCurrent,
     createSpace,
+    deleteSpace,
     inviteMember,
     dropMember,
+    syncGitRemote,
+    addTag,
+    removeTag,
+    refreshQuota,
+    updateQuota,
     membersOfWs,
     quotaOfWs,
   }

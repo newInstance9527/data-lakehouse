@@ -18,6 +18,7 @@ import {
   runStdLandingDetect,
 } from '@/api/standard'
 import { parseCodeValues } from '@/data/standards'
+import { useSession } from '@/composables/useSession'
 
 const fields = ref([])
 const codes = ref([])
@@ -64,17 +65,20 @@ export function useStandards() {
     return loadPromise
   }
 
-  async function loadAll() {
+  async function loadAll(filters = {}) {
     loading.value = true
     loadError = null
     try {
+      const { currentWs } = useSession()
+      const ws = filters.ws || currentWs.value || 'default'
+      const q = { ws }
       const [fieldPage, codePage, namingPage, mappingPage, detectPage, ov, meta] = await Promise.all([
-        fetchStdFields({}, { current: 1, size: 500 }),
-        fetchStdCodes({}, { current: 1, size: 500 }),
-        fetchStdNamings({}, { current: 1, size: 500 }),
-        fetchStdMappings({}, { current: 1, size: 500 }),
-        fetchStdDetects({}, { current: 1, size: 500 }),
-        fetchStdOverview().catch(() => null),
+        fetchStdFields(q, { current: 1, size: 500 }),
+        fetchStdCodes(q, { current: 1, size: 500 }),
+        fetchStdNamings(q, { current: 1, size: 500 }),
+        fetchStdMappings(q, { current: 1, size: 500 }),
+        fetchStdDetects(q, { current: 1, size: 500 }),
+        fetchStdOverview(ws).catch(() => null),
         fetchStdMetaOptions().catch(() => null),
       ])
       fields.value = (fieldPage?.records || []).map(normalizeField)
@@ -102,9 +106,9 @@ export function useStandards() {
     }
   }
 
-  async function refreshOverview() {
+  async function refreshOverview(ws) {
     try {
-      overview.value = await fetchStdOverview()
+      overview.value = await fetchStdOverview(ws)
     } catch (e) {
       console.warn('[standard] overview failed', e)
     }

@@ -7,6 +7,7 @@ import ListPager from '@/components/common/ListPager.vue'
 import { useToast } from '@/composables/useToast'
 import { usePager } from '@/composables/usePager'
 import { useQuality } from '@/composables/useQuality'
+import { useSession } from '@/composables/useSession'
 import { QUALITY_RULE_FORM } from '@/data/createForms'
 import { pageGuideOf } from '@/data/pageGuides'
 import { catalogAsset, catalogSearch, lineageField } from '@/utils/moduleLinks'
@@ -34,6 +35,8 @@ const {
   createRule,
   openTicket,
 } = useQuality()
+
+const { currentWs } = useSession()
 
 const filteredRules = computed(() => {
   let list = ruleList.value
@@ -78,6 +81,18 @@ onMounted(async () => {
   busy.value = true
   try {
     await reloadByRange(range.value)
+  } catch (e) {
+    showToast(`质量数据加载失败：${e.message || e}`, 'error')
+  } finally {
+    busy.value = false
+  }
+})
+
+watch(currentWs, async () => {
+  busy.value = true
+  try {
+    await reloadByRange(range.value)
+    resetPage()
   } catch (e) {
     showToast(`质量数据加载失败：${e.message || e}`, 'error')
   } finally {

@@ -25,7 +25,7 @@ function exportDaily() {
 }
 
 function silenceWindow() {
-  showToast('🔇 维护静默窗口已创建（演示）· node-07 · 60min', 'info')
+  showToast('功能待接后端', 'info')
 }
 
 function silenceAlerts() {

@@ -5,7 +5,7 @@ import { http } from './http.js'
 
 const DS = '/lh/datasource'
 
-/** 列表分页：kw/type/status/cat + current/size */
+/** 列表分页：kw/type/status/cat/ws + current/size */
 export function fetchDatasourcePage(filters = {}, { current = 1, size = 200 } = {}) {
   return http.get(`${DS}/page`, {
     current,
@@ -17,6 +17,7 @@ export function fetchDatasourcePage(filters = {}, { current = 1, size = 200 } = 
     category: filters.cat,
     purpose: filters.purpose,
     usableInDag: filters.usableInDag,
+    ws: filters.ws,
   })
 }
 
@@ -49,8 +50,8 @@ export function fetchMetaColumns(id, schema, table) {
   return http.get(`${DS}/meta/columns`, { id, schema, table })
 }
 
-export function fetchDatasourceKpi() {
-  return http.get(`${DS}/kpi`)
+export function fetchDatasourceKpi(ws) {
+  return http.get(`${DS}/kpi`, { ws })
 }
 
 /** 投影门户数据源到 SQLREST（可按 id 列表；空=全部可投影） */

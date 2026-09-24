@@ -1,16 +1,21 @@
 <script setup>
 import { useRoute, useRouter } from 'vue-router'
-import { computed } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { CRUMBS } from '@/config/nav'
 import { useSession } from '@/composables/useSession'
 import { useToast } from '@/composables/useToast'
+import { useWorkspace } from '@/composables/useWorkspace'
+import { switchWsWithMemberGuard } from '@/composables/useWsSwitch'
 import AppToast from '@/components/common/AppToast.vue'
 import ConfirmDeleteModal from '@/components/common/ConfirmDeleteModal.vue'
+import GlobalAiAssistant from '@/components/ai/GlobalAiAssistant.vue'
 
 const route = useRoute()
 const router = useRouter()
 const { showToast } = useToast()
-const { user, filteredNavGroups, logout, isSuperAdmin } = useSession()
+const { user, filteredNavGroups, logout, isSuperAdmin, currentWs, setCurrentWs } = useSession()
+/** 与 WorkspaceView 共用 spaces，创建/删除后顶栏自动刷新 */
+const { spaces: wsSpaces, ensureLoaded: ensureWsSpaces } = useWorkspace()
 
 const activeId = computed(() => route.meta?.id || 'overview')
 const crumbs = computed(() => CRUMBS[activeId.value] || ['工作台', '总览仪表盘'])
@@ -22,6 +27,32 @@ const userTitle = computed(() => {
   const roles = user.value?.roles?.join(',') || ''
   return `${user.value?.name || ''} (${user.value?.account || ''})${roles ? ' · ' + roles : ''}`
 })
+
+const wsSwitching = ref(false)
+const currentWsLabel = computed(() => {
+  const code = currentWs.value || 'default'
+  const hit = wsSpaces.value.find((s) => s.id === code || s.wsCode === code)
+  return hit?.name ? `${hit.name}` : code
+})
+
+async function onSwitchWs(e) {
+  const code = String(e?.target?.value || '').trim()
+  if (!code || code === currentWs.value || wsSwitching.value) return
+  wsSwitching.value = true
+  try {
+    const hit = wsSpaces.value.find((s) => (s.id || s.wsCode) === code)
+    await switchWsWithMemberGuard(code, { label: hit?.name || code })
+    setCurrentWs(code)
+    showToast(`当前工作空间：${hit?.name || code} · 列表已切换`, 'success')
+  } catch (err) {
+    if (!err?.cancelled) {
+      showToast(err?.message || '切换工作空间失败', 'warning')
+    }
+    e.target.value = currentWs.value || 'default'
+  } finally {
+    wsSwitching.value = false
+  }
+}
 
 function go(path) {
   router.push(path)
@@ -38,6 +69,15 @@ async function onLogout() {
   await logout()
   router.replace('/login')
 }
+
+function isWsMember(s) {
+  const r = s?.role || s?.myRole
+  return !!(r && r !== '—' && String(r).trim())
+}
+
+onMounted(() => {
+  ensureWsSpaces().catch(() => {})
+})
 </script>
 
 <template>
@@ -85,6 +125,26 @@ async function onLogout() {
           </div>
         </div>
         <div class="header-right">
+          <label class="ws-switch" title="切换工作空间：整站列表默认跟随当前空间；授权仍走申请中心">
+            <span class="ws-switch-label">空间</span>
+            <select
+              class="ws-switch-select"
+              :value="currentWs || 'default'"
+              :disabled="wsSwitching"
+              @change="onSwitchWs"
+            >
+              <option v-if="!wsSpaces.length" :value="currentWs || 'default'">
+                {{ currentWsLabel }}
+              </option>
+              <option
+                v-for="s in wsSpaces"
+                :key="s.id || s.wsCode"
+                :value="s.id || s.wsCode"
+              >
+                {{ s.name || s.id || s.wsCode }}{{ isWsMember(s) ? '' : ' · 非成员' }}
+              </option>
+            </select>
+          </label>
           <span class="env-tag">PROD</span>
           <span v-if="isSuperAdmin" class="env-tag" style="background: var(--primary-light); color: var(--primary)">超管</span>
           <button class="icon-btn" title="通知" @click="showToast('3 条未读告警', 'warning')">🔔</button>
@@ -94,11 +154,12 @@ async function onLogout() {
       </header>
 
       <main class="content">
-        <router-view />
+        <router-view :key="currentWs || 'default'" />
       </main>
     </div>
 
     <AppToast />
     <ConfirmDeleteModal />
+    <GlobalAiAssistant />
   </div>
 </template>

@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import AppDrawer from '@/components/common/AppDrawer.vue'
 import { createApplyTicket, approveTicket } from '@/api/apply'
+import { publishAssetShare, unpublishAssetShare } from '@/api/catalog'
 import { useAssets } from '@/composables/useAssets'
 import { useDatasources } from '@/composables/useDatasources'
 import { useSession, isNeedOwnerApplyError } from '@/composables/useSession'
@@ -30,6 +31,7 @@ const schemaHint = ref('')
 const schemaSource = ref('')
 const localFields = ref(null)
 const busy = ref(false)
+const shareBusy = ref(false)
 const metaSaving = ref(false)
 const previewLoading = ref(false)
 const previewLive = ref(null)
@@ -338,6 +340,36 @@ async function ensureSchema(id) {
     schemaHint.value = e.message || String(e)
   } finally {
     schemaLoading.value = false
+  }
+}
+
+async function doPublishShare() {
+  if (!props.asset?.id) return
+  shareBusy.value = true
+  try {
+    const row = await publishAssetShare(props.asset.id)
+    const detail = (await loadDetail(props.asset.id)) || row
+    emit('updated', detail)
+    showToast('已发布到企业共享层（看见≠能查）', 'success')
+  } catch (e) {
+    showToast(e?.message || '发布失败', 'error')
+  } finally {
+    shareBusy.value = false
+  }
+}
+
+async function doUnpublishShare() {
+  if (!props.asset?.id) return
+  shareBusy.value = true
+  try {
+    const row = await unpublishAssetShare(props.asset.id)
+    const detail = (await loadDetail(props.asset.id)) || row
+    emit('updated', detail)
+    showToast('已撤回企业共享', 'success')
+  } catch (e) {
+    showToast(e?.message || '撤回失败', 'error')
+  } finally {
+    shareBusy.value = false
   }
 }
 
@@ -751,6 +783,34 @@ function cellAt(row, col) {
                 <div>
                   <div class="info-label">黄金认证</div>
                   <div class="info-value">{{ asset.isGold ? '⭐ 已认证' : '待认证 / 已摘牌' }}</div>
+                </div>
+                <div>
+                  <div class="info-label">企业共享</div>
+                  <div class="info-value">
+                    <template v-if="asset.shareStatus === 'published' || asset.visibility === 'shared_enterprise'">
+                      已发布
+                    </template>
+                    <template v-else>未发布（仅本空间可见）</template>
+                    <div v-if="canEditAsset(asset)" style="margin-top: 6px; display: flex; gap: 6px; flex-wrap: wrap">
+                      <button
+                        v-if="asset.shareStatus !== 'published'"
+                        class="btn btn-sm"
+                        :disabled="shareBusy"
+                        @click="doPublishShare"
+                      >
+                        发布到企业共享
+                      </button>
+                      <button
+                        v-else
+                        class="btn btn-sm"
+                        :disabled="shareBusy"
+                        @click="doUnpublishShare"
+                      >
+                        撤回共享
+                      </button>
+                    </div>
+                    <div class="muted" style="font-size: 11px; margin-top: 4px">仅改门户可见性，不授予 SELECT</div>
+                  </div>
                 </div>
                 <div>
                   <div class="info-label">标准覆盖率</div>

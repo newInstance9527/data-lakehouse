@@ -20,7 +20,12 @@ export function fetchAiModels(filters = {}, { current = 1, size = 50 } = {}) {
     q: filters.q,
     ws: filters.ws,
     kind: filters.kind,
+    supportsVision: filters.supportsVision === true || filters.supportsVision === 1 ? true : undefined,
   })
+}
+
+export function fetchAiModel(id) {
+  return http.get(`${AI}/models/${encodeURIComponent(id)}`)
 }
 
 export function createAiModel(payload) {
@@ -31,12 +36,20 @@ export function updateAiModel(id, payload) {
   return http.put(`${AI}/models/${encodeURIComponent(id)}`, payload)
 }
 
+export function deleteAiModel(id) {
+  return http.post(`${AI}/models/${encodeURIComponent(id)}/delete`, {})
+}
+
 export function testAiModel(id) {
   return http.post(`${AI}/models/${encodeURIComponent(id)}/test`, {})
 }
 
 export function enableAiModel(id, enabled) {
   return http.post(`${AI}/models/${encodeURIComponent(id)}/enable`, { enabled: !!enabled })
+}
+
+export function rotateAiModel(id, key) {
+  return http.post(`${AI}/models/${encodeURIComponent(id)}/rotate`, { key })
 }
 
 export function fetchAiGatewayProbe() {
@@ -65,6 +78,10 @@ export function fetchAiSessions(ws) {
   return http.get(`${AI}/sessions`, { ws })
 }
 
+export function fetchAiSessionTurns(sessionId) {
+  return http.get(`${AI}/sessions/${encodeURIComponent(sessionId)}/turns`)
+}
+
 export function createAiSession(payload = {}) {
   return http.post(`${AI}/sessions`, payload)
 }
@@ -88,12 +105,22 @@ export function streamAiChat(body, { onEvent, onError, onDone } = {}) {
       })
       if (!res.ok) {
         const text = await res.text()
-        throw new ApiError(text || res.statusText, res.status)
+        let msg = text || res.statusText
+        try {
+          const j = JSON.parse(text)
+          msg = j.msg || j.message || msg
+        } catch {
+          /* keep text */
+        }
+        throw new ApiError(msg, res.status)
       }
       const ct = res.headers.get('content-type') || ''
       if (!ct.includes('text/event-stream') && !ct.includes('text/plain')) {
-        // 非 SSE：尝试 JSON 整包
+        // 非 SSE：尝试 JSON 整包（含业务失败 / 配额硬门禁）
         const json = await res.json()
+        if (json?.code != null && json.code !== 200) {
+          throw new ApiError(json.msg || '业务失败', json.code, json)
+        }
         const data = json?.data ?? json
         if (onEvent) onEvent({ event: 'done', data })
         if (onDone) onDone(data)
@@ -142,8 +169,8 @@ export function runAiSql(payload) {
 
 /** ========== 知识库 ========== */
 
-export function fetchKbOverview(ws) {
-  return http.get(`${KB}/overview`, { ws })
+export function fetchKbOverview(ws, scope) {
+  return http.get(`${KB}/overview`, { ws, scope })
 }
 
 export function fetchKbEntries(filters = {}, { current = 1, size = 50 } = {}) {
@@ -153,11 +180,27 @@ export function fetchKbEntries(filters = {}, { current = 1, size = 50 } = {}) {
     q: filters.q,
     cat: filters.cat === 'all' ? undefined : filters.cat,
     ws: filters.ws,
+    scope: filters.scope,
   })
 }
 
 export function createKbEntry(payload) {
   return http.post(`${KB}/entries`, payload)
+}
+
+/**
+ * 上传文档并真实解析入库。
+ * @param {File} file
+ * @param {Record<string, string|number|undefined>} fields title/cat/ws/scope/strategy/...
+ */
+export function uploadKbEntry(file, fields = {}) {
+  const fd = new FormData()
+  fd.append('file', file)
+  Object.entries(fields).forEach(([k, v]) => {
+    if (v === undefined || v === null || v === '') return
+    fd.append(k, String(v))
+  })
+  return http.postForm(`${KB}/entries/upload`, fd)
 }
 
 export function updateKbEntry(id, payload) {

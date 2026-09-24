@@ -21,12 +21,16 @@ import {
   trialDataapi,
 } from '@/api/dataapi.js'
 import { pageMyTickets } from '@/api/apply.js'
+import { fetchAssetPage } from '@/api/catalog'
 import {
-  DS_KPIS,
   defaultSqlrestEmbed,
 } from '@/data/dataservice'
+import { ensureOnce } from '@/composables/useEnsureSamples'
+import { SAMPLE_DATAAPI } from '@/data/sampleSeeds'
+import { useSession } from '@/composables/useSession'
 
 const loaded = ref(false)
+const loadedWs = ref('')
 const loading = ref(false)
 const degraded = ref(false)
 const apis = ref([])
@@ -36,7 +40,7 @@ const subs = ref([])
 const apiKeys = ref([])
 /** 待发布：已保存且有 api_publish 工单、尚未上线（pending / rejected） */
 const pendingPublish = ref([])
-const kpis = ref(DS_KPIS.map((k) => ({ ...k })))
+const kpis = ref([])
 const callRank = ref([])
 const callTrend = ref([])
 const workbench = ref(null)
@@ -123,7 +127,12 @@ function mapKeyRow(k) {
 
 function mapOverview(ov) {
   if (!ov) {
-    return DS_KPIS.map((k) => ({ ...k, value: '—', delta: '未加载' }))
+    return [
+      { label: '门户已发布', value: '—', unit: '个', delta: '未加载', deltaCls: '' },
+      { label: '近 24h 调用', value: '—', unit: '次', delta: '', deltaCls: '' },
+      { label: 'SQLREST 接口', value: '—', unit: '个', delta: '', deltaCls: '' },
+      { label: '活动订阅方', value: '—', unit: '个', delta: '', deltaCls: '' },
+    ]
   }
   const calls = ov.calls24h
   const latency = ov.avgLatencyMs
@@ -189,23 +198,63 @@ function mapCallTrend(wb) {
 
 export function useDataservice() {
   async function ensureLoaded(force = false) {
-    if (loaded.value && !force) return
+    const { currentWs } = useSession()
+    const ws = currentWs.value || 'default'
+    if (loaded.value && loadedWs.value === ws && !force) return
     loading.value = true
     try {
+      if (loadedWs.value && loadedWs.value !== ws) {
+        apis.value = []
+        routes.value = []
+        apiKeys.value = []
+        subs.value = []
+        pendingPublish.value = []
+        kpis.value = []
+        callRank.value = []
+        callTrend.value = []
+        sqlrestDs.value = []
+      }
       const [list, ov, routePack, keyList, wb, dsList, emb, pubTickets] = await Promise.all([
-        fetchDataapiApis({}).catch(() => null),
-        fetchDataapiOverview().catch(() => null),
+        fetchDataapiApis({ ws }).catch(() => null),
+        fetchDataapiOverview(ws).catch(() => null),
         fetchDataapiRoutes().catch(() => null),
-        fetchDataapiKeys().catch(() => null),
+        fetchDataapiKeys(ws).catch(() => null),
         fetchDataapiWorkbench().catch(() => null),
         fetchListForSqlrest().catch(() => null),
         fetchDataapiEmbedUrl().catch(() => null),
-        pageMyTickets({ current: 1, size: 100, ticketType: 'api_publish' }).catch(() => null),
+        pageMyTickets({ current: 1, size: 100, ticketType: 'api_publish', ws }).catch(() => null),
       ])
       if (Array.isArray(list)) {
         apis.value = list
         degraded.value = false
+        await ensureOnce(
+          `dataservice_sample_api_${ws}`,
+          async () => {
+            if (apis.value.length > 0) return false
+            const assets = await fetchAssetPage({ ws }, { current: 1, size: 1 }).catch(() => null)
+            return !!(assets?.records?.length)
+          },
+          async () => {
+            const assets = await fetchAssetPage({ ws }, { current: 1, size: 1 })
+            const asset = assets?.records?.[0]
+            if (!asset?.id && !asset?.assetCode) {
+              throw new Error('无可用资产，跳过数据服务示例')
+            }
+            await buildDataapi({
+              ...SAMPLE_DATAAPI,
+              sourceKind: 'asset',
+              sourceRef: asset.id || asset.assetCode,
+              description: SAMPLE_DATAAPI.description,
+              ws,
+            })
+          },
+          async () => {
+            const again = await fetchDataapiApis({ ws }).catch(() => null)
+            if (Array.isArray(again)) apis.value = again
+          },
+        )
       } else {
+        apis.value = []
         degraded.value = true
       }
       kpis.value = mapOverview(ov)
@@ -222,6 +271,8 @@ export function useDataservice() {
           status: r.status || 'ok',
           note: r.id || '',
         }))
+      } else {
+        routes.value = []
       }
       apiKeys.value = Array.isArray(keyList) ? keyList.map(mapKeyRow) : []
       if (wb) {
@@ -238,10 +289,12 @@ export function useDataservice() {
       if (!embed.value?.sqlrest) embed.value = defaultSqlrestEmbed()
       if (Array.isArray(dsList)) sqlrestDs.value = dsList
       loaded.value = true
+      loadedWs.value = ws
     } catch {
       degraded.value = true
       if (!embed.value?.sqlrest) embed.value = defaultSqlrestEmbed()
       loaded.value = true
+      loadedWs.value = ws
     } finally {
       loading.value = false
     }

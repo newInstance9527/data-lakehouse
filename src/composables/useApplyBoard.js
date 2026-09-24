@@ -3,7 +3,7 @@ import { createApplyTicket, approveTicket, pageMyTickets, pagePendingTickets } f
 
 /**
  * 申请中心看板（模块单例）：出湖页与申请中心共用 pending / mine。
- * 无演示种子；启动 hydrate 拉服务端；接口失败时的本地降级单仍可暂存。
+ * 无演示种子；启动 hydrate 拉服务端；create 失败只抛错，不落本地假单。
  */
 const pending = ref([])
 const mine = ref([])
@@ -38,6 +38,7 @@ export function mapServerTicket(t, sideHint) {
   const isExport = t.ticketType === 'lake_export' || t.ticketType === 'export'
   const isOps = t.ticketType === 'resource_manage' || t.ticketType === 'manage'
   const isApiPublish = t.ticketType === 'api_publish' || t.ticketType === 'publish_api'
+  const isScriptPublish = t.ticketType === 'script_publish' || t.ticketType === 'package_publish'
   const isApiSubscribe = t.ticketType === 'api_subscribe' || t.ticketType === 'subscribe'
   const isMetric = t.ticketType === 'metric' || t.ticketType === 'metric_publish'
   const isScanElevate =
@@ -46,17 +47,19 @@ export function mapServerTicket(t, sideHint) {
     ? 'export'
     : isOps
       ? 'ops'
-      : isApiPublish
-        ? 'api_publish'
-        : isApiSubscribe
-          ? 'api'
-          : isMetric
-            ? 'metric'
-            : isScanElevate
-              ? 'scan_elevate'
-              : t.ticketType === 'table_read'
-                ? 'perm'
-                : t.ticketType || 'perm'
+      : isScriptPublish
+        ? 'publish'
+        : isApiPublish
+          ? 'api_publish'
+          : isApiSubscribe
+            ? 'api'
+            : isMetric
+              ? 'metric'
+              : isScanElevate
+                ? 'scan_elevate'
+                : t.ticketType === 'table_read'
+                  ? 'perm'
+                  : t.ticketType || 'perm'
   const status = t.status || sideHint || 'pending'
   const side = status === 'approved' ? 'approved' : status === 'rejected' ? 'rejected' : 'pending'
   const awaitingSecurity = status === 'pending_security' || payload.approvalStep === 'security'
@@ -302,6 +305,59 @@ export function mapServerTicket(t, sideHint) {
     }
   }
 
+  if (type === 'publish') {
+    const pkg = payload.releaseId || payload.pkg || t.title || ticketNo
+    const env = payload.publishEnv || 'stg'
+    return {
+      id,
+      serverId: t.id,
+      fromServer: true,
+      ticketNo,
+      type: 'publish',
+      side,
+      releasePkg: pkg,
+      publishEnv: env,
+      rollbackPlan: payload.rollbackPlan || '',
+      purpose: purposeText,
+      expire: expireLabel,
+      remark: rejectRemark,
+      applicant: t.applicant || '我',
+      titleHtml:
+        side === 'approved'
+          ? `<span class="tag tag-green">发布包</span> ${pkg} → ${env} · ${ticketNo}`
+          : side === 'rejected'
+            ? `<span class="tag tag-red">发布包</span> 已驳回 ${pkg} · ${ticketNo}`
+            : `<span class="tag tag-purple">发布包</span> ${pkg} → ${env}`,
+      statusTag: side === 'pending' ? '待审批·通过后可发布' : side === 'approved' ? '已通过·可点发布' : '已驳回',
+      statusCls: side === 'approved' ? 'tag-green' : side === 'rejected' ? 'tag-red' : 'tag-orange',
+      time: t.createTime || nowLabel(),
+      desc:
+        side === 'rejected'
+          ? `驳回意见：${rejectRemark || '请修改后重提'} · 单号 ${ticketNo}`
+          : side === 'approved'
+            ? `脚本发布审批已通过 · 请到「环境与发布」完成门禁后发布 · ${ticketNo}`
+            : purposeText || `脚本发布申请 · release ${payload.releaseId || '—'} · ${ticketNo}`,
+      timeline:
+        side === 'approved'
+          ? [
+              { label: '✓ 提交', cls: 'done' },
+              { label: '✓ 审批', cls: 'done' },
+              { label: '门禁/发布', cls: 'current' },
+            ]
+          : side === 'rejected'
+            ? [
+                { label: '✓ 提交', cls: 'done' },
+                { label: '✗ 驳回', cls: 'done' },
+                { label: '改后重提', cls: 'current' },
+              ]
+            : [
+                { label: '✓ 提交', cls: 'done' },
+                { label: '● 审批', cls: 'current' },
+                { label: '门禁/发布', cls: '' },
+              ],
+    }
+  }
+
   if (type === 'metric') {
     const metricKind = payload.metricKind || 'query'
     const metricId = payload.metricCode || payload.metricId || '—'
@@ -521,20 +577,22 @@ function upsertBoardCard(listRef, card, preferFront = true) {
 }
 
 /**
- * 从后端刷新申请看板（含 metric / api_publish 等；失败则保留本会话降级单）
+ * 从后端刷新申请看板（含 metric / api_publish 等）
+ * @param {string} [ws] 工作空间；缺省不过滤
  */
-export async function hydrateApplyBoardFromServer() {
+export async function hydrateApplyBoardFromServer(ws) {
   try {
+    const q = { current: 1, size: 50 }
+    if (ws) q.ws = ws
     const [minePage, pendingPage] = await Promise.all([
-      pageMyTickets({ current: 1, size: 50 }),
-      pagePendingTickets({ current: 1, size: 50 }).catch(() => ({ records: [] })),
+      pageMyTickets(q),
+      pagePendingTickets(q).catch(() => ({ records: [] })),
     ])
     const mineRecs = minePage?.records || minePage?.rows || []
     const pendRecs = pendingPage?.records || pendingPage?.rows || []
 
-    // 清掉已同步服务端卡；保留本会话 API 失败降级单与其它 Tab 本地单
-    mine.value = mine.value.filter((m) => !m.fromServer)
-    pending.value = pending.value.filter((p) => !p.fromServer)
+    mine.value = []
+    pending.value = []
 
     for (const t of mineRecs) {
       const card = mapServerTicket(t)
@@ -593,124 +651,50 @@ export async function pushExportApply({
       fromServer: true,
     }
   } catch (e) {
-    // 降级本地演示单（无后端时）
-    const ticketNo = `EXP-L${Date.now().toString().slice(-6)}`
-    const id = ticketNo
-    const now = nowLabel()
-    const base = {
-      id,
-      ticketNo,
-      type: 'export',
-      side: 'pending',
-      asset: tableLabel,
-      target: targetLabel,
-      purpose: purposeText,
-      expire: expireLabel,
-      applicant,
-      fromServer: false,
-      exportJob: {
-        job: ticketNo,
-        src: tableLabel.replace(/^(ads|dwd|dws)\./, '').replace(/^[\w]+\./, '') || tableLabel,
-        target: targetLabel,
-        purpose: purposeText.slice(0, 40),
-        freq: '待审批',
-        mask: '待配置',
-        expire: expireLabel,
-        status: 'warn',
-      },
-    }
-    mine.value.unshift({
-      ...base,
-      titleHtml: `<span class="tag tag-orange">处理中</span> 我申请 ${tableLabel} 出湖 → ${targetLabel}`,
-      time: now,
-      desc: `用途：${purposeText} · 目标 ${targetLabel} · 时效 ${expireLabel} · 单号 ${ticketNo}（本地降级）`,
-      timeline: [
-        { label: '✓ 提交', cls: 'done' },
-        { label: '● 安全/域负责人审批', cls: 'current' },
-        { label: '作业可引用 ticketNo', cls: '' },
-      ],
-    })
-    pending.value.unshift({
-      ...base,
-      titleHtml: `<span class="tag tag-purple">出湖</span> ${applicant} 申请 ${tableLabel} → ${targetLabel}`,
-      statusTag: '待安全+域负责人',
-      statusCls: 'tag-orange',
-      desc: `链路 J：${tableLabel} → ${targetLabel} · 时效 ${expireLabel} · 用途：${purposeText} · 单号 ${ticketNo}`,
-      timeline: [
-        { label: '✓ 提交', cls: 'done' },
-        { label: '● 安全/域负责人', cls: 'current' },
-        { label: '脱敏配置', cls: '' },
-        { label: '作业上线', cls: '' },
-      ],
-    })
-    const err = e?.message || String(e)
-    console.warn('pushExportApply fallback local:', err)
-    return { id, ticketNo, expire: expireLabel, fromServer: false, degraded: true, message: err }
+    throw e
   }
 }
 
-/** 审批通过出湖单：优先后端，再回写看板；机密明文可能仅推进到待安全加签 */
+/** 审批通过出湖单：须服务端工单 */
 export async function approveExportOnBoard(ticket) {
   if (!ticket || ticket.type !== 'export') return null
   const ticketNo = ticket.ticketNo || ticket.id
-  if (ticket.fromServer || ticket.serverId) {
-    try {
-      const res = await approveTicket(ticket.serverId || ticket.id)
-      const approvedNo = res?.ticketNo || res?.ticket?.ticketNo || ticketNo
-      if (res?.awaitingSecurity || res?.status === 'pending_security') {
-        const mid = mapServerTicket(res.ticket || { ...ticket, status: 'pending_security', ticketNo: approvedNo })
-        await hydrateApplyBoardFromServer().catch(() => {})
-        return { ticketNo: approvedNo, awaitingSecurity: true, approved: mid, fromServer: true }
-      }
-      const approved = {
-        ...ticket,
-        side: 'approved',
-        awaitingSecurity: false,
-        ticketNo: approvedNo,
-        titleHtml: `<span class="tag tag-green">已通过</span> ${ticket.asset || '—'} 出湖 → ${ticket.target || '—'} · ${approvedNo}`,
-        time: nowLabel(),
-        desc: `已批准出湖 · 单号 ${approvedNo}（填回 ETL sink ticketNo）· 目标 ${ticket.target || '—'} · 时效 ${ticket.expire || '—'}`,
-        timeline: [
-          { label: '✓ 提交', cls: 'done' },
-          { label: '✓ Owner + 安全加签', cls: 'done' },
-          { label: '✓ 可配置脱敏/作业', cls: 'done' },
-          { label: `✓ ticketNo ${approvedNo}`, cls: 'done' },
-        ],
-        exportJob: ticket.exportJob
-          ? { ...ticket.exportJob, freq: '审批通过', status: 'ok', mask: ticket.exportJob.mask || '待配置' }
-          : null,
-      }
-      const mineIdx = mine.value.findIndex((m) => m.id === ticket.id && m.side === 'pending')
-      if (mineIdx >= 0) mine.value.splice(mineIdx, 1, approved)
-      else mine.value.unshift(approved)
-      return { ticketNo: approvedNo, approved, fromServer: true }
-    } catch (e) {
-      throw e
+  if (!(ticket.fromServer || ticket.serverId)) {
+    throw new Error('仅支持服务端出湖工单审批')
+  }
+  try {
+    const res = await approveTicket(ticket.serverId || ticket.id)
+    const approvedNo = res?.ticketNo || res?.ticket?.ticketNo || ticketNo
+    if (res?.awaitingSecurity || res?.status === 'pending_security') {
+      const mid = mapServerTicket(res.ticket || { ...ticket, status: 'pending_security', ticketNo: approvedNo })
+      await hydrateApplyBoardFromServer().catch(() => {})
+      return { ticketNo: approvedNo, awaitingSecurity: true, approved: mid, fromServer: true }
     }
+    const approved = {
+      ...ticket,
+      side: 'approved',
+      awaitingSecurity: false,
+      ticketNo: approvedNo,
+      titleHtml: `<span class="tag tag-green">已通过</span> ${ticket.asset || '—'} 出湖 → ${ticket.target || '—'} · ${approvedNo}`,
+      time: nowLabel(),
+      desc: `已批准出湖 · 单号 ${approvedNo}（填回 ETL sink ticketNo）· 目标 ${ticket.target || '—'} · 时效 ${ticket.expire || '—'}`,
+      timeline: [
+        { label: '✓ 提交', cls: 'done' },
+        { label: '✓ Owner + 安全加签', cls: 'done' },
+        { label: '✓ 可配置脱敏/作业', cls: 'done' },
+        { label: `✓ ticketNo ${approvedNo}`, cls: 'done' },
+      ],
+      exportJob: ticket.exportJob
+        ? { ...ticket.exportJob, freq: '审批通过', status: 'ok', mask: ticket.exportJob.mask || '待配置' }
+        : null,
+    }
+    const mineIdx = mine.value.findIndex((m) => m.id === ticket.id && m.side === 'pending')
+    if (mineIdx >= 0) mine.value.splice(mineIdx, 1, approved)
+    else mine.value.unshift(approved)
+    return { ticketNo: approvedNo, approved, fromServer: true }
+  } catch (e) {
+    throw e
   }
-
-  // 本地演示单
-  const approved = {
-    ...ticket,
-    side: 'approved',
-    ticketNo,
-    titleHtml: `<span class="tag tag-green">已通过</span> ${ticket.asset || '—'} 出湖 → ${ticket.target || '—'} · ${ticketNo}`,
-    time: nowLabel(),
-    desc: `已批准出湖 · 单号 ${ticketNo}（填回 ETL sink ticketNo）· 目标 ${ticket.target || '—'} · 时效 ${ticket.expire || '—'} · ${ticket.purpose || ''}`,
-    timeline: [
-      { label: '✓ 提交', cls: 'done' },
-      { label: '✓ 安全/域负责人', cls: 'done' },
-      { label: '✓ 可配置脱敏/作业', cls: 'done' },
-      { label: `✓ ticketNo ${ticketNo}`, cls: 'done' },
-    ],
-    exportJob: ticket.exportJob
-      ? { ...ticket.exportJob, freq: '审批通过', status: 'ok', mask: ticket.exportJob.mask || '待配置' }
-      : null,
-  }
-  const mineIdx = mine.value.findIndex((m) => m.id === ticket.id && m.side === 'pending')
-  if (mineIdx >= 0) mine.value.splice(mineIdx, 1, approved)
-  else mine.value.unshift(approved)
-  return { ticketNo, approved, fromServer: false }
 }
 
 export function useApplyBoard() {

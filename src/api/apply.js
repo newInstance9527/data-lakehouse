@@ -1,10 +1,39 @@
 import { http } from './http'
+import { releaseIdempotencyKey, stickyIdempotencyKey } from './idempotency'
 
 const BASE = '/lh/apply'
 
-/** 提交表级读权限申请 */
+function applyFingerprint(payload = {}) {
+  return {
+    ticketType: payload.ticketType,
+    title: payload.title,
+    reason: payload.reason,
+    assetId: payload.assetId,
+    privilege: payload.privilege,
+    expireLabel: payload.expireLabel,
+    exportTable: payload.exportTable,
+    exportTarget: payload.exportTarget,
+    resourceType: payload.resourceType,
+    resourceId: payload.resourceId,
+    scriptId: payload.scriptId,
+    apiBindingId: payload.apiBindingId,
+    metricCode: payload.metricCode,
+    metricKind: payload.metricKind,
+    reqNo: payload.reqNo,
+  }
+}
+
+/** 提交表级读权限申请（同指纹短时复用 Idempotency-Key） */
 export function createApplyTicket(payload) {
-  return http.post(`${BASE}/tickets`, payload)
+  const fp = applyFingerprint(payload)
+  const key = payload?.idempotencyKey || stickyIdempotencyKey('apply_ticket', fp)
+  const body = { ...payload, idempotencyKey: key }
+  return http
+    .post(`${BASE}/tickets`, body, { idempotencyKey: key })
+    .then((data) => {
+      releaseIdempotencyKey('apply_ticket', fp)
+      return data
+    })
 }
 
 /** 我的申请分页 */
@@ -18,8 +47,8 @@ export function pagePendingTickets(params) {
 }
 
 /** 看板 KPI：待我审批 / 我申请的 / 本月通过 / 本月驳回 */
-export function fetchApplyKpi() {
-  return http.get(`${BASE}/kpi`)
+export function fetchApplyKpi(params = {}) {
+  return http.get(`${BASE}/kpi`, { ws: params.ws })
 }
 
 /** 通过申请 → 写 sec_auth_grant（门户 SoT；不投影 Grav） */
