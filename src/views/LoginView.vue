@@ -10,7 +10,8 @@ import UiPrefsMenu from '@/components/common/UiPrefsMenu.vue'
 const route = useRoute()
 const router = useRouter()
 const { bootstrapSession } = useSession()
-useLocale()
+/** 绑定 locale，切换语言时刷新登录文案 */
+const { locale } = useLocale()
 
 /** 与 Snowy 种子用户一致：账号 superAdmin，默认密码 SNOWY_SYS_DEFAULT_PASSWORD_FOR_B */
 const account = ref('superAdmin')
@@ -44,8 +45,6 @@ async function submit() {
     loading.value = false
   }
 }
-
-void locale
 </script>
 
 <template>
@@ -85,7 +84,7 @@ void locale
       </div>
     </div>
 
-    <div class="lh-login__stage">
+    <div class="lh-login__stage" :key="locale">
       <header class="lh-login__brand">
         <div class="lh-login__mark" aria-hidden="true">DL</div>
         <h1 class="lh-login__title">DataLakeHub</h1>

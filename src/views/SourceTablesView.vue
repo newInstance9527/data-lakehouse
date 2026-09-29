@@ -82,7 +82,7 @@ onMounted(async () => {
   if (sourceId.value && getSource(sourceId.value)) {
     try {
       await Promise.all([
-        ensureTables(sourceId.value),
+        ensureTables(sourceId.value, { force: true }),
         refreshManageGrant('datasource', sourceId.value, getSource(sourceId.value)),
       ])
     } catch (e) {
@@ -97,7 +97,7 @@ watch(
     if (id && getSource(id)) {
       try {
         await Promise.all([
-          ensureTables(id),
+          ensureTables(id, { force: true }),
           refreshManageGrant('datasource', id, getSource(id)),
         ])
       } catch (e) {
@@ -157,24 +157,29 @@ function goPage(p) {
 }
 
 async function onSync() {
-  if (!source.value) return
+  const ds = source.value
+  const dsId = ds?.id || sourceId.value
+  if (!dsId) {
+    showToast('未找到数据源，请从数据源列表重新进入表清单', 'warning')
+    return
+  }
   if (!assertEditOrGuide('同步')) {
     goApplyManage()
     return
   }
   syncing.value = true
-  showToast(`🔄 正在同步 ${source.value.name} 表清单…`, 'info')
+  showToast(`🔄 正在同步 ${ds?.name || dsId} 表清单…`, 'info')
   try {
     const before = tables.value.length
-    await syncTables(source.value.id)
-    const after = getSource(source.value.id)?.tables?.length || 0
+    await syncTables(dsId)
+    const after = getSource(dsId)?.tables?.length || 0
     showToast(`✅ 同步完成 · 新增 ${Math.max(0, after - before)} 张 · 共 ${after} 张`, 'success')
   } catch (e) {
     if (isNeedOwnerApplyError(e)) {
       showToast(e.message || '无编辑权不可同步', 'warning')
       goApplyManage()
     } else {
-      showToast(`同步失败：${e.message || e}`, 'error')
+      showToast(`同步失败：${e?.message || e}`, 'error')
     }
   } finally {
     syncing.value = false
@@ -210,8 +215,13 @@ async function submitAdd() {
     encoding: draft.encoding.trim() || undefined,
     engine: draft.engine.trim() || undefined,
   })
+  const dsId = source.value?.id || sourceId.value
+  if (!dsId) {
+    showToast('未找到数据源', 'warning')
+    return
+  }
   try {
-    const res = await addTable(source.value.id, item)
+    const res = await addTable(dsId, item)
     if (!res.ok) {
       showToast('表名已存在', 'warning')
       return
@@ -239,8 +249,13 @@ async function onRemove(name) {
     confirmLabel: '确认删除',
   })
   if (!ok) return
+  const dsId = source.value?.id || sourceId.value
+  if (!dsId) {
+    showToast('未找到数据源', 'warning')
+    return
+  }
   try {
-    await removeTable(source.value.id, name)
+    await removeTable(dsId, name)
     showToast(`已移除 ${name}`, 'info')
   } catch (e) {
     if (isNeedOwnerApplyError(e)) {
@@ -258,7 +273,9 @@ function onPatch(row, key, e) {
     return
   }
   const val = e.target.value
-  patchTable(source.value.id, row.name, { [key]: val }).catch((err) => {
+  const dsId = source.value?.id || sourceId.value
+  if (!dsId) return
+  patchTable(dsId, row.name, { [key]: val }).catch((err) => {
     if (isNeedOwnerApplyError(err)) {
       showToast(err.message || '无编辑权不可编辑', 'warning')
       goApplyManage()

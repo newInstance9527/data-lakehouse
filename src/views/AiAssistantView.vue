@@ -140,6 +140,7 @@ function formatSessionTime(t) {
 }
 
 const activeSessionTitle = computed(() => {
+  if (!assistant.sessionId.value) return '未选择对话'
   const hit = recentSessionsUi.value.find((s) => s.id === assistant.sessionId.value)
   return hit?.title || '新对话'
 })
@@ -282,6 +283,10 @@ function syncKnowledgeRefs(citations) {
 async function sendMessage(scene) {
   const text = inputText.value.trim()
   if (!text || sending.value) return
+  if (!assistant.sessionId.value) {
+    showToast('请先点左侧「新对话」再提问', 'warning')
+    return
+  }
   const resolvedScene = scene || pendingScene.value
   inputText.value = ''
   pendingScene.value = undefined
@@ -484,8 +489,14 @@ function onBubbleClick(e, msg) {
 
         <div ref="chatBody" class="ai-chat-body">
           <div v-if="!messages.length && !sending" class="ai-empty">
-            <div class="ai-empty-title">开始提问</div>
-            <div class="ai-empty-sub">可查目录、可查资产、知识库、质量与血缘；生成 SQL 请点下方芯片。</div>
+            <div class="ai-empty-title">{{ assistant.sessionId.value ? '开始提问' : '选择或新建对话' }}</div>
+            <div class="ai-empty-sub">
+              {{
+                assistant.sessionId.value
+                  ? '可查目录、可查资产、知识库、质量与血缘；生成 SQL 请点下方芯片。'
+                  : '左侧点「新对话」后再提问；删除后不会自动再建空白对话。'
+              }}
+            </div>
           </div>
           <div
             v-for="(msg, i) in messages"
@@ -845,19 +856,19 @@ function onBubbleClick(e, msg) {
   background: transparent;
   color: var(--text-3);
   cursor: pointer;
-  opacity: 0;
-  pointer-events: none;
+  opacity: 0.55;
+  pointer-events: auto;
   transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease;
 }
 .ai-session-item:hover .ai-session-del,
 .ai-session-item.active .ai-session-del,
 .ai-session-del:focus-visible {
   opacity: 1;
-  pointer-events: auto;
 }
 .ai-session-del:hover {
   background: var(--danger-light);
   color: var(--danger);
+  opacity: 1;
 }
 .ai-empty {
   margin: auto;

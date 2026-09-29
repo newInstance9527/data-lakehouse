@@ -20,6 +20,8 @@ export default defineConfig({
   },
   server: {
     host: true,
+    // Cloudflare Tunnel / 临时公网域名会改 Host，需放行
+    allowedHosts: true,
     port: 5173,
     strictPort: true,
     open: true,

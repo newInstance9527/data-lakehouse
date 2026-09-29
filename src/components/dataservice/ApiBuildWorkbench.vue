@@ -9,7 +9,14 @@ import {
   fetchMetaViews,
   fetchMetaColumns,
 } from '@/api/datasource.js'
-import { parseDataapiParams, fetchSqlrestOptions, buildDataapi, publishDataapi, gatewayProbe } from '@/api/dataapi.js'
+import {
+  parseDataapiParams,
+  fetchSqlrestOptions,
+  fetchDataapiDetail,
+  buildDataapi,
+  publishDataapi,
+  gatewayProbe,
+} from '@/api/dataapi.js'
 import { createApplyTicket, pageMyTickets } from '@/api/apply.js'
 import { compileMetric, fetchMetricList } from '@/api/metric.js'
 import { fetchAssetPage, fetchAssetSchema, fetchAssetSources } from '@/api/catalog.js'
@@ -34,12 +41,14 @@ import { FIELD_TRANSFORM_OPTIONS, mapResponseRow } from '@/data/apiBuild.js'
 const props = defineProps({
   open: { type: Boolean, default: false },
   editId: { type: String, default: '' },
+  /** 详情抽屉已拉到的绑定，打开时同步预填，避免二次请求前空白 */
+  seed: { type: Object, default: null },
 })
 const emit = defineEmits(['close', 'publish'])
 
 const { showToast } = useToast()
 const { currentWs } = useSession()
-const { sqlrestDs, ensureLoaded, openDetail, runTrial, embed } = useDataservice()
+const { sqlrestDs, ensureLoaded, runTrial, embed } = useDataservice()
 
 const TAB_IDS = [
   { id: 'sql', label: 'SQL配置' },
@@ -56,6 +65,8 @@ const paramSide = ref('in')
 const { busy, run: runLocked } = useActionLock()
 const saving = computed(() => busy('save'))
 const publishing = computed(() => busy('publish') || busy('apply'))
+/** 已发布只读：须详情页取消发布后才能保存 */
+const editLocked = computed(() => form.state === 'published')
 const testing = ref(false)
 const dirty = ref(false)
 const debugOpen = ref(false)
@@ -237,44 +248,81 @@ const pgNeedsTextCast = computed(() => {
   return contextListOf().some((s) => sqlNeedsPgParamTextCast(s))
 })
 
-watch(
-  () => props.open,
-  async (v) => {
-    if (!v) return
-    await ensureLoaded(true)
-    Object.assign(form, emptyForm())
-    engineWindowStash.SQL = null
-    engineWindowStash.GROOVY = null
-    objectNodes.value = []
-    tab.value = 'sql'
-    dirty.value = false
-    debugOpen.value = false
-    moreOpen.value = false
-    closeTplPicker()
-    resetAiChat()
-    metaSel.value = null
-    try {
-      options.value = { ...options.value, ...((await fetchSqlrestOptions()) || {}) }
-      if (form.moduleId == null && options.value.defaultModuleId != null) {
-        form.moduleId = options.value.defaultModuleId
-      }
-      if (form.groupId == null && options.value.defaultGroupId != null) {
-        form.groupId = options.value.defaultGroupId
-      }
-    } catch {
-      /* soft */
-    }
-    if (props.editId) {
-      await loadEdit(props.editId)
-    }
-  },
-)
+/** 打开/回填世代号：避免并行 boot 互相覆盖 */
+let workbenchBootSeq = 0
+/** 回填中：跳过数据源切换时把 STUB/样例盖掉正文 */
+const hydratingEdit = ref(false)
 
+function resetWorkbenchChrome() {
+  engineWindowStash.SQL = null
+  engineWindowStash.GROOVY = null
+  objectNodes.value = []
+  tab.value = 'sql'
+  dirty.value = false
+  debugOpen.value = false
+  moreOpen.value = false
+  closeTplPicker()
+  resetAiChat()
+  metaSel.value = null
+}
+
+async function bootOptions(seq) {
+  try {
+    options.value = { ...options.value, ...((await fetchSqlrestOptions()) || {}) }
+    if (seq !== workbenchBootSeq) return
+    if (form.moduleId == null && options.value.defaultModuleId != null) {
+      form.moduleId = options.value.defaultModuleId
+    }
+    if (form.groupId == null && options.value.defaultGroupId != null) {
+      form.groupId = options.value.defaultGroupId
+    }
+  } catch {
+    /* soft */
+  }
+}
+
+/**
+ * open / editId 统一引导：
+ * - 新建：emptyForm
+ * - 编辑：先 seed 预填，再拉详情（禁止先 emptyForm 再异步，避免竞态空白）
+ * - 工作台已开时仅 editId 从空→有 / 切换 id：直接 loadEdit
+ */
 watch(
-  () => props.editId,
-  async (id) => {
-    if (!props.open || !id) return
-    await loadEdit(id)
+  () => [props.open, props.editId],
+  async ([open, editId], prev) => {
+    if (!open) return
+    const prevOpen = prev?.[0]
+    const prevId = prev?.[1] ?? ''
+    const id = editId ? String(editId) : ''
+
+    // 已打开且仅 editId 变化
+    if (prevOpen && open) {
+      if (!id || id === String(prevId || '')) return
+      const seq = ++workbenchBootSeq
+      await loadEdit(id, seq)
+      return
+    }
+
+    // open: false → true
+    const seq = ++workbenchBootSeq
+    const targetId = id
+    resetWorkbenchChrome()
+    if (targetId) {
+      const seed =
+        props.seed && String(props.seed.id || '') === targetId ? props.seed : null
+      if (seed) applyDetailToForm(seed)
+      else Object.assign(form, emptyForm())
+    } else {
+      Object.assign(form, emptyForm())
+    }
+
+    await ensureLoaded(true)
+    if (seq !== workbenchBootSeq) return
+    await bootOptions(seq)
+    if (seq !== workbenchBootSeq) return
+    if (targetId) {
+      await loadEdit(targetId, seq)
+    }
   },
 )
 
@@ -337,6 +385,10 @@ function emptyForm() {
     publishTicketNo: '',
     publishTicketStatus: '',
     publishTicketRemark: '',
+    state: 'draft',
+    revision: 1,
+    sqlrestVersion: null,
+    sqlrestCommitId: '',
     sourceKind: 'sql',
     sourceRef: '',
     tested: false,
@@ -390,86 +442,152 @@ function contextListOf({ trial = false } = {}) {
     .filter((s) => String(s).trim())
 }
 
-async function loadEdit(id) {
-  try {
-    const d = await openDetail({ id })
-    if (!d) return
-    form.id = d.id
-    form.name = d.name || ''
-    form.path = d.path || d.publicPath || '/api/'
-    form.method = d.method || 'GET'
-    form.description = d.description || d.desc || ''
-    form.datasourceId = d.portalDsId || d.datasourceId || ''
-    form.engine = d.sqlrest?.engine || d.engine || 'SQL'
-    form.sourceKind = d.sourceKind || 'sql'
-    form.sourceRef = d.sourceRef || ''
-    form.qps = d.qpsLimit || d.qps || 100
-    form.burst = d.burstLimit || d.burst || 200
-    form.owner = d.ownerUser || d.owner || ''
-    form.domain = d.domainCode || d.domain || ''
-    const sr = d.sqlrest || {}
-    if (Array.isArray(sr.sqlList) && sr.sqlList.length) {
-      form.sqlWindows = sr.sqlList.map((s, i) => ({
-        key: `w${i + 1}`,
-        title: `SQL窗口(${i + 1})`,
-        sql: s.sqlText || s || '',
-      }))
-      form.activeSqlKey = form.sqlWindows[0].key
-    } else if (d.sql) {
-      form.sqlWindows = [{ key: 'w1', title: 'SQL窗口(1)', sql: d.sql }]
-      form.activeSqlKey = 'w1'
-    }
+/**
+ * 将详情/sqlrest 写入表单。seed 可无完整 sqlrest。
+ * @param {Record<string, any>} d
+ * @param {{ soft?: boolean }} [opts] soft=true 时不覆盖已有非空 SQL（仅预填元数据）
+ */
+function applyDetailToForm(d, opts = {}) {
+  if (!d || typeof d !== 'object') return
+  const soft = !!opts.soft
+  const srWrap = d.sqlrest && typeof d.sqlrest === 'object' ? d.sqlrest : {}
+  const sr =
+    srWrap.data && typeof srWrap.data === 'object' && !Array.isArray(srWrap.data)
+      ? srWrap.data
+      : srWrap
+
+  form.id = d.id || form.id || ''
+  form.name = d.name || form.name || ''
+  form.path = d.path || d.publicPath || form.path || '/api/'
+  form.method = d.method || form.method || 'GET'
+  form.description = d.description || d.desc || form.description || ''
+  form.engine = sr.engine || d.engine || form.engine || 'SQL'
+  form.sourceKind = d.sourceKind || form.sourceKind || 'sql'
+  form.sourceRef = d.sourceRef != null && d.sourceRef !== '' ? d.sourceRef : form.sourceRef || ''
+  if (d.state) form.state = d.state
+  if (d.revision != null) form.revision = Number(d.revision) || 1
+  if (d.sqlrestVersion != null) form.sqlrestVersion = d.sqlrestVersion
+  if (d.sqlrestCommitId != null) form.sqlrestCommitId = String(d.sqlrestCommitId)
+  const qpsRaw = d.qpsLimit ?? d.qps
+  if (qpsRaw != null && qpsRaw !== '—') form.qps = Number(qpsRaw) || 100
+  if (d.burstLimit != null || d.burst != null) form.burst = d.burstLimit || d.burst || 200
+  if (d.ownerUser || d.owner) form.owner = d.ownerUser || d.owner || ''
+  if (d.domainCode || d.domain) {
+    const dom = d.domainCode || d.domain
+    form.domain = dom === '—' ? '' : dom
+  }
+
+  const sqlList = Array.isArray(sr.sqlList)
+    ? sr.sqlList
+    : Array.isArray(d.contextList)
+      ? d.contextList
+      : Array.isArray(d.sqlList)
+        ? d.sqlList
+        : []
+  let wroteSql = false
+  if (sqlList.length) {
+    form.sqlWindows = sqlList.map((s, i) => ({
+      key: `w${i + 1}`,
+      title: `SQL窗口(${i + 1})`,
+      sql: typeof s === 'string' ? s : s.sqlText || s.sql || '',
+    }))
+    form.activeSqlKey = form.sqlWindows[0].key
+    wroteSql = true
+  } else if (d.sql || d.script || sr.script) {
+    const text = d.sql || d.script || sr.script || ''
+    form.sqlWindows = [{ key: 'w1', title: 'SQL窗口(1)', sql: text }]
+    form.activeSqlKey = 'w1'
+    wroteSql = true
+  } else if (!soft) {
+    /* keep current windows when soft seed has no sql */
+  }
+  if (wroteSql) {
     retitleWindows()
     engineWindowStash.SQL = null
     engineWindowStash.GROOVY = null
     stashEngineWindows(form.engine)
-    form.publishTicketNo = d.publishTicketNo || ''
-    form.publishTicketStatus = ''
-    if (Array.isArray(sr.params)) {
-      form.params = sr.params.map((p) => ({
-        name: p.name,
-        type: normalizePortalParamType(p.type),
-        location: p.location || '',
-        required: !!p.required,
-        isArray: !!p.isArray,
-        defaultValue: p.defaultValue ?? '',
-        example: '',
-        desc: p.remark || '',
-      }))
+  }
+
+  // 先写 SQL 再写 datasourceId，避免 ds watcher 用样例盖住正文
+  const dsId = d.portalDsId || d.datasourceId || ''
+  if (dsId) form.datasourceId = dsId
+  form.publishTicketNo = d.publishTicketNo || form.publishTicketNo || ''
+  form.publishTicketStatus = d.publishTicketStatus || form.publishTicketStatus || ''
+
+  const rawParams = Array.isArray(sr.params)
+    ? sr.params
+    : Array.isArray(d.params)
+      ? d.params
+      : []
+  if (rawParams.length) {
+    form.params = rawParams.map((p) => ({
+      name: p.name,
+      type: normalizePortalParamType(p.type),
+      location: p.location || '',
+      required: !!p.required,
+      isArray: !!p.isArray,
+      defaultValue: p.defaultValue ?? '',
+      example: p.example || '',
+      desc: p.remark || p.desc || '',
+    }))
+  }
+  if (sr.namingStrategy) form.namingStrategy = sr.namingStrategy
+  if (sr.cacheKeyType) form.cacheKeyType = sr.cacheKeyType
+  if (sr.cacheKeyExpr != null) form.cacheKeyExpr = sr.cacheKeyExpr
+  if (sr.cacheExpireSeconds != null) form.cacheExpireSeconds = sr.cacheExpireSeconds
+  if (sr.flowStatus != null) form.flowStatus = !!sr.flowStatus
+  if (sr.flowGrade != null) form.flowGrade = sr.flowGrade
+  if (sr.flowCount != null) form.flowCount = sr.flowCount
+  if (sr.open != null) form.open = !!sr.open
+  if (sr.alarm != null) form.alarm = !!sr.alarm
+  if (sr.timeout != null) form.timeout = Number(sr.timeout) || 300
+  if (sr.contentType) form.contentType = sr.contentType
+  else if (d.contentType) form.contentType = d.contentType
+  const fm = sr.formatMap
+  if (Array.isArray(fm)) {
+    const sys = fm.find((x) => x.key === 'USE_SYSTEM_RESPONSE_FORMAT')
+    if (sys) form.useSystemFormat = String(sys.value) !== 'false'
+    form.typeFormatValues = {}
+    for (const row of fm) {
+      if (!row?.key || row.key === 'USE_SYSTEM_RESPONSE_FORMAT') continue
+      const key = normalizeFormatKey(row.key)
+      if (!key) continue
+      form.typeFormatValues[key] = row.value ?? ''
     }
-    if (sr.namingStrategy) form.namingStrategy = sr.namingStrategy
-    if (sr.cacheKeyType) form.cacheKeyType = sr.cacheKeyType
-    if (sr.cacheKeyExpr != null) form.cacheKeyExpr = sr.cacheKeyExpr
-    if (sr.cacheExpireSeconds != null) form.cacheExpireSeconds = sr.cacheExpireSeconds
-    if (sr.flowStatus != null) form.flowStatus = !!sr.flowStatus
-    if (sr.flowGrade != null) form.flowGrade = sr.flowGrade
-    if (sr.flowCount != null) form.flowCount = sr.flowCount
-    if (sr.open != null) form.open = !!sr.open
-    form.alarm = !!sr.alarm
-    if (sr.timeout != null) form.timeout = Number(sr.timeout) || 300
-    const fm = sr.formatMap
-    if (Array.isArray(fm)) {
-      const sys = fm.find((x) => x.key === 'USE_SYSTEM_RESPONSE_FORMAT')
-      if (sys) form.useSystemFormat = String(sys.value) !== 'false'
-      form.typeFormatValues = {}
-      for (const row of fm) {
-        if (!row?.key || row.key === 'USE_SYSTEM_RESPONSE_FORMAT') continue
-        const key = normalizeFormatKey(row.key)
-        if (!key) continue
-        form.typeFormatValues[key] = row.value ?? ''
-      }
+  }
+  const fromResp = Array.isArray(d.responses) ? d.responses : []
+  const fromOut = Array.isArray(sr.outputs) ? sr.outputs : Array.isArray(d.outputs) ? d.outputs : []
+  const rawOut = fromResp.length ? fromResp : fromOut
+  if (rawOut.length) form.outputs = rawOut.map((o) => normalizeOutputRow(o))
+  if (sr.moduleId != null) form.moduleId = sr.moduleId
+  else if (d.moduleId != null) form.moduleId = d.moduleId
+  if (sr.groupId != null) form.groupId = sr.groupId
+  else if (d.groupId != null) form.groupId = d.groupId
+}
+
+/**
+ * sqlrest 客户端返回 { ok, data }；与 ApplyView.loadApiPublishPreview 一致先解包 data。
+ * @param {string} id
+ * @param {number} [bootSeq] 若传入且已过期则丢弃回填（open 竞态）
+ */
+async function loadEdit(id, bootSeq) {
+  hydratingEdit.value = true
+  try {
+    // 直拉详情，避免 useDataservice.openDetail 吞错后只剩 { id }
+    const d = await fetchDataapiDetail(String(id), true)
+    if (bootSeq != null && bootSeq !== workbenchBootSeq) return
+    if (!d) {
+      showToast('未找到 API 绑定详情', 'warning')
+      return
     }
-    const fromResp = Array.isArray(d.responses) ? d.responses : []
-    const fromOut = Array.isArray(sr.outputs) ? sr.outputs : Array.isArray(d.outputs) ? d.outputs : []
-    const rawOut = fromResp.length ? fromResp : fromOut
-    form.outputs = rawOut.map((o) => normalizeOutputRow(o))
-    if (sr.moduleId != null) form.moduleId = sr.moduleId
-    else if (d.moduleId != null) form.moduleId = d.moduleId
-    if (sr.groupId != null) form.groupId = sr.groupId
-    else if (d.groupId != null) form.groupId = d.groupId
+    applyDetailToForm({ ...d, id: d.id || String(id) })
     dirty.value = false
   } catch (e) {
+    if (bootSeq != null && bootSeq !== workbenchBootSeq) return
     showToast(`加载失败：${e?.message || e}`, 'warning')
+  } finally {
+    await nextTick()
+    hydratingEdit.value = false
   }
 }
 
@@ -614,6 +732,7 @@ const editorHint = computed(() => {
 watch(
   () => form.datasourceId,
   (id, prev) => {
+    if (hydratingEdit.value) return
     if (!id || id === prev || form.engine === 'GROOVY') return
     const cur = String(activeSql.value || '').trim()
     if (!cur || cur === SQL_STUB || isDialectSample(cur)) {
@@ -1896,6 +2015,10 @@ function validate() {
 }
 
 async function save() {
+  if (editLocked.value) {
+    showToast('已发布接口请先在详情页「取消发布」后再编辑', 'warning')
+    return null
+  }
   const err = validate()
   if (err) {
     showToast(err, 'warning')
@@ -1907,6 +2030,9 @@ async function save() {
       const binding = res?.binding
       // 门户草稿落库即成功；SQLREST 失败用 degraded，不因 ok/sqlrest 失败丢掉 id
       if (binding?.id) form.id = binding.id
+      if (binding?.state) form.state = binding.state
+      if (binding?.revision != null) form.revision = binding.revision
+      if (binding?.sqlrestVersion != null) form.sqlrestVersion = binding.sqlrestVersion
       if (!binding?.id) {
         throw new Error(res?.sqlrest?.message || res?.message || '保存失败：未返回绑定 id')
       }
@@ -1917,7 +2043,7 @@ async function save() {
           'warning',
         )
       } else {
-        showToast(`已保存草稿${form.id ? ` · ${form.id.slice(-6)}` : ''}`, 'success')
+        showToast(`已保存草稿${form.id ? ` · ${form.id.slice(-6)}` : ''}${form.revision != null ? ` · rev ${form.revision}` : ''}`, 'success')
       }
       return binding
     } catch (e) {
@@ -1998,6 +2124,10 @@ async function doDebug() {
 }
 
 async function submitPublishApply() {
+  if (editLocked.value) {
+    showToast('已发布状态无需再申请；若要改定义请先取消发布', 'info')
+    return
+  }
   await runLocked('apply', async () => {
     // 申请须有绑定 id：有未保存变更或无 id 时先落草稿（与审批无关）
     if (dirty.value || !form.id) {
@@ -2076,6 +2206,10 @@ async function refreshPublishTicket() {
 }
 
 async function saveAndPublish() {
+  if (editLocked.value) {
+    showToast('已发布接口请先取消发布后再改；或直接在详情页回退版本', 'info')
+    return
+  }
   if (!form.tested) {
     showToast('发布前请先调试通过', 'warning')
     debugOpen.value = true
@@ -2352,17 +2486,28 @@ async function applyTpl() {
       <div class="wb">
         <header class="wb-header">
           <div>
-            <div class="wb-title">构建 API{{ form.name ? ` · ${form.name}` : '' }}</div>
+            <div class="wb-title">
+              构建 API{{ form.name ? ` · ${form.name}` : '' }}
+              <span v-if="form.sqlrestVersion != null" class="tip" style="font-weight: 400; margin-left: 6px"
+                >v{{ form.sqlrestVersion }}</span
+              >
+              <span v-if="form.state === 'published'" class="tag tag-green" style="margin-left: 8px; font-size: 11px"
+                >已发布·只读</span
+              >
+            </div>
             <div class="wb-sub">
               元数据走平台数据源服务 · 定义以接口服务为准 · 边缘默认统一网关
               <template v-if="form.sourceKind && form.sourceKind !== 'sql'">
                 · 来源 <code>{{ form.sourceKind }}</code>/<code>{{ form.sourceRef || '—' }}</code>
               </template>
+              <template v-if="editLocked">
+                · 请先在 API 详情「取消发布」后再编辑，改完须重新申请发布
+              </template>
             </div>
           </div>
           <div class="wb-actions">
             <div class="wb-more">
-              <button type="button" class="btn btn-sm" @click.stop="moreOpen = !moreOpen">更多</button>
+              <button type="button" class="btn btn-sm" :disabled="editLocked" @click.stop="moreOpen = !moreOpen">更多</button>
               <div v-if="moreOpen" class="wb-more-menu" @click.stop>
                 <button type="button" class="wb-more-item" @click="openTplPicker('metric')">从指标生成 SQL</button>
                 <button type="button" class="wb-more-item" @click="openTplPicker('asset')">从资产生成 SQL</button>
@@ -2371,13 +2516,25 @@ async function applyTpl() {
             </div>
             <button type="button" class="btn btn-sm" @click="doGatewayProbe">Gateway 探针</button>
             <button type="button" class="btn btn-sm" @click="debugOpen = !debugOpen">调试</button>
-            <button type="button" class="btn btn-sm btn-primary" :disabled="saving" @click="save">
+            <button
+              type="button"
+              class="btn btn-sm btn-primary"
+              :disabled="saving || editLocked"
+              :title="editLocked ? '已发布请先取消发布' : ''"
+              @click="save"
+            >
               {{ saving ? '保存中…' : '保存' }}
             </button>
-            <button type="button" class="btn btn-sm btn-primary" :disabled="saving || publishing" @click="submitPublishApply">
+            <button
+              type="button"
+              class="btn btn-sm btn-primary"
+              :disabled="saving || publishing || editLocked"
+              :title="editLocked ? '已发布请先取消发布' : ''"
+              @click="submitPublishApply"
+            >
               {{ busy('apply') ? '申请中…' : '申请发布' }}
             </button>
-            <button type="button" class="btn btn-sm" :disabled="publishing" :title="'异常补救：审批已通过但未上线时可用'" @click="saveAndPublish">
+            <button type="button" class="btn btn-sm" :disabled="publishing || editLocked" :title="'异常补救：审批已通过但未上线时可用'" @click="saveAndPublish">
               {{ publishing ? '补发中…' : '手动补发' }}
             </button>
             <button type="button" class="btn btn-sm" @click="close">返回</button>

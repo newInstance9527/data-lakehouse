@@ -60,22 +60,26 @@ export function useDatasources() {
   }
 
   function getSource(id) {
-    return sources.value.find((s) => s.id === id) || null
+    if (id == null || id === '') return null
+    const key = String(id)
+    return sources.value.find((s) => String(s.id) === key) || null
   }
 
   function replaceLocal(row) {
     if (!row?.id) return null
-    const idx = sources.value.findIndex((s) => s.id === row.id)
-    const next = normalizeSource(row)
-    if (idx >= 0) sources.value[idx] = { ...sources.value[idx], ...next }
+    const key = String(row.id)
+    const idx = sources.value.findIndex((s) => String(s.id) === key)
+    const next = normalizeSource({ ...row, id: key })
+    if (idx >= 0) sources.value[idx] = { ...sources.value[idx], ...next, id: key }
     else sources.value.unshift(next)
-    return sources.value.find((s) => s.id === row.id)
+    return getSource(key)
   }
 
   function updateSource(id, patch) {
-    const idx = sources.value.findIndex((s) => s.id === id)
+    const key = String(id)
+    const idx = sources.value.findIndex((s) => String(s.id) === key)
     if (idx < 0) return null
-    sources.value[idx] = { ...sources.value[idx], ...patch }
+    sources.value[idx] = { ...sources.value[idx], ...patch, id: sources.value[idx].id }
     return sources.value[idx]
   }
 
@@ -121,13 +125,34 @@ export function useDatasources() {
     return r
   }
 
-  async function ensureTables(id) {
+  async function fetchAllTables(id) {
+    const pageSize = 500
+    let current = 1
+    let total = Infinity
+    const all = []
+    while (all.length < total) {
+      const page = await fetchTablePage(id, { current, size: pageSize })
+      const records = (page?.records || []).map(normalizeTable)
+      total = Number(page?.total ?? records.length)
+      all.push(...records)
+      if (!records.length || records.length < pageSize) break
+      current += 1
+      // 防护：异常 total 时避免死循环
+      if (current > 100) break
+    }
+    return all
+  }
+
+  async function ensureTables(id, { force = false } = {}) {
     const s = getSource(id)
     if (!s) return []
-    if (Array.isArray(s.tables) && s.tables.length) return s.tables
-    const page = await fetchTablePage(id, { current: 1, size: 500 })
-    const tables = (page?.records || []).map(normalizeTable)
-    updateSource(id, { tables, schema: tablesToSchema(tables) || s.schema })
+    if (!force && Array.isArray(s.tables) && s.tables.length) {
+      // 若本地条数明显少于登记总数（同步后被分页截断），强制重拉
+      const reported = Number(s.tableCount ?? s.tablesCount ?? 0)
+      if (!reported || s.tables.length >= reported) return s.tables
+    }
+    const tables = await fetchAllTables(id)
+    updateSource(id, { tables, schema: tablesToSchema(tables) || s.schema, tableCount: tables.length })
     return getSource(id)?.tables || tables
   }
 
@@ -135,19 +160,34 @@ export function useDatasources() {
     return updateSource(id, {
       tables,
       schema: tablesToSchema(tables),
+      tableCount: Array.isArray(tables) ? tables.length : 0,
     })
   }
 
   async function syncTables(id) {
-    const res = await apiSyncTables(id)
-    const detail = await fetchDatasourceDetail(id)
-    const page = await fetchTablePage(id, { current: 1, size: 500 })
-    replaceLocal({
-      ...detail,
-      tables: (page?.records || []).map(normalizeTable),
-      schema: res?.schema || detail?.schema,
-    })
-    return getSource(id)
+    const dsId = String(id || '')
+    if (!dsId) throw new Error('数据源 id 为空')
+    const res = await apiSyncTables(dsId)
+    let detail = null
+    try {
+      detail = await fetchDatasourceDetail(dsId)
+    } catch (e) {
+      console.warn('[datasource] sync detail refresh failed', e)
+    }
+    const tables = await fetchAllTables(dsId)
+    const schema = res?.schema || detail?.schema
+    if (detail && typeof detail === 'object') {
+      replaceLocal({
+        ...detail,
+        id: String(detail.id ?? dsId),
+        tables,
+        tableCount: tables.length,
+        schema,
+      })
+    } else {
+      updateSource(dsId, { tables, tableCount: tables.length, ...(schema != null ? { schema } : {}) })
+    }
+    return getSource(dsId)
   }
 
   async function addTable(id, item) {

@@ -86,9 +86,16 @@ export function createAiSession(payload = {}) {
   return http.post(`${AI}/sessions`, payload)
 }
 
-/** 软删会话（仅本人） */
+/** 软删会话（仅本人）；优先 DELETE，失败再走 POST 兜底 */
 export function deleteAiSession(sessionId) {
-  return http.delete(`${AI}/sessions/${encodeURIComponent(sessionId)}`)
+  const id = encodeURIComponent(sessionId)
+  return http.delete(`${AI}/sessions/${id}`).catch((e) => {
+    // 部分网关禁 DELETE 时回退
+    if (e?.code === 405 || e?.status === 405 || /method not allowed/i.test(e?.message || '')) {
+      return http.post(`${AI}/sessions/${id}/delete`, {})
+    }
+    throw e
+  })
 }
 
 /**

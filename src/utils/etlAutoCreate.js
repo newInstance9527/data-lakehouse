@@ -11,7 +11,7 @@ export const AUTO_CREATE_MODES = [
   {
     value: 'if_not_exists',
     label: '不存在则创建',
-    hint: '按上游字段 + 节点建表属性生成 DDL；创建后建议登记 Grav/资产。',
+    hint: '只建 schema/表，不建 catalog。Iceberg Catalog 须已是 Grav/Trino 存在的湖 catalog（默认 iceberg；勿填 prod_catalog）。',
   },
   {
     value: 'fail_if_missing',

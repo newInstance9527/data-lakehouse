@@ -56,7 +56,8 @@ export function useAiAssistant() {
   }
 
   /**
-   * 初始化：拉上下文 + 会话列表；默认打开最近一次对话（无则新建空会话）。
+   * 初始化：拉上下文 + 会话列表；默认打开最近一次对话。
+   * 列表为空时不自动建会话——须用户点「新对话」或首次发消息（后端 ensureSession）。
    */
   async function init(ws, { resetSession = false } = {}) {
     lastError.value = null
@@ -82,7 +83,10 @@ export function useAiAssistant() {
         return
       }
 
-      await newChat(ws, { title: '新对话', silent: true })
+      // 无历史会话：保持空白，勿自动 createSession
+      sessionId.value = ''
+      messages.value = []
+      lastMeta.value = null
     } catch (e) {
       lastError.value = e
       recentSessions.value = []
@@ -90,19 +94,26 @@ export function useAiAssistant() {
     }
   }
 
-  /** 新建对话并切到该会话 */
-  async function newChat(ws, { title = '新对话', silent = false } = {}) {
+  /** 新建对话并切到该会话（仅手动「新对话」调用） */
+  async function newChat(ws, { title = '新对话' } = {}) {
     stop()
     const s = await createAiSession({ ws, title })
     sessionId.value = s?.id || s?.sessionId || ''
     messages.value = []
     lastMeta.value = null
     await refreshSessions(ws)
-    return { sessionId: sessionId.value, silent }
+    return { sessionId: sessionId.value }
   }
 
   function clearLocal() {
     messages.value = []
+  }
+
+  function clearActiveSession() {
+    stop()
+    sessionId.value = ''
+    messages.value = []
+    lastMeta.value = null
   }
 
   function stop() {
@@ -124,7 +135,7 @@ export function useAiAssistant() {
   }
 
   /**
-   * 软删会话；若删的是当前会话则切到下一条或新建。
+   * 软删会话；若删的是当前会话则切到下一条，列表空则清空本地（不自动新建）。
    * @returns {Promise<{ deletedId: string, nextSessionId?: string }>}
    */
   async function deleteSession(id, ws) {
@@ -140,8 +151,8 @@ export function useAiAssistant() {
       await loadSession(list[0].id, ws)
       return { deletedId: id, nextSessionId: list[0].id }
     }
-    await newChat(ws, { title: '新对话', silent: true })
-    return { deletedId: id, nextSessionId: sessionId.value }
+    clearActiveSession()
+    return { deletedId: id, nextSessionId: '' }
   }
 
   /**
@@ -256,6 +267,7 @@ export function useAiAssistant() {
     newChat,
     refreshSessions,
     clearLocal,
+    clearActiveSession,
     stop,
     send,
     loadSession,

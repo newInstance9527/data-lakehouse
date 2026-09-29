@@ -35,8 +35,22 @@ export function publishDataapi(id, ws, publishTicketNo) {
   return http.post(`${BASE}/publish`, { id, ws, publishTicketNo })
 }
 
+/** 取消发布 → 草稿（须重新申请发布）；与永久下线 retire 不同 */
+export function unpublishDataapi(id, ws) {
+  return http.post(`${BASE}/unpublish`, { id, ws })
+}
+
 export function retireDataapi(id, ws) {
   return http.post(`${BASE}/retire`, { id, ws })
+}
+
+export function fetchDataapiVersions(id) {
+  return http.get(`${BASE}/versions`, { id })
+}
+
+/** 回退到历史 commit 并 deploy */
+export function rollbackDataapi(id, commitId, version) {
+  return http.post(`${BASE}/rollback`, { id, commitId, version })
 }
 
 export function syncDataapiApisix(ws) {

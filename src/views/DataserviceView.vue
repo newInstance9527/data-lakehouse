@@ -1,11 +1,12 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
 import ListPager from '@/components/common/ListPager.vue'
 import AppDrawer from '@/components/common/AppDrawer.vue'
 import SqlEditor from '@/components/etl/SqlEditor.vue'
 import ApiBuildWorkbench from '@/components/dataservice/ApiBuildWorkbench.vue'
+import ApiOnlineDebugPanel from '@/components/dataservice/ApiOnlineDebugPanel.vue'
 import RegisterBindingModal from '@/components/dataservice/RegisterBindingModal.vue'
 import ProjectSyncListModal from '@/components/dataservice/ProjectSyncListModal.vue'
 import { useToast } from '@/composables/useToast'
@@ -20,6 +21,11 @@ import {
   RESPONSE_FORMAT_OPTIONS,
   RESPONSE_SHAPE_OPTIONS,
 } from '@/data/apiBuild'
+import {
+  unpublishDataapi,
+  fetchDataapiVersions,
+  rollbackDataapi,
+} from '@/api/dataapi'
 
 const router = useRouter()
 const { showToast } = useToast()
@@ -65,8 +71,13 @@ const projecting = computed(() => busy('project'))
 
 const detailOpen = ref(false)
 const detail = ref(null)
+const debugOpen = ref(false)
 const keyDetailOpen = ref(false)
 const keyDetail = ref(null)
+const versionRows = ref([])
+const versionsLoading = ref(false)
+const versionsError = ref('')
+const versionBusy = ref(false)
 
 const gatewayUrl = computed(() => embed.value?.gateway || workbench.value?.gatewayUrl || '')
 const assignmentList = computed(() => {
@@ -156,9 +167,90 @@ function buildApi() {
   createOpen.value = true
 }
 
-function openWorkbench(bindingId) {
-  editBindingId.value = bindingId || ''
+async function openWorkbench(bindingId) {
+  const id = bindingId != null && bindingId !== '' ? String(bindingId) : ''
+  // 已开工作台时强制关再开，确保 open watcher 回填
+  if (createOpen.value) {
+    createOpen.value = false
+    editBindingId.value = ''
+    await nextTick()
+  }
+  editBindingId.value = id
   createOpen.value = true
+}
+
+async function loadVersions(bindingId) {
+  if (!bindingId) {
+    versionRows.value = []
+    versionsError.value = ''
+    return
+  }
+  versionsLoading.value = true
+  versionsError.value = ''
+  try {
+    const pack = await fetchDataapiVersions(bindingId)
+    versionRows.value = Array.isArray(pack?.versions) ? pack.versions : []
+    if (pack?.ok === false && pack?.message) versionsError.value = String(pack.message)
+  } catch (e) {
+    versionRows.value = []
+    versionsError.value = e?.message || String(e)
+  } finally {
+    versionsLoading.value = false
+  }
+}
+
+async function doUnpublish() {
+  if (!detail.value?.id || detail.value.state !== 'published') return
+  if (!confirm('取消发布后网关将下线，接口回草稿。修改后需重新申请发布。确认？')) return
+  versionBusy.value = true
+  try {
+    const res = await unpublishDataapi(detail.value.id)
+    const binding = res?.binding
+    if (binding) detail.value = { ...detail.value, ...binding }
+    else detail.value = { ...detail.value, state: 'draft', publishTicketNo: '', publishTicketStatus: '' }
+    showToast(res?.message || '已取消发布，可编辑后重新申请发布', 'success')
+    await ensureLoaded(true)
+    await loadVersions(detail.value.id)
+  } catch (e) {
+    showToast(`取消发布失败：${e?.message || e}`, 'warning')
+  } finally {
+    versionBusy.value = false
+  }
+}
+
+async function doRollback(row) {
+  if (!detail.value?.id || !row?.commitId) return
+  const verLabel = row.version != null ? `v${row.version}` : `commit ${row.commitId}`
+  const tip =
+    detail.value.state === 'published'
+      ? `将线上流量回退到 ${verLabel}，确认？`
+      : `将版本指针切到 ${verLabel}（草稿，申请发布后生效），确认？`
+  if (!confirm(tip)) return
+  versionBusy.value = true
+  try {
+    const res = await rollbackDataapi(detail.value.id, row.commitId, row.version)
+    const binding = res?.binding
+    if (binding) detail.value = { ...detail.value, ...binding }
+    showToast(res?.message || `已回退到 ${verLabel}`, 'success')
+    await ensureLoaded(true)
+    await loadVersions(detail.value.id)
+  } catch (e) {
+    showToast(`回退失败：${e?.message || e}`, 'warning')
+  } finally {
+    versionBusy.value = false
+  }
+}
+
+function openOnlineDebug() {
+  if (!detail.value?.id) {
+    showToast('请先打开有效的 API 详情', 'warning')
+    return
+  }
+  debugOpen.value = true
+}
+
+function closeOnlineDebug() {
+  debugOpen.value = false
 }
 
 function onWorkbenchClose() {
@@ -302,12 +394,18 @@ async function onRegister(payload) {
 async function openApiDetail(a) {
   detail.value = a
   detailOpen.value = true
+  versionRows.value = []
+  versionsError.value = ''
   const full = await openDetail(a)
   if (full) detail.value = full
+  if (detail.value?.id) loadVersions(detail.value.id)
 }
 
 function closeApiDetail() {
   detailOpen.value = false
+  debugOpen.value = false
+  versionRows.value = []
+  versionsError.value = ''
 }
 
 function openInManager(row) {
@@ -365,6 +463,7 @@ async function downloadOpenapi(id) {
     <ApiBuildWorkbench
       :open="createOpen"
       :edit-id="editBindingId"
+      :seed="editBindingId && detail?.id === editBindingId ? detail : null"
       @close="onWorkbenchClose"
       @publish="onPublishApi"
     />
@@ -703,7 +802,8 @@ async function downloadOpenapi(id) {
       :default-width="600"
       @close="closeApiDetail"
     >
-      <div v-if="detail" class="api-detail">
+      <div v-if="detail" class="drawer-body">
+      <div class="api-detail">
         <div class="detail-head">
           <div>
             <div class="detail-title">API 详情</div>
@@ -732,6 +832,14 @@ async function downloadOpenapi(id) {
           <div><span>引擎</span><div>{{ detail.engine || detail.sqlrest?.engine || 'SQL/Groovy' }}</div></div>
           <div><span>负责人</span><div>{{ detail.owner || '—' }}</div></div>
           <div><span>全局限流</span><div>{{ detail.qps }} QPS · Burst {{ detail.burst || '—' }}</div></div>
+          <div>
+            <span>版本</span>
+            <div>
+              <template v-if="detail.sqlrestVersion != null">v{{ detail.sqlrestVersion }}</template>
+              <template v-else>—</template>
+              <span class="tip"> · rev {{ detail.revision ?? 1 }}</span>
+            </div>
+          </div>
           <div v-if="detail.metric && detail.metric !== '-'"><span>指标</span><div><code>{{ detail.metric }}</code></div></div>
           <div v-if="detail.datasourceLabel || detail.datasourceId || detail.portalDsId">
             <span>数据源</span>
@@ -786,12 +894,30 @@ async function downloadOpenapi(id) {
             type="button"
             class="btn btn-sm btn-primary"
             :disabled="!detail.id"
+            :title="detail.state === 'published' ? '已发布为只读，取消发布后方可编辑' : ''"
             @click="openWorkbench(detail.id)"
           >
-            打开工作台
+            {{ detail.state === 'published' ? '查看工作台' : '打开工作台' }}
           </button>
           <button
-            v-if="detail.state !== 'published'"
+            type="button"
+            class="btn btn-sm"
+            :disabled="!detail.id"
+            @click="openOnlineDebug"
+          >
+            在线调试
+          </button>
+          <button
+            v-if="detail.state === 'published'"
+            type="button"
+            class="btn btn-sm"
+            :disabled="!detail.id || versionBusy"
+            @click="doUnpublish"
+          >
+            {{ versionBusy ? '处理中…' : '取消发布' }}
+          </button>
+          <button
+            v-if="detail.state !== 'published' && detail.state !== 'retired'"
             type="button"
             class="btn btn-sm"
             :disabled="!detail.id"
@@ -808,6 +934,57 @@ async function downloadOpenapi(id) {
             查看发布申请
           </button>
         </div>
+        <p v-if="detail.state === 'published'" class="tip detail-empty" style="margin-top: 8px">
+          已发布接口不可直接改定义。请先「取消发布」回草稿，编辑后重新申请发布（版本号递增）；也可在下方回退历史版本。
+        </p>
+
+        <div class="detail-sec-title">发布版本</div>
+        <p class="tip detail-empty" style="margin-top: 0">
+          每次成功发布生成新版本；回退将 deploy 到历史 commit。
+          <button
+            type="button"
+            class="btn btn-sm"
+            style="margin-left: 8px"
+            :disabled="!detail.id || versionsLoading"
+            @click="loadVersions(detail.id)"
+          >
+            {{ versionsLoading ? '刷新中…' : '刷新' }}
+          </button>
+        </p>
+        <p v-if="versionsError" class="tip" style="color: var(--danger, #c44)">{{ versionsError }}</p>
+        <table v-if="versionRows.length" class="table detail-table">
+          <thead>
+            <tr>
+              <th>版本</th>
+              <th>说明</th>
+              <th>时间</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="v in versionRows" :key="String(v.commitId || v.version)">
+              <td>
+                <code>v{{ v.version ?? '—' }}</code>
+                <span v-if="v.current" class="tag tag-green" style="margin-left: 6px; font-size: 10px">当前</span>
+              </td>
+              <td style="font-size: 12px">{{ v.description || '—' }}</td>
+              <td style="font-size: 12px">{{ v.createTime || '—' }}</td>
+              <td>
+                <button
+                  v-if="!v.current && v.commitId"
+                  type="button"
+                  class="btn btn-sm"
+                  :disabled="versionBusy || detail.state === 'retired'"
+                  @click="doRollback(v)"
+                >
+                  回退
+                </button>
+                <span v-else class="tip">—</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p v-else-if="!versionsLoading" class="tip detail-empty">暂无版本历史（首次发布后可见）</p>
 
         <div class="detail-sec-title">调用侧</div>
         <p class="tip detail-empty" style="margin-top: 0">
@@ -933,9 +1110,19 @@ async function downloadOpenapi(id) {
             type="button"
             class="btn btn-sm btn-primary"
             :disabled="!detail.id"
+            :title="detail.state === 'published' ? '已发布为只读，取消发布后方可编辑' : ''"
             @click="openWorkbench(detail.id)"
           >
-            打开工作台
+            {{ detail.state === 'published' ? '查看工作台' : '打开工作台' }}
+          </button>
+          <button
+            v-if="detail.state === 'published'"
+            type="button"
+            class="btn btn-sm"
+            :disabled="!detail.id || versionBusy"
+            @click="doUnpublish"
+          >
+            取消发布
           </button>
           <button type="button" class="btn btn-sm" @click="openInManager(detail)">在 Manager 打开</button>
           <button type="button" class="btn btn-sm" @click="downloadOpenapi(detail.id)">导出 OpenAPI</button>
@@ -957,6 +1144,33 @@ async function downloadOpenapi(id) {
           </button>
         </div>
       </div>
+      </div>
+    </AppDrawer>
+
+    <AppDrawer
+      :open="debugOpen"
+      storage-key="dataservice-api-debug-width"
+      :default-width="560"
+      @close="closeOnlineDebug"
+    >
+      <div v-if="detail && debugOpen" class="drawer-body">
+        <div class="detail-head">
+          <div>
+            <div class="detail-title">在线调试</div>
+            <div class="tip">
+              <span class="ac-method" :class="detail.method">{{ detail.method }}</span>
+              {{ detail.name || detail.path }}
+            </div>
+          </div>
+          <button type="button" class="btn btn-sm" @click="closeOnlineDebug">✕</button>
+        </div>
+        <p class="tip" style="margin: 0 0 12px">
+          <code>{{ detail.path }}</code>
+          ·
+          <span class="tag" :class="detailStateMeta.cls">{{ detailStateMeta.label }}</span>
+        </p>
+        <ApiOnlineDebugPanel :detail="detail" :keys="detailSubs" />
+      </div>
     </AppDrawer>
 
     <AppDrawer
@@ -965,7 +1179,8 @@ async function downloadOpenapi(id) {
       :default-width="480"
       @close="closeKeyDetail"
     >
-      <div v-if="keyDetail" class="api-detail">
+      <div v-if="keyDetail" class="drawer-body">
+      <div class="api-detail">
         <div class="detail-head">
           <div>
             <div class="detail-title">订阅 Key 详情</div>
@@ -1033,6 +1248,7 @@ async function downloadOpenapi(id) {
           <button type="button" class="btn btn-sm" @click="openApiFromKey(keyDetail)">查看关联 API</button>
           <button type="button" class="btn btn-sm" @click="goApply(keyDetail.api)">再申请调用</button>
         </div>
+      </div>
       </div>
     </AppDrawer>
   </div>
@@ -1278,7 +1494,7 @@ async function downloadOpenapi(id) {
   font-size: 12px;
 }
 .api-detail {
-  padding: 4px 4px 24px;
+  padding: 0 0 24px;
 }
 .detail-head {
   display: flex;

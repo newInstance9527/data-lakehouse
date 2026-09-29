@@ -86,6 +86,26 @@ function setNested(parent, key, val) {
   emit('patch-many', { [parent]: { ...(props.conf[parent] || {}), [key]: val } })
 }
 
+/** Iceberg：演示名 prod_catalog/hive 自动改写为真实湖 catalog iceberg */
+function onIcebergCatalogInput(raw) {
+  const v = String(raw || '').trim()
+  if (/^(prod_catalog|hive)$/i.test(v)) {
+    set('catalog', 'iceberg')
+    return
+  }
+  set('catalog', raw)
+}
+
+const icebergCatalogHint = computed(() => {
+  if (props.type !== 'sink_iceberg') return ''
+  const c = String(props.conf?.catalog || '').trim()
+  if (/^(prod_catalog|hive)$/i.test(c)) {
+    return '演示名已禁用：将改写为 iceberg（Trino/Grav 无此 catalog；autoCreate 只建 schema/表）'
+  }
+  if (!c || c === 'iceberg') return ''
+  return '须为 Grav/Trino 已存在的湖 catalog（默认 iceberg）；autoCreate 不会新建 catalog'
+})
+
 const etlSourcePool = computed(() => {
   if (dagSources.value.length > 0) return dagSources.value
   return (sources.value || []).filter((s) => {
@@ -1164,7 +1184,16 @@ function onCodeSetPick(v) {
   <template v-else-if="type === 'sink_iceberg'">
     <div class="sec-title">湖表目标</div>
     <div class="form-grid-2">
-      <label class="form-field"><span class="form-label">Catalog</span><input class="input" :value="conf.catalog" placeholder="iceberg" @input="set('catalog', $event.target.value)" /></label>
+      <label class="form-field">
+        <span class="form-label">Catalog</span>
+        <input
+          class="input"
+          :value="conf.catalog"
+          placeholder="iceberg"
+          @input="onIcebergCatalogInput($event.target.value)"
+        />
+        <div v-if="icebergCatalogHint" class="form-hint warn">{{ icebergCatalogHint }}</div>
+      </label>
       <label class="form-field"><span class="form-label">Database</span><input class="input" :value="conf.database" placeholder="ods" @input="set('database', $event.target.value)" /></label>
     </div>
     <label class="form-field">
