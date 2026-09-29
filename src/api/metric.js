@@ -18,6 +18,7 @@ export function fetchMetricList(filters = {}, { current = 1, size = 200 } = {}) 
     kind: filters.kind ?? filters.type,
     status: filters.status,
     ws: filters.ws,
+    scope: filters.scope,
   })
 }
 

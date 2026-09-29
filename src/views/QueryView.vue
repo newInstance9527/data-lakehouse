@@ -1237,9 +1237,9 @@ function cellClass(col, row) {
               </span>
               <span
                 v-else-if="lastMeta.maskDegraded"
-                class="tag tag-gray"
-                :title="lastMeta.maskMessage || '无列级脱敏策略'"
-              >无引擎脱敏（未启发式打标）</span>
+                class="tag tag-orange"
+                :title="lastMeta.maskMessage || '无列级脱敏策略，结果可能含明文敏感列'"
+              >策略降级 · 无引擎脱敏</span>
               <span
                 v-if="lastMeta.rowFilterApplied"
                 class="tag tag-blue"
@@ -1253,9 +1253,9 @@ function cellClass(col, row) {
               </span>
               <span
                 v-else-if="lastMeta.rowFilterDegraded"
-                class="tag tag-gray"
-                :title="lastMeta.rowFilterMessage || '无生效的行级策略'"
-              >无行级策略</span>
+                class="tag tag-orange"
+                :title="lastMeta.rowFilterMessage || '无生效的行级策略，查询未强制过滤'"
+              >策略降级 · 无行级过滤</span>
               <a
                 v-if="lastMeta.trinoUiUrl"
                 class="btn btn-sm"

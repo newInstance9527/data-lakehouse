@@ -413,7 +413,7 @@ async function memberAction(row) {
       当前工作边界 <code>{{ currentWs || 'default' }}</code>
       · 列表默认跟随本空间；授权仍走申请中心
       · 软过滤偏好（目录/指标/ETL/查询/AI），
-      <b>不是</b> Grav ACL 旁路；读数/出湖仍走申请中心。空列表合法，无演示回落。
+      <b>不是</b> Grav ACL 旁路；读数/出湖仍走申请中心。列表为空时请新建工作空间。
     </p>
 
     <div v-if="loading" class="ws-loading">加载工作空间…</div>

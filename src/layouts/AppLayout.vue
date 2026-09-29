@@ -10,6 +10,7 @@ import AppToast from '@/components/common/AppToast.vue'
 import ConfirmDeleteModal from '@/components/common/ConfirmDeleteModal.vue'
 import GlobalAiAssistant from '@/components/ai/GlobalAiAssistant.vue'
 import UiPrefsMenu from '@/components/common/UiPrefsMenu.vue'
+import NavIcon from '@/components/common/NavIcon.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -20,6 +21,7 @@ const { user, filteredNavGroups, logout, isSuperAdmin, currentWs, setCurrentWs }
 const { spaces: wsSpaces, ensureLoaded: ensureWsSpaces } = useWorkspace()
 
 const activeId = computed(() => route.meta?.id || 'overview')
+const appEnv = computed(() => String(import.meta.env.VITE_APP_ENV || 'DEV').toUpperCase())
 
 const navGroups = computed(() => {
   void locale.value
@@ -29,10 +31,6 @@ const navGroups = computed(() => {
     items: g.items.map((item) => ({
       ...item,
       label: t(`nav.${item.id}`, item.label),
-      badge:
-        item.badge === '新' || item.badge === 'New'
-          ? t('nav.badge.new')
-          : item.badge,
     })),
   }))
 })
@@ -90,7 +88,7 @@ function go(path) {
 function onSearch(e) {
   const v = e.target.value?.trim()
   if (!v || e.key !== 'Enter') return
-  showToast(t('app.search.toast', { q: v }), 'success')
+  e.target.value = ''
   router.push({ path: '/catalog', query: { q: v } })
 }
 
@@ -129,9 +127,8 @@ onMounted(() => {
             :class="{ active: activeId === item.id }"
             @click="go(item.path)"
           >
-            <span class="nav-icon">{{ item.icon }}</span>
+            <span class="nav-icon"><NavIcon :name="item.icon || item.id" /></span>
             <span>{{ item.label }}</span>
-            <span v-if="item.badge" class="nav-badge">{{ item.badge }}</span>
           </div>
         </div>
       </nav>
@@ -148,9 +145,8 @@ onMounted(() => {
         </div>
         <div class="header-center">
           <div class="global-search">
-            <span class="search-icon">🔍</span>
+            <span class="search-icon"><NavIcon name="search" :size="14" /></span>
             <input type="text" :placeholder="t('app.search.placeholder')" @keydown="onSearch" />
-            <span class="search-shortcut">⌘K</span>
           </div>
         </div>
         <div class="header-right">
@@ -174,16 +170,20 @@ onMounted(() => {
               </option>
             </select>
           </label>
-          <span class="env-tag">PROD</span>
+          <span class="env-tag">{{ appEnv }}</span>
           <span
             v-if="isSuperAdmin"
             class="env-tag"
             style="background: var(--primary-light); color: var(--primary)"
           >{{ t('app.superAdmin') }}</span>
           <UiPrefsMenu />
-          <button class="icon-btn" :title="t('app.notify')" @click="showToast(t('app.notify.toast'), 'warning')">🔔</button>
+          <button class="icon-btn" :title="t('app.notify')" type="button" @click="router.push('/ops')">
+            <NavIcon name="notify" :size="16" />
+          </button>
           <div class="user-avatar" :title="userTitle">{{ avatarText }}</div>
-          <button class="icon-btn" :title="t('app.logout')" @click="onLogout">⎋</button>
+          <button class="icon-btn" :title="t('app.logout')" type="button" @click="onLogout">
+            <NavIcon name="logout" :size="16" />
+          </button>
         </div>
       </header>
 

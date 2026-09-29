@@ -2,6 +2,7 @@
 import { computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
+import NavIcon from '@/components/common/NavIcon.vue'
 import { useToast } from '@/composables/useToast'
 import { useOverview } from '@/composables/useOverview'
 import { OVERVIEW_MODULES, OV_PALETTE as P, OV_PIPELINE } from '@/data/overview'
@@ -318,7 +319,10 @@ const rangeLabel = computed(() => {
         @click="go(k.to)"
       >
         <div class="ov-kpi-top">
-          <span class="ov-kpi-lab">{{ k.icon }} {{ k.title }}</span>
+          <span class="ov-kpi-lab">
+            <NavIcon :name="k.icon" :size="14" />
+            {{ k.title }}
+          </span>
           <span class="ov-kpi-meter-lab">{{ k.meterLabel }} {{ Math.round(k.meter) }}%</span>
         </div>
         <div class="ov-kpi-mid">
@@ -982,6 +986,9 @@ const rangeLabel = computed(() => {
   margin-bottom: 8px;
 }
 .ov-kpi-lab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-size: 12px;
   font-weight: 600;
   color: var(--text-2);

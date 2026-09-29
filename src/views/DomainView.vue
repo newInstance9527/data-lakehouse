@@ -222,7 +222,7 @@ function usageText(u) {
           <tbody>
             <tr v-if="!filtered.length">
               <td colspan="7" class="tip" style="padding: 16px">
-                {{ loading ? '加载中…' : '暂无数据域 · 空列表合法' }}
+                {{ loading ? '加载中…' : '暂无数据域。请点击「新建」创建业务域' }}
               </td>
             </tr>
             <tr v-for="r in filtered" :key="r.domainCode">

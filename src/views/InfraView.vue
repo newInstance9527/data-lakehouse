@@ -15,6 +15,8 @@ import {
 } from '@/data/infra'
 import {
   fetchObsInfraAlerts,
+  fetchObsInfraCluster,
+  fetchObsInfraContainers,
   fetchObsInfraNodes,
   fetchObsInfraProcs,
   fetchObsInfraSummary,
@@ -27,11 +29,15 @@ const guide = pageGuideOf('infra')
 
 const loading = ref(false)
 const loadError = ref('')
+const showKpis = ref(false)
 const source = ref('empty')
+const hint = ref('')
 const kpis = ref(emptyInfraKpis())
 const nodes = ref([])
 const procs = ref([])
 const alerts = ref([])
+const containers = ref([])
+const cluster = ref([])
 const capacityTips = ref([])
 
 const headerTags = computed(() => {
@@ -48,25 +54,33 @@ async function loadBoard() {
   loadError.value = ''
   try {
     const params = listWsParams()
-    const [sum, nodePage, procPage, alertPage] = await Promise.all([
+    const [sum, nodePage, procPage, alertPage, containerPage, clusterPage] = await Promise.all([
       fetchObsInfraSummary(params),
       fetchObsInfraNodes(params),
       fetchObsInfraProcs(params),
       fetchObsInfraAlerts(params),
+      fetchObsInfraContainers(params),
+      fetchObsInfraCluster(params),
     ])
     source.value = sum?.source || 'empty'
+    hint.value = sum?.hint || ''
     kpis.value = Array.isArray(sum?.kpis) && sum.kpis.length ? sum.kpis : emptyInfraKpis()
     capacityTips.value = Array.isArray(sum?.capacityTips) ? sum.capacityTips : []
     nodes.value = Array.isArray(nodePage?.records) ? nodePage.records : []
     procs.value = Array.isArray(procPage?.records) ? procPage.records : []
     alerts.value = Array.isArray(alertPage?.records) ? alertPage.records : []
+    containers.value = Array.isArray(containerPage?.records) ? containerPage.records : []
+    cluster.value = Array.isArray(clusterPage?.records) ? clusterPage.records : []
   } catch (e) {
     loadError.value = e?.message || '基础设施 API 加载失败'
     source.value = 'empty'
+    hint.value = ''
     kpis.value = emptyInfraKpis()
     nodes.value = []
     procs.value = []
     alerts.value = []
+    containers.value = []
+    cluster.value = []
     capacityTips.value = []
     showToast(loadError.value, 'warning')
   } finally {
@@ -155,12 +169,18 @@ watchListScope(loadBoard)
     </PageHeader>
 
     <p class="tip infra-banner">
-      监控采集未就绪时为空态，不加载演示节点与假告警。
-      <span v-if="source && source !== 'empty'"> · 数据源已接通</span>
+      指标来自真采集；未接入时列表为空。
+      <span v-if="source && source !== 'empty'"> · 数据源 {{ source }}</span>
+      <span v-if="hint"> · {{ hint }}</span>
     </p>
     <p v-if="loadError" class="tip infra-banner warn">加载失败：{{ loadError }}</p>
 
-    <div class="kpi-grid infra-kpi">
+    <div class="ops-kpi-toggle">
+      <button type="button" class="btn btn-sm" @click="showKpis = !showKpis">
+        {{ showKpis ? '收起概览' : '展开概览 KPI' }}
+      </button>
+    </div>
+    <div v-if="showKpis" class="kpi-grid infra-kpi">
       <div v-for="(k, i) in kpis" :key="i" class="kpi-card" :class="k.color">
         <div class="kpi-icon" :class="k.color">{{ k.icon }}</div>
         <div class="kpi-value">
@@ -202,7 +222,7 @@ watchListScope(loadBoard)
             </tr>
             <tr v-else-if="!nodes.length">
               <td colspan="8" class="empty-cell">
-                暂无节点 · 空列表合法，请完成监控采集接入后刷新
+                暂无节点。请接入 node_exporter / Categraf 后刷新
               </td>
             </tr>
             <tr
@@ -282,7 +302,7 @@ watchListScope(loadBoard)
             </thead>
             <tbody>
               <tr v-if="!procs.length">
-                <td colspan="5" class="empty-cell">暂无进程探针 · 空列表合法</td>
+                <td colspan="5" class="empty-cell">暂无进程探针。配置组件探针后刷新</td>
               </tr>
               <tr v-for="p in procs" :key="p.inst">
                 <td><b>{{ p.comp }}</b></td>
@@ -312,7 +332,7 @@ watchListScope(loadBoard)
           <button type="button" class="btn btn-sm" @click="silenceAlerts">🔇 静默</button>
         </div>
         <div class="card-body infra-scroll infra-alerts">
-          <div v-if="!alerts.length" class="empty-cell">暂无告警 · 空列表合法，不回落演示事件</div>
+          <div v-if="!alerts.length" class="empty-cell">暂无告警。接入夜莺或 VM 告警规则后显示</div>
           <div v-for="(a, i) in alerts" :key="i" class="infra-alert-row">
             <span class="tag" :class="infraSevTag(a.sev)" style="flex-shrink: 0">{{ a.sev }}</span>
             <div class="infra-alert-main">
@@ -323,6 +343,79 @@ watchListScope(loadBoard)
               {{ a.sev === '容量' || (a.t && String(a.t).includes('磁盘')) ? '存储趋势→' : '链路影响→' }}
             </button>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid grid-2 infra-mid">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">
+            📦 L1 容器 <span class="tip">· cadvisor</span>
+          </div>
+        </div>
+        <div class="card-body infra-scroll">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>容器</th>
+                <th>实例</th>
+                <th>CPU</th>
+                <th>内存</th>
+                <th>状态</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="!containers.length">
+                <td colspan="5" class="empty-cell">暂无容器指标。部署 cAdvisor 后刷新</td>
+              </tr>
+              <tr v-for="(c, i) in containers" :key="i">
+                <td><b>{{ c.name }}</b></td>
+                <td class="inst-cell">{{ c.instance }}</td>
+                <td>{{ c.cpu }}%</td>
+                <td>{{ c.mem }}</td>
+                <td>
+                  <span class="tag" :class="infraProcStatusTag(c.st).tag" style="font-size: 10px">
+                    {{ infraProcStatusTag(c.st).label }}
+                  </span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">
+            ☸️ L2 集群对象 <span class="tip">· kube-state</span>
+          </div>
+        </div>
+        <div class="card-body infra-scroll">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>类型</th>
+                <th>名称</th>
+                <th>就绪</th>
+                <th>状态</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="!cluster.length">
+                <td colspan="4" class="empty-cell">暂无集群对象。接入 kube-state-metrics 后刷新</td>
+              </tr>
+              <tr v-for="(c, i) in cluster" :key="i">
+                <td>{{ c.kind }}</td>
+                <td><b>{{ c.name }}</b></td>
+                <td>{{ c.ready }}</td>
+                <td>
+                  <span class="tag" :class="infraProcStatusTag(c.st).tag" style="font-size: 10px">
+                    {{ infraProcStatusTag(c.st).label }}
+                  </span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </div>
     </div>

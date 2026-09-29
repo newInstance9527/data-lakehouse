@@ -226,6 +226,7 @@ function emptyForm() {
 
 const activeTab = ref('all')
 const creating = ref(false)
+const showKpis = ref(false)
 const form = ref(emptyForm())
 const tokenModal = ref(null)
 const rejectModal = ref(null) // { ticket, remark }
@@ -1785,7 +1786,12 @@ function displayToken() {
       <button type="button" class="btn btn-sm btn-primary" @click="toggleCreate">+ 新建申请</button>
     </PageHeader>
 
-    <div class="kpi-grid apply-kpi">
+    <div class="ops-kpi-toggle">
+      <button type="button" class="btn btn-sm" @click="showKpis = !showKpis">
+        {{ showKpis ? '收起概览' : '展开概览 KPI' }}
+      </button>
+    </div>
+    <div v-if="showKpis" class="kpi-grid apply-kpi">
       <div v-for="(k, i) in applyKpis" :key="i" class="kpi-card" :class="k.color">
         <div class="kpi-icon" :class="k.color">{{ k.icon }}</div>
         <div class="kpi-label">{{ k.label }}</div>

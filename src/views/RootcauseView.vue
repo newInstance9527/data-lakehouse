@@ -86,7 +86,39 @@ function goLinktrace() {
 }
 
 function exportReport() {
-  showToast('功能待接后端 · 无证据时不可导出演示报告', 'info')
+  if (!evidence.value?.length) {
+    showToast('暂无证据链，无法导出', 'warning')
+    return
+  }
+  // 有证据时导出摘要文本（正式 PDF/审计包后续接）
+  const lines = [
+    `alertId=${alertId.value || ''}`,
+    `summary=${message.value || ''}`,
+    ...evidence.value.map((e, i) => `[${i + 1}] ${e.title || e.kind || 'evidence'}: ${e.detail || e.message || ''}`),
+  ]
+  const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `rootcause-${alertId.value || 'summary'}-${Date.now()}.txt`
+  a.click()
+  URL.revokeObjectURL(url)
+  showToast('已导出证据摘要', 'success')
+}
+
+const canExport = computed(() => (evidence.value?.length || 0) > 0)
+
+function onEvidenceAction(row) {
+  const a = row.action
+  if (!a) return
+  if (a.type === 'route') {
+    router.push(a.query ? { path: a.path, query: a.query } : a.path)
+    return
+  }
+  // toast 型动作不再假装半成品：有 path 则跳转，否则忽略
+  if (a.path) {
+    router.push(a.query ? { path: a.path, query: a.query } : a.path)
+  }
 }
 
 async function dispatchTicket() {
@@ -102,18 +134,6 @@ async function dispatchTicket() {
     }
   } catch (e) {
     showToast(e?.message || '结论接口失败', 'warning')
-  }
-}
-
-function onEvidenceAction(row) {
-  const a = row.action
-  if (!a) return
-  if (a.type === 'route') {
-    router.push(a.query ? { path: a.path, query: a.query } : a.path)
-    return
-  }
-  if (a.type === 'toast') {
-    showToast(a.message || '功能待接后端', a.level || 'info')
   }
 }
 
@@ -163,7 +183,9 @@ watchListScope(runAnalyze)
         {{ loading ? '分析中…' : '↻ 重新分析' }}
       </button>
       <button type="button" class="btn btn-sm" @click="goLinktrace">🧵 查本次 span 瀑布</button>
-      <button type="button" class="btn btn-sm" @click="exportReport">📄 导出报告</button>
+      <button type="button" class="btn btn-sm" :disabled="!canExport" @click="exportReport">
+        导出证据摘要
+      </button>
       <button type="button" class="btn btn-sm btn-primary" @click="dispatchTicket">
         📋 派发根因工单
       </button>
@@ -220,7 +242,7 @@ watchListScope(runAnalyze)
             </thead>
             <tbody>
               <tr v-if="!evidence.length">
-                <td colspan="6" class="rc-empty-cell">暂无证据行 · 空列表合法</td>
+                <td colspan="6" class="rc-empty-cell">暂无证据行。完成根因分析后显示</td>
               </tr>
               <tr v-for="(row, i) in evidence" :key="i" :class="rcRowClass(row.rowTone)">
                 <td>

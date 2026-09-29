@@ -34,6 +34,7 @@ const bfMarkValue = ref('')
 const bfDagId = ref('')
 const loading = ref(false)
 const loadError = ref('')
+const showKpis = ref(false)
 const dags = ref([])
 const runs = ref([])
 const reconRows = ref([])
@@ -414,7 +415,7 @@ function metaToneStyle(tone) {
       <button type="button" class="btn btn-sm btn-primary" @click="startSupplement">🔧 发起补数</button>
     </PageHeader>
 
-    <p class="tip ops-banner">作业列表接 ETL/对账真 API；无作业为空态，不回落演示 DAG。</p>
+    <p class="tip ops-banner">作业列表来自 ETL / 对账 API；无作业时为空。</p>
     <div v-if="loadError" class="banner-soft">{{ loadError }}</div>
 
     <div v-if="focusRunId" class="ops-focus card">
@@ -449,7 +450,12 @@ function metaToneStyle(tone) {
       </div>
     </div>
 
-    <div class="kpi-grid ops-kpi">
+    <div class="ops-kpi-toggle">
+      <button type="button" class="btn btn-sm" @click="showKpis = !showKpis">
+        {{ showKpis ? '收起概览' : '展开概览 KPI' }}
+      </button>
+    </div>
+    <div v-if="showKpis" class="kpi-grid ops-kpi">
       <div v-for="(k, i) in kpis" :key="i" class="kpi-card" :class="k.color">
         <div class="kpi-icon" :class="k.color">{{ k.icon }}</div>
         <div class="kpi-value">

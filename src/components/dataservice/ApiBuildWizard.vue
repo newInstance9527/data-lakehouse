@@ -7,19 +7,19 @@ import { useDataservice } from '@/composables/useDataservice'
 import { resolveSqlDialect } from '@/utils/sqlDialect'
 import {
   API_BUILD_STEPS,
-  API_DATASOURCE_OPTIONS,
   API_METRIC_OPTIONS,
-  API_TABLE_OPTIONS,
   FIELD_TRANSFORM_OPTIONS,
   RESPONSE_FORMAT_OPTIONS,
   RESPONSE_SHAPE_OPTIONS,
   apiDatasourceLabel,
   apiSourceLabel,
+  apiTableOptionsFromAssets,
   buildApiFromWizard,
   defaultApiBuildForm,
   runApiBuildTest,
   syncSqlTemplate,
 } from '@/data/apiBuild'
+import { useAssets } from '@/composables/useAssets'
 
 const props = defineProps({
   open: { type: Boolean, default: false },
@@ -28,6 +28,8 @@ const props = defineProps({
 const emit = defineEmits(['close', 'publish'])
 const { showToast } = useToast()
 const { runTrial, runBuildAndPublish, sqlrestDs } = useDataservice()
+const { assets, ensureLoaded } = useAssets()
+ensureLoaded()
 
 const step = ref(0)
 const form = reactive(defaultApiBuildForm())
@@ -38,9 +40,9 @@ const steps = API_BUILD_STEPS
 const isLast = computed(() => step.value === steps.length - 1)
 const isFirst = computed(() => step.value === 0)
 
-/** 优先用门户已投影/可投影数据源（listForSqlrest），否则回落演示选项 */
+/** 门户 listForSqlrest；空列表合法，不回落演示数据源 */
 const datasourceOptions = computed(() => {
-  const live = (sqlrestDs.value || [])
+  return (sqlrestDs.value || [])
     .filter((d) => d.projectable || d.projected)
     .map((d) => ({
       value: d.id,
@@ -49,8 +51,9 @@ const datasourceOptions = computed(() => {
       name: d.name,
       type: d.type,
     }))
-  return live.length ? live : API_DATASOURCE_OPTIONS
 })
+
+const tableOptions = computed(() => apiTableOptionsFromAssets(assets.value || []))
 
 const wizardDialectType = computed(() => {
   if (form.srcType !== 'SQL') return 'trino'
@@ -370,8 +373,8 @@ async function publish() {
                 <span class="form-label"><span class="req">*</span>选择表</span>
                 <SearchSelect
                   v-model="form.tableKey"
-                  :options="API_TABLE_OPTIONS"
-                  placeholder="搜索 ADS / DWD / DWS / DIM 表"
+                  :options="tableOptions"
+                  placeholder="搜索 ADS / DWD / DWS / DIM 表（目录为空则无可选）"
                   sub-key="sub"
                   :search-keys="['name', 'layer', 'domain', 'value']"
                 />
@@ -585,7 +588,7 @@ async function publish() {
               </label>
             </div>
             <p class="field-hint">
-              Token / OAuth2 由申请中心签发；免鉴权仅用于内网只读演示接口，生产需审批。
+              Token / OAuth2 由申请中心签发；免鉴权仅用于内网只读探测接口，生产需审批。
             </p>
           </div>
 
@@ -611,7 +614,7 @@ async function publish() {
               </label>
             </div>
             <p class="field-hint">
-              此处为 <b>API 路由全局上限</b>（所有调用方合计）。各申请方的配额在「申请凭证」中按应用审批，且不得超过本全局 QPS；由 APISIX limit-req 分层落地。
+              此处为 <b>API 路由全局上限</b>（所有调用方合计）。各申请方的配额在「申请凭证」中按应用审批，且不得超过本全局 QPS；由 SQLREST Gateway 限流落地。
             </p>
           </div>
 
@@ -645,7 +648,7 @@ async function publish() {
             <p v-else class="field-hint">
               点击试跑：接口服务编译模板 →
               {{ form.srcType === 'SQL' ? apiDatasourceLabel(form.datasourceId) : '查询引擎' }}
-              执行（演示返回样例数据）。
+              执行（返回真实试跑结果，不注入演示样例）。
             </p>
           </div>
 
@@ -683,7 +686,7 @@ async function publish() {
               <div><span>入参 / 出参</span><code>{{ form.params.length }} 入 · {{ form.responses.length }} 出 · {{ form.responseFormat }}/{{ form.responseShape }}</code></div>
               <div><span>试跑</span><code>{{ form.tested ? `通过 ${form.testResult?.latencyMs}ms` : '未测试' }}</code></div>
             </div>
-            <p class="field-hint">发布将写入 APISIX 路由（演示）；prod 环境会同步生成申请单待 API Owner 审批。</p>
+            <p class="field-hint">发布写入 SQLREST Gateway 路由；prod 环境会同步生成申请单待 API Owner 审批。本平台不做 APISIX。</p>
           </div>
         </div>
 

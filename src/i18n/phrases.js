@@ -130,11 +130,11 @@ export const PHRASES_EN = {
   '如 BI 报表 / 业务 MySQL / ES': 'e.g. BI / business MySQL / ES',
   '搜索资产目录中的表（优先 ADS / DWD / DWS）':
     'Search catalog tables (prefer ADS / DWD / DWS)',
-  '选项来自已登记资产（gov_asset）；无列表请先在资产目录注册；不回落演示表':
+  '选项来自已登记资产；无列表请先在资产目录注册':
     'Options from registered assets (gov_asset); register tables in Catalog first; no demo fallback',
   '作业 / KPI 接 /lh/export；无数据为空态，不加载演示作业。出湖申请源表来自资产目录 gov_asset。':
     'Jobs / KPI via /lh/export; empty is valid, no demo jobs. Export source tables from gov_asset.',
-  '暂无作业 · 空列表合法，请先「出湖申请」或在 ETL 出湖 sink 填入已审批 EXP（不回落演示）':
+  '暂无出湖作业。请先提交出湖申请，或在 ETL 出湖 sink 填入已审批 EXP':
     'No jobs · empty is valid — submit an export request or fill approved EXP on ETL sink (no demo fallback)',
   '活跃出湖作业': 'Active export jobs',
   '已审批': 'Approved',
@@ -159,7 +159,7 @@ export const PHRASES_EN = {
     'KPI / rules / gates via /lh/quality; empty is valid, no demo rows. New rules bind tables from Catalog.',
   'KPI / 目录接 /lh/metric；无数据为空态，不加载演示行。原子绑表来自资产目录 gov_asset。':
     'KPI / catalog via /lh/metric; empty is valid, no demo rows. Atomic bind tables from gov_asset.',
-  '暂无指标 · 空列表合法，请新建（不回落演示目录）':
+  '暂无指标。点击「新建指标」开始':
     'No metrics · empty is valid — create new (no demo catalog fallback)',
 
   // 指南章节标题

@@ -103,16 +103,19 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 14px;
+  flex-shrink: 0;
+  opacity: 0.9;
 }
-.nav-badge {
-  margin-left: auto;
-  background: rgba(245, 34, 45, 0.18);
-  color: #ff7875;
-  font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 10px;
-  font-weight: 600;
+.nav-svg-icon {
+  display: block;
+}
+.ops-kpi-toggle {
+  margin: 0 0 12px;
+}
+.search-icon {
+  display: flex;
+  align-items: center;
+  color: var(--text-3);
 }
 
 .side-footer {
@@ -252,7 +255,7 @@
   width: 36px;
   height: 36px;
   border-radius: 8px;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;

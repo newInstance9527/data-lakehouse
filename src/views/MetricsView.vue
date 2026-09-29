@@ -70,7 +70,7 @@ const detailLineage = ref(null)
 const publishTickets = ref({})
 
 async function reloadMetrics() {
-  await loadAll({ ws: currentWs.value || 'default' })
+  await loadAll({ ws: currentWs.value || 'default', scope: 'workspace' })
 }
 
 const TYPE_TABS = [
@@ -735,7 +735,7 @@ async function refresh() {
             </tr>
             <tr v-if="!paged.length">
               <td colspan="10" class="met-empty">
-                {{ loading ? '加载中…' : '暂无指标 · 空列表合法，请新建（不回落演示目录）' }}
+                {{ loading ? '加载中…' : '暂无指标。点击「新建指标」开始' }}
               </td>
             </tr>
           </tbody>

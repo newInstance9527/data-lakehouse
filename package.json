@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "DataLakeHub · 湖仓一体数据治理平台演示门户（Vue3 纯静态）",
+  "description": "DataLakeHub · 湖仓一体数据治理门户（Vue3 · 对接 Snowy/LH API）",
   "scripts": {
     "dev": "vite",
     "build": "vite build",

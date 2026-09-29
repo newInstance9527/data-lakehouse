@@ -18,13 +18,14 @@ import {
   resolveTargetTableFields,
   resolveUpstreamFields,
 } from '@/utils/etlFields'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { confirmDelete } from '@/composables/useConfirmDelete'
 import { useActionLock } from '@/composables/useActionLock'
 import { displayUser } from '@/utils/displayUser'
 
 const { showToast } = useToast()
 const router = useRouter()
+const route = useRoute()
 const { busy, run: runLocked } = useActionLock()
 const guide = pageGuideOf('integration')
 const canvasRef = ref(null)
@@ -119,7 +120,7 @@ const taskKw = ref('')
 const runsDrawerOpen = ref(false)
 
 async function reloadEtlList() {
-  await loadList({ ws: currentWs.value || 'default' })
+  await loadList({ ws: currentWs.value || 'default', scope: 'workspace' })
 }
 
 const leftWidth = ref(loadNum('etl-left-w', 220))
@@ -564,6 +565,20 @@ function onKey(e) {
   }
 }
 
+async function applyDeepLink() {
+  const dagId = String(route.query.dagId || '').trim()
+  const dag = String(route.query.dag || '').trim()
+  const key = dagId || dag
+  if (!key) return
+  const list = taskList.value || []
+  const hit =
+    list.find((t) => String(t.id) === key) ||
+    list.find((t) => String(t.dagCode || '') === key)
+  if (hit) {
+    await selectTask(hit.id, { force: !hit.nodes?.length })
+  }
+}
+
 onMounted(async () => {
   window.addEventListener('keydown', onKey)
   try {
@@ -571,12 +586,21 @@ onMounted(async () => {
     if (lastError.value) {
       showToast(lastError.value.message || 'ETL 列表加载失败', 'warning')
     }
+    await applyDeepLink()
   } catch (e) {
     showToast(e.message || 'ETL 列表加载失败', 'error')
   }
 })
+watch(
+  () => [route.query.dagId, route.query.dag],
+  () => {
+    applyDeepLink().catch(() => {})
+  },
+)
 watch(currentWs, () => {
-  reloadEtlList().catch(() => {})
+  reloadEtlList()
+    .then(() => applyDeepLink())
+    .catch(() => {})
 })
 onUnmounted(() => window.removeEventListener('keydown', onKey))
 </script>

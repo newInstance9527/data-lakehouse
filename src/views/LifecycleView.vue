@@ -84,7 +84,7 @@ function onKpiClick(k) {
     archiveSectionEl.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
     router.replace({ path: '/lifecycle', query: { ...route.query, focus: 'archive' } })
   } else if (k.focus === 'compliance') {
-    goCompliance()
+    router.push({ path: '/compliance', query: { status: 'pending_approval' } })
   }
 }
 
@@ -130,8 +130,11 @@ function showStorageTrend() {
   router.push('/lifecycle/storage')
 }
 
-function openComplianceDelete() {
-  router.push({ path: '/compliance', query: { create: '1' } })
+function openComplianceDelete(seedTable) {
+  const q = { create: '1' }
+  const seed = seedTable || route.query.table || route.query.seed
+  if (seed) q.seed = String(seed)
+  router.push({ path: '/compliance', query: q })
 }
 
 function goCompliance(ticket) {
@@ -240,7 +243,7 @@ async function submitPolicy() {
       <button class="btn btn-sm" type="button" :disabled="actionBusy || loading" @click="runLifecycleNow">
         ▶ 立即执行
       </button>
-      <button class="btn btn-sm btn-primary" type="button" @click="openComplianceDelete">🗑️ 合规删除</button>
+      <button class="btn btn-sm btn-primary" type="button" @click="openComplianceDelete()">🗑️ 合规删除</button>
     </PageHeader>
 
     <div v-if="pendingDeepLink" class="lc-banner deep">
@@ -389,7 +392,7 @@ async function submitPolicy() {
           <tbody>
             <tr v-if="!archiveCandidates.length">
               <td colspan="5" class="tip" style="text-align:center;padding:16px">
-                暂无分区过期策略（空列表合法）
+                暂无分区过期策略
               </td>
             </tr>
             <tr v-for="r in archiveCandidates" :key="r.table">
@@ -412,9 +415,9 @@ async function submitPolicy() {
       <div class="card-header">
         <div class="card-title">🗑️ 合规删除工单 <span class="tip">· 被遗忘权 / 错误数据擦除 · 不可逆</span></div>
         <div class="lc-comp-acts">
-          <span class="tag tag-orange">待办预览</span>
+          <span class="tag tag-orange">合规 summary</span>
           <button type="button" class="btn btn-sm" @click="goCompliance">工单管理 →</button>
-          <button type="button" class="btn btn-sm btn-primary" @click="openComplianceDelete">＋ 创建</button>
+          <button type="button" class="btn btn-sm btn-primary" @click="openComplianceDelete()">＋ 创建</button>
         </div>
       </div>
       <div class="card-body" style="padding: 0">
@@ -432,7 +435,7 @@ async function submitPolicy() {
           <tbody>
             <tr v-if="!compliancePreview.length">
               <td colspan="6" class="tip" style="text-align:center;padding:16px">
-                暂无待办合规工单（空列表合法）
+                暂无待办合规工单
               </td>
             </tr>
             <tr v-for="t in compliancePreview" :key="t.reqId || t.id">

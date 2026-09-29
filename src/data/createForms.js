@@ -412,7 +412,7 @@ export const EXPORT_APPLY_FORM = {
       placeholder: '搜索资产目录中的表（优先 ADS / DWD / DWS）',
       searchKeys: ['label', 'sub', 'name', 'assetCode', 'layer', 'domain', 'search', 'value'],
       subKey: 'sub',
-      hint: '选项来自已登记资产（gov_asset）；无列表请先在资产目录注册；不回落演示表',
+      hint: '选项来自已登记资产；无列表请先在资产目录注册',
       wide: true,
     },
     { key: 'purpose', label: '用途', type: 'textarea', required: true, placeholder: '业务用途与下游系统说明' },
@@ -841,6 +841,13 @@ export const COMPLIANCE_DELETE_FORM = {
       type: 'text',
       placeholder: '如 GDPR Art.17 / 个保法 §47 · 用户主动申请',
       default: 'GDPR Art.17 / 个保法 §47 · 用户主动申请',
+      wide: true,
+    },
+    {
+      key: 'seedTable',
+      label: '种子表（可选）',
+      type: 'text',
+      placeholder: '深链带入的表 FQN；受理后优先纳入计划',
       wide: true,
     },
     {

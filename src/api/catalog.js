@@ -21,6 +21,11 @@ export function fetchAssetPage(filters = {}, { current = 1, size = 200 } = {}) {
   })
 }
 
+/** 登记前查重（本空间） */
+export function checkAssetDuplicate({ ws, dsId, objectName, assetCode } = {}) {
+  return http.get(`${CAT}/assets/checkDuplicate`, { ws, dsId, objectName, assetCode })
+}
+
 export function fetchAssetDetail(id) {
   return http.get(`${CAT}/assets/detail`, { id })
 }

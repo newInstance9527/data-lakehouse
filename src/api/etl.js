@@ -12,6 +12,7 @@ export function fetchEtlDags(filters = {}, { current = 1, size = 100 } = {}) {
     q: filters.q ?? filters.keyword,
     status: filters.status,
     ws: filters.ws,
+    scope: filters.scope,
   })
 }
 

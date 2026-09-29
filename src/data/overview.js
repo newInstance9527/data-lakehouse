@@ -17,15 +17,15 @@ export const OV_PALETTE = {
 }
 
 export const OVERVIEW_MODULES = [
-  { id: 'datasource', icon: '🗄️', title: '数据源', to: '/datasource' },
-  { id: 'assets', icon: '📚', title: '资产表', to: '/catalog' },
-  { id: 'etl', icon: '⚙️', title: 'ETL 任务', to: '/integration' },
-  { id: 'lineage', icon: '🔗', title: '字段血缘', to: '/lineage' },
-  { id: 'standard', icon: '📐', title: '数据标准', to: '/standard' },
-  { id: 'service', icon: '🔌', title: '数据服务', to: '/dataservice' },
-  { id: 'metrics', icon: '📊', title: '指标', to: '/metrics' },
-  { id: 'quality', icon: '✅', title: '数据质量', to: '/quality' },
-  { id: 'apply', icon: '📝', title: '申请单', to: '/apply' },
+  { id: 'datasource', icon: 'datasource', title: '数据源', to: '/datasource' },
+  { id: 'assets', icon: 'catalog', title: '资产表', to: '/catalog' },
+  { id: 'etl', icon: 'integration', title: 'ETL 任务', to: '/integration' },
+  { id: 'lineage', icon: 'lineage', title: '字段血缘', to: '/lineage' },
+  { id: 'standard', icon: 'standard', title: '数据标准', to: '/standard' },
+  { id: 'service', icon: 'dataservice', title: '数据服务', to: '/dataservice' },
+  { id: 'metrics', icon: 'metrics', title: '指标', to: '/metrics' },
+  { id: 'quality', icon: 'quality', title: '数据质量', to: '/quality' },
+  { id: 'apply', icon: 'apply', title: '申请单', to: '/apply' },
 ]
 
 export const OV_PIPELINE = [

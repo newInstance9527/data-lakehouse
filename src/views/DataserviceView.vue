@@ -14,7 +14,7 @@ import { useDataservice } from '@/composables/useDataservice'
 import { useActionLock } from '@/composables/useActionLock'
 import { useSession } from '@/composables/useSession'
 import { pageGuideOf } from '@/data/pageGuides'
-import { apisixStatusMeta, routeOfApi } from '@/data/dataservice'
+import { routeStatusMeta, routeOfApi } from '@/data/dataservice'
 import {
   FIELD_TRANSFORM_OPTIONS,
   RESPONSE_FORMAT_OPTIONS,
@@ -684,8 +684,8 @@ async function downloadOpenapi(id) {
               <td><span class="tag tag-purple" style="font-size: 10px">{{ r.auth }}</span></td>
               <td style="font-size: 12px">{{ r.rate }}</td>
               <td>
-                <span class="tag" :class="apisixStatusMeta(r.status).tag" style="font-size: 10px">
-                  {{ apisixStatusMeta(r.status).label }}
+                <span class="tag" :class="routeStatusMeta(r.status).tag" style="font-size: 10px">
+                  {{ routeStatusMeta(r.status).label }}
                 </span>
               </td>
             </tr>
@@ -920,8 +920,8 @@ async function downloadOpenapi(id) {
           <div><span>上游</span><span>{{ detailRoute.upstream }}</span></div>
           <div>
             <span>状态</span>
-            <span class="tag" :class="apisixStatusMeta(detailRoute.status).tag">
-              {{ apisixStatusMeta(detailRoute.status).label }}
+            <span class="tag" :class="routeStatusMeta(detailRoute.status).tag">
+              {{ routeStatusMeta(detailRoute.status).label }}
             </span>
           </div>
           <div v-if="detailRoute.note" class="wide tip">{{ detailRoute.note }}</div>

@@ -7,7 +7,6 @@ import {
   fetchLcJobsLatest,
   fetchLcOverview,
   fetchLcPolicies,
-  fetchLcCompliancePreview,
   fetchLcArchiveCandidates,
   fetchLcStorageTables,
   fetchLcStorageTrend,
@@ -18,6 +17,7 @@ import {
   triggerLcExpire,
   upsertLcPolicy,
 } from '@/api/lifecycle'
+import { fetchDelRequests, fetchDelSummary } from '@/api/compliance'
 import { LC_STAGES, lcJobStatusMeta } from '@/data/lifecycle'
 import { complianceTypeCls } from '@/data/compliance'
 
@@ -99,7 +99,7 @@ const EMPTY_ST_KPIS = [
 ]
 
 async function applyBoard(ws) {
-  const [ov, jobs, tablesPage, pols, trend, compliance, archives] = await Promise.all([
+  const [ov, jobs, tablesPage, pols, trend, delSummary, delPage, archives] = await Promise.all([
     fetchLcOverview(ws),
     fetchLcJobsLatest(ws),
     fetchLcStorageTables({
@@ -112,10 +112,18 @@ async function applyBoard(ws) {
     }),
     fetchLcPolicies(ws),
     fetchLcStorageTrend(ws, '30d').catch(() => null),
-    fetchLcCompliancePreview(ws, 10).catch(() => []),
+    fetchDelSummary(ws).catch(() => null),
+    fetchDelRequests({ ws, current: 1, size: 10 }).catch(() => null),
     fetchLcArchiveCandidates(ws).catch(() => []),
   ])
   overview.value = ov
+  if (delSummary && overview.value) {
+    overview.value = {
+      ...overview.value,
+      compliancePending: delSummary.open ?? delSummary.pendingApproval ?? overview.value.compliancePending,
+      complianceSummary: delSummary,
+    }
+  }
   jobsLatest.value = jobs
   const list = Array.isArray(tablesPage)
     ? tablesPage
@@ -128,9 +136,34 @@ async function applyBoard(ws) {
   }))
   policies.value = pols || []
   storageTrend.value = trend
-  compliancePreviewRows.value = Array.isArray(compliance) ? compliance : []
+  const openStatuses = new Set([
+    'assessing',
+    'pending_approval',
+    'scheduled',
+    'executing',
+    'verifying',
+    'partial_failed',
+    'on_hold',
+    'restricted',
+  ])
+  const records = delPage?.records || []
+  compliancePreviewRows.value = records
+    .filter((r) => openStatuses.has(String(r.status || '').toLowerCase()))
+    .slice(0, 10)
+    .map((r) => ({
+      id: r.reqNo || r.id,
+      reqId: r.id,
+      reqNo: r.reqNo,
+      subject: r.subjectMasked || r.subject || '—',
+      type: r.reqType || r.type,
+      impact: r.scopeLabel || r.impact || '—',
+      approval: r.status === 'pending_approval' ? '待审批' : r.statusLabel || r.status || '—',
+      approvalPending: r.status === 'pending_approval' || r.status === 'assessing',
+      status: r.statusLabel || r.status,
+      statusCls: r.status === 'pending_approval' ? 'tag-orange' : 'tag-gray',
+    }))
   archiveCandidateRows.value = Array.isArray(archives) ? archives : []
-  return { overview: ov, jobs, top: list, policies: pols, trend, compliance, archives }
+  return { overview: ov, jobs, top: list, policies: pols, trend, compliance: compliancePreviewRows.value, archives }
 }
 
 export function useLifecycle() {
@@ -184,10 +217,12 @@ export function useLifecycle() {
       {
         icon: '⚠️',
         color: 'red',
-        value: String(ov.compliancePending ?? 0),
+        value: String(ov.compliancePending ?? ov.complianceSummary?.open ?? 0),
         unit: '项',
         label: '合规删除待审',
-        trend: '见合规工单',
+        trend: ov.complianceSummary
+          ? `待批 ${ov.complianceSummary.pendingApproval ?? 0} · 执行中 ${ov.complianceSummary.executing ?? 0}`
+          : '见合规工单',
         trendDown: n(ov.compliancePending) > 0,
         clickable: true,
         focus: 'compliance',

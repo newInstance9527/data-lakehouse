@@ -8,7 +8,7 @@ import {
 } from '@/data/assetMeta'
 import { useDomains } from '@/composables/useDomains'
 import { ensureWorkspaceUserOptions, workspaceUserById, workspaceUserOptions } from '@/data/workspaceUsers'
-import { fetchAssetPage } from '@/api/catalog'
+import { fetchAssetPage, checkAssetDuplicate } from '@/api/catalog'
 import { useDatasources } from '@/composables/useDatasources'
 import { useSession } from '@/composables/useSession'
 import { resolveTables } from '@/utils/schemaList'
@@ -23,8 +23,9 @@ const emit = defineEmits(['close', 'submit'])
 
 const { showToast } = useToast()
 const { sources, getSource, ensureTables } = useDatasources()
-const { user } = useSession()
+const { user, currentWs } = useSession()
 const { domainOptions, ensureDomains } = useDomains()
+const dupChecking = ref(false)
 
 const form = reactive({
   sourceId: '',
@@ -137,7 +138,10 @@ async function loadRegisteredObjects(dsId) {
   seedRegisteredFromSource(dsId)
   registeredLoading.value = true
   try {
-    const page = await fetchAssetPage({ dsId }, { current: 1, size: 500 })
+    const page = await fetchAssetPage(
+      { dsId, ws: currentWs.value || 'default', scope: 'workspace' },
+      { current: 1, size: 500 },
+    )
     const names = new Set(registeredNames.value)
     ;(page?.records || []).forEach((row) => {
       const n = String(row?.objectName || row?.tableName || '').trim()
@@ -289,7 +293,7 @@ function defaultEngine(type) {
   return t
 }
 
-function submit() {
+async function submit() {
   if (!form.sourceId) {
     showToast('请选择数据源', 'warning')
     return
@@ -316,6 +320,26 @@ function submit() {
     showToast('请填写资产 ID 或物理名', 'warning')
     return
   }
+  dupChecking.value = true
+  try {
+    const dup = await checkAssetDuplicate({
+      ws: currentWs.value || 'default',
+      dsId: form.sourceId,
+      objectName: form.tableName,
+      assetCode: form.id || form.key,
+    })
+    if (dup?.duplicate) {
+      showToast(
+        `本空间已登记：${dup.assetCode || dup.name || form.tableName}（请改表或切空间）`,
+        'warning',
+      )
+      return
+    }
+  } catch (e) {
+    console.warn('[catalog] checkDuplicate failed', e)
+  } finally {
+    dupChecking.value = false
+  }
   const s = selectedSource.value
   const t = selectedTable.value
   emit('submit', {
@@ -336,6 +360,7 @@ function submit() {
     tableName: form.tableName,
     cnName: form.cnName || t?.cnName || '',
     encoding: t?.encoding || '',
+    ws: currentWs.value || 'default',
   })
   close()
 }
@@ -484,7 +509,9 @@ function submit() {
           <span v-if="form.key" class="tag tag-blue">将注册：{{ form.key }}</span>
           <span style="flex: 1" />
           <button class="btn btn-sm" @click="close">取消</button>
-          <button class="btn btn-sm btn-primary" @click="submit">注册入库</button>
+          <button class="btn btn-sm btn-primary" :disabled="dupChecking" @click="submit">
+            {{ dupChecking ? '查重中…' : '注册入库' }}
+          </button>
         </div>
       </div>
     </div>

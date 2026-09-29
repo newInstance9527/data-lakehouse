@@ -124,13 +124,34 @@ watch(tab, () => {
 })
 watch(query, () => resetPage())
 
+const createInitial = ref(null)
+
 watch(
-  () => route.query.create,
-  (v) => {
-    if (v === '1' || v === 'true') createOpen.value = true
-  },
+  () => [route.query.create, route.query.seed, route.query.status, route.query.tab, route.query.ticket, route.query.reqNo, route.query.reqId, route.query.table],
+  () => applyDeepLink(),
   { immediate: true },
 )
+
+function applyDeepLink() {
+  const q = route.query || {}
+  if (q.status != null && q.status !== '') {
+    tab.value = String(q.status)
+  }
+  if (q.tab === 'subject' || q.tab === 'maps') {
+    view.value = 'maps'
+    if (q.table) {
+      query.value = String(q.table)
+    }
+  }
+  if (q.create === '1' || q.create === 'true') {
+    createInitial.value = q.seed ? { seedTable: String(q.seed), remark: `种子表 ${q.seed}` } : null
+    createOpen.value = true
+  }
+  const id = q.reqId || q.reqNo
+  if (id) {
+    show(String(id)).catch(() => {})
+  }
+}
 
 watch(view, (v) => {
   if (v === 'maps' && !subjectMaps.value.length) {
@@ -301,7 +322,8 @@ async function onCreate(payload) {
   )
   if (!res) return
   createOpen.value = false
-  if (route.query.create) router.replace({ path: '/compliance', query: {} })
+  createInitial.value = null
+  if (route.query.create || route.query.seed) router.replace({ path: '/compliance', query: {} })
   showToast(`✅ 已受理 ${res.reqNo} · 已按主体索引展开 ${res.planSummary?.total ?? 0} 个载体`, 'success')
   show(res.id)
 }
@@ -436,7 +458,7 @@ function goLifecycle() {
 }
 
 function goTicket(ticketNo) {
-  router.push({ path: '/apply', query: { q: ticketNo } })
+  router.push({ path: '/apply', query: { tab: 'compliance', ticket: ticketNo } })
 }
 
 function exportList() {
@@ -464,7 +486,8 @@ function exportList() {
     <CreateFormModal
       :open="createOpen"
       v-bind="COMPLIANCE_DELETE_FORM"
-      @close="createOpen = false"
+      :initial-values="createInitial"
+      @close="createOpen = false; createInitial = null"
       @submit="onCreate"
     />
     <CreateFormModal

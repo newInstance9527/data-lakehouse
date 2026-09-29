@@ -230,9 +230,11 @@ function goCatalog(src) {
 
 function goEtl(j) {
   if (j.dagCode) {
-    router.push({ path: '/etl', query: { dag: j.dagCode } })
+    router.push({ path: '/integration', query: { dag: j.dagCode } })
+  } else if (j.dagId) {
+    router.push({ path: '/integration', query: { dagId: j.dagId } })
   } else {
-    router.push('/etl')
+    router.push('/integration')
   }
 }
 </script>
@@ -335,7 +337,7 @@ function goEtl(j) {
             </tr>
             <tr v-else-if="!paged.length">
               <td colspan="9" style="text-align: center; color: var(--text-3); padding: 24px">
-                暂无作业 · 空列表合法，请先「出湖申请」或在 ETL 出湖 sink 填入已审批 EXP（不回落演示）
+                暂无出湖作业。请先提交出湖申请，或在 ETL 出湖 sink 填入已审批 EXP
               </td>
             </tr>
             <tr v-for="j in paged" :key="j.job">

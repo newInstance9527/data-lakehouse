@@ -43,6 +43,8 @@ export function mapServerTicket(t, sideHint) {
   const isMetric = t.ticketType === 'metric' || t.ticketType === 'metric_publish'
   const isScanElevate =
     t.ticketType === 'scan_elevate' || t.ticketType === 'elevated' || t.ticketType === 'scan_quota'
+  const isCompliance =
+    t.ticketType === 'compliance_delete' || t.ticketType === 'compliance'
   const type = isExport
     ? 'export'
     : isOps
@@ -57,9 +59,11 @@ export function mapServerTicket(t, sideHint) {
               ? 'metric'
               : isScanElevate
                 ? 'scan_elevate'
-                : t.ticketType === 'table_read'
-                  ? 'perm'
-                  : t.ticketType || 'perm'
+                : isCompliance
+                  ? 'compliance'
+                  : t.ticketType === 'table_read'
+                    ? 'perm'
+                    : t.ticketType || 'perm'
   const status = t.status || sideHint || 'pending'
   const side = status === 'approved' ? 'approved' : status === 'rejected' ? 'rejected' : 'pending'
   const awaitingSecurity = status === 'pending_security' || payload.approvalStep === 'security'

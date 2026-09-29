@@ -52,6 +52,7 @@ export const APPLY_TABS = [
   { id: 'api', label: '🔑 API 调用' },
   { id: 'publish', label: '📦 发布包' },
   { id: 'metric', label: '📊 指标申请' },
+  { id: 'compliance', label: '🗑️ 合规删除' },
 ]
 
 export const APPLY_TYPE_OPTIONS = [
@@ -256,5 +257,8 @@ export const APPLY_MINE = []
 export function applyTabMatches(cardType, tabId) {
   if (tabId === 'all') return true
   if (tabId === 'ops') return cardType === 'ops' || cardType === 'manage'
+  if (tabId === 'compliance') {
+    return cardType === 'compliance' || cardType === 'compliance_delete'
+  }
   return cardType === tabId
 }

@@ -1,8 +1,6 @@
 /** 数据服务 · 分步构建 API（选源 → 配参 → 鉴权 → 限流 → 测试 → 发布） */
 
-import { ASSET_DATA } from '@/data/assets'
 import { getMetricCatalogForForms } from '@/data/metrics'
-import { DATA_SOURCES, endpointOf } from '@/data/datasources'
 
 export const API_BUILD_STEPS = [
   { id: 'source', title: '选指标/表', desc: '选定取数来源与路径' },
@@ -13,33 +11,36 @@ export const API_BUILD_STEPS = [
   { id: 'publish', title: '发布', desc: '发布部署到接口服务' },
 ]
 
-/** 自定义 SQL 可选数据源（在线 · 可查询类） */
-const SQL_DS_TYPES = new Set([
-  'Trino',
-  'ClickHouse',
-  'Iceberg',
-  'MySQL',
-  'PostgreSQL',
-  'Doris',
-  'StarRocks',
-  'Hive',
-  'Presto',
-])
+/**
+ * @deprecated 勿回落静态 DATA_SOURCES；向导只用 listForSqlrest。
+ * 保留空数组以免旧 import 炸裂。
+ */
+export const API_DATASOURCE_OPTIONS = []
 
-export const API_DATASOURCE_OPTIONS = DATA_SOURCES.filter(
-  (d) => d.status === 'online' && SQL_DS_TYPES.has(d.type),
-).map((d) => ({
-  value: d.id,
-  label: `${d.name} · ${d.type}`,
-  sub: `${endpointOf(d)} · ${d.desc || d.database || ''}`,
-  name: d.name,
-  type: d.type,
-  endpoint: endpointOf(d),
-  owner: d.owner,
-}))
+/** 由门户资产目录行生成表选项（空列表合法） */
+export function apiTableOptionsFromAssets(assets = []) {
+  const ok = new Set(['ads', 'dwd', 'dws', 'dim'])
+  return (assets || [])
+    .filter((a) => ok.has(String(a.layer || a.layerCode || '').toLowerCase()))
+    .map((a) => {
+      const key = a.key || a.objectName || a.assetCode || a.id
+      return {
+        value: key,
+        label: `${key} · ${a.name || a.title || key}`,
+        sub: `${a.layerLabel || a.layer || ''} · ${a.domainLabel || a.domain || ''}`,
+        name: a.name,
+        layer: a.layerLabel || a.layer,
+        domain: a.domainLabel || a.domain,
+      }
+    })
+}
 
-export function apiDatasourceLabel(dsId) {
-  const d = API_DATASOURCE_OPTIONS.find((o) => o.value === dsId)
+/** @deprecated 使用 apiTableOptionsFromAssets(liveAssets) */
+export const API_TABLE_OPTIONS = []
+
+export function apiDatasourceLabel(dsId, liveOptions = []) {
+  const list = liveOptions?.length ? liveOptions : API_DATASOURCE_OPTIONS
+  const d = list.find((o) => o.value === dsId)
   return d ? d.label : dsId || '—'
 }
 
@@ -68,17 +69,6 @@ export const API_METRIC_OPTIONS = new Proxy([], {
     return typeof v === 'function' ? v.bind(live) : v
   },
 })
-
-export const API_TABLE_OPTIONS = ASSET_DATA.filter((a) =>
-  ['ads', 'dwd', 'dws', 'dim'].includes(a.layer),
-).map((a) => ({
-  value: a.key,
-  label: `${a.key} · ${a.name}`,
-  sub: `${a.layerLabel} · ${a.domainLabel}`,
-  name: a.name,
-  layer: a.layerLabel,
-  domain: a.domainLabel,
-}))
 
 export const RESPONSE_FORMAT_OPTIONS = [
   { value: 'wrapped', label: '统一封装', tip: '{ code, message, data }（接口服务默认）' },
@@ -211,15 +201,11 @@ export function wrapSqlrestResponse(form, rows) {
 }
 
 export function defaultApiBuildForm() {
-  const defaultDs =
-    API_DATASOURCE_OPTIONS.find((d) => d.type === 'Trino')?.value ||
-    API_DATASOURCE_OPTIONS[0]?.value ||
-    ''
   return {
     srcType: '指标',
     metricId: apiMetricOptions()[0]?.value || '',
     tableKey: '',
-    datasourceId: defaultDs,
+    datasourceId: '',
     engine: 'SQL',
     sql: '',
     path: '',
@@ -237,22 +223,23 @@ export function defaultApiBuildForm() {
     qps: 200,
     burst: 400,
     breaker: '5xx>20% 熔断 30s',
-    owner: '张涛',
-    domain: '交易域',
+    owner: '',
+    domain: '',
     publishEnv: 'stg',
     tested: false,
     testResult: null,
   }
 }
 
-export function apiSourceLabel(form) {
+export function apiSourceLabel(form, tableOptions = []) {
   if (form.srcType === '指标') {
     const m = API_METRIC_OPTIONS.find((o) => o.value === form.metricId)
     return m ? m.label : form.metricId
   }
   if (form.srcType === '表') {
-    const t = API_TABLE_OPTIONS.find((o) => o.value === form.tableKey)
-    return t ? t.label : form.tableKey
+    const list = tableOptions?.length ? tableOptions : API_TABLE_OPTIONS
+    const t = list.find((o) => o.value === form.tableKey)
+    return t ? t.label : form.tableKey || '—'
   }
   return '自定义 SQL'
 }
