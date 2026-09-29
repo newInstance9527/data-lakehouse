@@ -2,11 +2,11 @@
 import { computed, reactive, ref, watch } from 'vue'
 import SearchSelect from '@/components/common/SearchSelect.vue'
 import {
-  ASSET_DOMAINS,
   ASSET_LAYERS,
   ASSET_LEVELS,
   buildAssetIdentity,
 } from '@/data/assetMeta'
+import { useDomains } from '@/composables/useDomains'
 import { ensureWorkspaceUserOptions, workspaceUserById, workspaceUserOptions } from '@/data/workspaceUsers'
 import { fetchAssetPage } from '@/api/catalog'
 import { useDatasources } from '@/composables/useDatasources'
@@ -24,6 +24,7 @@ const emit = defineEmits(['close', 'submit'])
 const { showToast } = useToast()
 const { sources, getSource, ensureTables } = useDatasources()
 const { user } = useSession()
+const { domainOptions, ensureDomains } = useDomains()
 
 const form = reactive({
   sourceId: '',
@@ -202,7 +203,10 @@ async function resetForm() {
 watch(
   () => props.open,
   (v) => {
-    if (v) resetForm()
+    if (v) {
+      ensureDomains().catch(() => {})
+      resetForm()
+    }
   },
 )
 
@@ -402,7 +406,7 @@ function submit() {
               <label class="form-field">
                 <span class="form-label"><span class="req">*</span>业务域</span>
                 <select v-model="form.domain" class="select" style="width: 100%">
-                  <option v-for="d in ASSET_DOMAINS" :key="d.value" :value="d.value">
+                  <option v-for="d in domainOptions" :key="d.value" :value="d.value">
                     {{ d.label }}
                   </option>
                 </select>

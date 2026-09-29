@@ -25,8 +25,6 @@ import {
   saveQueryScript,
 } from '@/api/query'
 import { useSession } from '@/composables/useSession'
-import { ensureOnce } from '@/composables/useEnsureSamples'
-import { SAMPLE_QUERY_SCRIPT } from '@/data/sampleSeeds'
 import { RESULT_COLUMNS } from '@/data/query'
 
 const { showToast } = useToast()
@@ -334,26 +332,6 @@ async function loadHistory() {
     if (Array.isArray(list)) {
       history.value = list
       apiOnline.value = true
-      if (!list.length && typeof saveQueryScript === 'function') {
-        await ensureOnce(
-          'query_sample_script',
-          () => history.value.length === 0,
-          () =>
-            saveQueryScript({
-              ...SAMPLE_QUERY_SCRIPT,
-              ws: currentWs.value || 'default',
-            }),
-          async () => {
-            await loadSavedScripts()
-            const again = await fetchQueryHistory({
-              limit: 30,
-              mineOnly: true,
-              ws: currentWs.value || 'default',
-            }).catch(() => null)
-            if (Array.isArray(again)) history.value = again
-          },
-        )
-      }
       return
     }
     history.value = []
@@ -621,7 +599,7 @@ async function onExplain() {
     lastMeta.value.trinoQueryId = data?.trinoQueryId || lastMeta.value.trinoQueryId || ''
     lastMeta.value.statusLabel = 'EXPLAIN'
     if (data?.trinoUiUrl) {
-      showToast('EXPLAIN 完成，可打开 Trino Web UI 查看详情', 'success')
+      showToast('EXPLAIN 完成，可打开查询引擎控制台查看详情', 'success')
     } else {
       showToast('EXPLAIN 完成', 'success')
     }
@@ -860,7 +838,7 @@ function applyExecResult(data, sql) {
     showToast(data.message || data.statusLabel || '查询被治理拦截', 'warning')
     if (data.errorCode === 'IMPERSONATION_DENIED') {
       showToast(
-        'Trino 代执行未开通：服务账号无法冒充映射主体。请配置 rules.json impersonation（与申请 SELECT 无关）',
+        '代执行未开通：服务账号无法冒充映射主体。请联系管理员开通身份代执行（与申请 SELECT 无关）',
         'warning',
       )
     } else if (data.errorCode === 'ELEVATE_DENIED') {
@@ -983,7 +961,7 @@ async function runQuery() {
     resultRows.value = []
     showToast(msg, 'error')
     if (/cannot impersonate|IMPERSONATION/i.test(msg)) {
-      showToast('Trino 代执行未开通（admin 无法冒充映射主体），请配置 rules.json impersonation', 'warning')
+      showToast('代执行未开通（无法冒充映射主体），请联系管理员开通身份代执行', 'warning')
     } else if (/未授权|无权限|denied|Forbidden|ACCESS_DENIED/i.test(msg)) {
       const go = window.confirm('可能未授权。是否前往申请中心？')
       if (go) goApplySelect(sql)
@@ -1030,8 +1008,9 @@ function cellClass(col, row) {
 <template>
   <div class="query-page">
     <PageHeader
-      title="即席 SQL 查询 · Trino"
-      subtitle="经 Trino · Gravitino 鉴权 · 列级脱敏 · 行级过滤 · 扫描默认 ≤10GB（硬顶 50GB）"
+      page-id="query"
+      title="即席 SQL 查询"
+      subtitle="选表即查 · 权限与脱敏自动生效 · 扫描限额保护"
       :guide-title="guide.title"
       :guide="guide"
     >
@@ -1080,8 +1059,8 @@ function cellClass(col, row) {
         </div>
         <div class="cat-body">
           <div v-if="apiOnline && !catalog.length" class="cat-empty">
-            暂无可用表：需为资产拥有者（或已获 SELECT），且已挂接 Grav 指针并进入查询面（默认仅
-            <code>iceberg</code>）。MySQL 等登记 catalog <code>ds_*</code> 不会出现在即席目录——请登记湖表资产。
+            暂无可用表：需为资产拥有者（或已获 SELECT），且已挂接元数据指针并进入查询面（默认仅
+            <code>iceberg</code>）。关系库等登记 catalog <code>ds_*</code> 不会出现在即席目录——请登记湖表资产。
           </div>
           <template v-for="ds in catalog" :key="ds.id">
             <button
@@ -1092,7 +1071,7 @@ function cellClass(col, row) {
               @click="toggleNode(ds)"
             >
               <span class="cat-chev" :class="{ open: isOpen(ds) }" aria-hidden="true" />
-              <span class="cat-mark cat">DS</span>
+              <span class="cat-mark cat">源</span>
               <span class="cat-label">
                 <span class="cat-name">{{ ds.name }}</span>
               </span>
@@ -1216,7 +1195,7 @@ function cellClass(col, row) {
 
           <div class="sql-status">
             <div>
-              {{ lastMeta.authHint || 'Gravitino 鉴权 · 列脱敏 · 行级策略' }}
+              {{ lastMeta.authHint || '统一鉴权 · 列脱敏 · 行级策略' }}
               <template v-if="lastMeta.queryId"> · query_id={{ lastMeta.queryId }}</template>
               <template v-if="usedSelection && running"> · 选中语句</template>
             </div>
@@ -1259,8 +1238,8 @@ function cellClass(col, row) {
               <span
                 v-else-if="lastMeta.maskDegraded"
                 class="tag tag-gray"
-                :title="lastMeta.maskMessage || '无 Grav/Trino/门户列级 mask'"
-              >无引擎 mask（未启发式打标）</span>
+                :title="lastMeta.maskMessage || '无列级脱敏策略'"
+              >无引擎脱敏（未启发式打标）</span>
               <span
                 v-if="lastMeta.rowFilterApplied"
                 class="tag tag-blue"
@@ -1283,7 +1262,7 @@ function cellClass(col, row) {
                 :href="lastMeta.trinoUiUrl"
                 target="_blank"
                 rel="noopener noreferrer"
-              >Trino Web UI</a>
+              >查询控制台</a>
               <button class="btn btn-sm" @click="onExport">导出 CSV（脱敏集）</button>
               <button class="btn btn-sm" :disabled="!resultRows.length" @click="onSaveDataset">存数据集</button>
               <button

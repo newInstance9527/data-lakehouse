@@ -13,7 +13,10 @@ import {
   fetchSecClassification,
   fetchSecAudit,
   fetchSecSa,
+  registerSecSa,
+  retireSecSa,
   fetchSecVaultHealth,
+  rotateSecVault,
   fetchSecRouteWhitelist,
 } from '@/api/security'
 
@@ -29,7 +32,22 @@ const masks = ref([])
 const grants = ref([])
 const auditRows = ref([])
 const saItems = ref([])
+const saHint = ref('')
+const saBusy = ref(false)
+const saFormOpen = ref(false)
+const saForm = ref({
+  saName: '',
+  domain: '',
+  jobBind: '',
+  privilegeScope: '',
+  expireAt: '',
+})
 const vaultItems = ref([])
+const vaultHint = ref('')
+const vaultRotating = ref(false)
+/** 当前正在轮换的 vaultPath；用于行内按钮文案 */
+const vaultRotatingPath = ref('')
+const vaultStatusText = ref('')
 const pathAllow = ref(SEC_PATH_ALLOW)
 const pathForbid = ref(SEC_PATH_FORBID)
 const auditHint = ref('')
@@ -83,7 +101,7 @@ async function loadBoard() {
       fetchSecMasks({ ...base, current: 1, size: 20 }),
       fetchSecGrants({ ...base, current: 1, size: 20 }),
       fetchSecAudit({ ...base, current: 1, size: 20 }),
-      fetchSecSa(),
+      fetchSecSa(base),
       fetchSecVaultHealth(),
       fetchSecRouteWhitelist().catch(() => null),
     ])
@@ -94,7 +112,9 @@ async function loadBoard() {
     auditRows.value = Array.isArray(auditPage?.records) ? auditPage.records : []
     auditHint.value = auditPage?.hint || ''
     saItems.value = Array.isArray(sa?.items) ? sa.items : []
+    saHint.value = sa?.hint || ''
     vaultItems.value = Array.isArray(vault?.items) ? vault.items : []
+    vaultHint.value = vault?.hint || ''
     if (routes?.allow?.length) {
       pathAllow.value = routes.allow.map((n, i) => ({
         icon: SEC_PATH_ALLOW[i]?.icon || '•',
@@ -126,19 +146,119 @@ function exportAuditReport() {
 }
 
 function manageServiceAccounts() {
-  showToast('作业 SA 管理 P1（表未建）', 'info')
+  saFormOpen.value = true
+  const el = document.getElementById('sec-sa-card')
+  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
 function newPermissionApply() {
   router.push('/apply')
 }
 
-function registerSa() {
-  showToast('注册 SA 待接后端（P1）', 'info')
+function openRegisterSa() {
+  saForm.value = { saName: '', domain: '', jobBind: '', privilegeScope: '', expireAt: '' }
+  saFormOpen.value = true
 }
 
-function rotateVault() {
-  showToast('Vault 轮换待接后端（P1）', 'info')
+async function submitRegisterSa() {
+  const name = String(saForm.value.saName || '').trim()
+  if (!name) {
+    showToast('请填写 SA 名称（job.domain.action）', 'warning')
+    return
+  }
+  if (saBusy.value) return
+  saBusy.value = true
+  try {
+    const row = await registerSecSa({
+      ws: listWsParams().ws,
+      saName: name,
+      domain: saForm.value.domain || undefined,
+      jobBind: saForm.value.jobBind || undefined,
+      privilegeScope: saForm.value.privilegeScope || undefined,
+      expireAt: saForm.value.expireAt || undefined,
+    })
+    showToast(`已注册 SA · ${row?.saName || name}`, 'success')
+    saFormOpen.value = false
+    await loadBoard()
+  } catch (e) {
+    showToast(e?.message || '注册 SA 失败', 'error')
+  } finally {
+    saBusy.value = false
+  }
+}
+
+async function onRetireSa(row) {
+  if (!row?.id) return
+  if (!window.confirm(`退役作业 SA ${row.saName}？`)) return
+  saBusy.value = true
+  try {
+    await retireSecSa(row.id)
+    showToast(`已退役 ${row.saName}`, 'success')
+    await loadBoard()
+  } catch (e) {
+    showToast(e?.message || '退役失败', 'error')
+  } finally {
+    saBusy.value = false
+  }
+}
+
+function healthLabel(h) {
+  if (h === 'expired') return '过期'
+  if (h === 'warn') return '临近'
+  if (h === 'missing') return '缺失'
+  return '正常'
+}
+
+function pickUrgentVault() {
+  return (
+    vaultItems.value.find((v) => v.rotatable && (v.health === 'expired' || v.health === 'warn')) ||
+    vaultItems.value.find((v) => v.rotatable) ||
+    null
+  )
+}
+
+async function rotateVault(item) {
+  const target = item || pickUrgentVault()
+  if (!target?.vaultPath) {
+    showToast(vaultHint.value || '暂无可轮换凭证', 'info')
+    return
+  }
+  if (target.rotatable === false) {
+    showToast(target.kind === 'ai' ? 'AI Key 请到「AI 模型管理」轮换' : '该路径不可在此轮换', 'warning')
+    return
+  }
+  if (vaultRotating.value) {
+    showToast('已有轮换在执行中，请稍候', 'info')
+    return
+  }
+  const label = target.bindLabel || target.vaultPath
+  vaultRotating.value = true
+  vaultRotatingPath.value = target.vaultPath
+  vaultStatusText.value = `正在轮换 · ${label}…`
+  showToast(`正在轮换 · ${label}…`, 'info', { duration: 8000 })
+  try {
+    const r = await rotateSecVault({ vaultPath: target.vaultPath })
+    const modeTip =
+      r?.mode === 'datasource'
+        ? '已打 rotatedAt，并置数据源 binding stale'
+        : r?.hint || '已打 rotatedAt（本地 Vault 标记轮换）'
+    vaultStatusText.value = `轮换完成 · ${label}`
+    showToast(`✓ 轮换完成 · ${label}：${modeTip}`, 'success', { duration: 6500 })
+    try {
+      await loadBoard()
+    } catch (reloadErr) {
+      showToast(`轮换已成功，但台账刷新失败：${reloadErr?.message || reloadErr}`, 'warning')
+    }
+  } catch (e) {
+    vaultStatusText.value = `轮换失败 · ${label}`
+    showToast(`✗ 轮换失败 · ${label}：${e?.message || e}`, 'error')
+  } finally {
+    vaultRotating.value = false
+    vaultRotatingPath.value = ''
+    window.setTimeout(() => {
+      if (!vaultRotating.value) vaultStatusText.value = ''
+    }, 4000)
+  }
 }
 
 onMounted(loadBoard)
@@ -148,8 +268,9 @@ watchListScope(() => loadBoard())
 <template>
   <div class="sec-page">
     <PageHeader
+      page-id="security"
       title="数据安全与权限中心"
-      subtitle="Gravitino 统一裁决 · Trino 动态脱敏 · OIDC 人机分身份"
+      subtitle="统一权限裁决 · 查询侧动态脱敏 · 人机分身份"
       :guide="guide"
     >
       <label class="ws-mine-chk" title="默认跟随顶栏当前空间；勾选后查看全部归属">
@@ -164,7 +285,7 @@ watchListScope(() => loadBoard())
       <button type="button" class="btn btn-sm btn-primary" @click="newPermissionApply">+ 新建权限申请</button>
     </PageHeader>
 
-    <p class="tip sec-banner">KPI/列表接 `/lh/sec/*`；无数据为空态，不造假行。</p>
+    <p class="tip sec-banner">KPI/列表接安全服务；无数据为空态，不造假行。</p>
 
     <div class="kpi-grid sec-kpi">
       <div v-for="(k, i) in kpis" :key="i" class="kpi-card" :class="k.color">
@@ -201,7 +322,7 @@ watchListScope(() => loadBoard())
 
       <div class="card">
         <div class="card-header">
-          <div class="card-title">🎭 动态脱敏策略（Trino 查询侧）</div>
+          <div class="card-title">🎭 动态脱敏策略（查询侧）</div>
         </div>
         <div class="card-body" style="padding: 0">
           <table class="table">
@@ -288,26 +409,135 @@ watchListScope(() => loadBoard())
     </div>
 
     <div class="grid grid-2">
-      <div class="card">
+      <div id="sec-sa-card" class="card">
         <div class="card-header">
           <div class="card-title">🔑 作业服务账号（SA）</div>
-          <button type="button" class="btn btn-sm" @click="registerSa">＋ 注册 SA</button>
+          <button type="button" class="btn btn-sm" :disabled="saBusy" @click="openRegisterSa">＋ 注册 SA</button>
         </div>
-        <div class="card-body">
-          <div v-if="!saItems.length" class="tip">暂无服务账号（P0 合法空）</div>
-          <div class="sec-footnote">铁律：一个 SA 对应一个作业域 · 禁止人持有 SA 凭证 · 作业下线自动回收</div>
+        <div class="card-body" style="padding: 0">
+          <div v-if="saFormOpen" class="sec-sa-form">
+            <div class="form-grid-2">
+              <label class="form-field">
+                <span class="form-label">SA 名称</span>
+                <input v-model="saForm.saName" class="input input-sm" placeholder="job.trade.ods_writer" />
+              </label>
+              <label class="form-field">
+                <span class="form-label">业务域</span>
+                <input v-model="saForm.domain" class="input input-sm" placeholder="trade（可空，从名称推断）" />
+              </label>
+              <label class="form-field">
+                <span class="form-label">绑定作业</span>
+                <input v-model="saForm.jobBind" class="input input-sm" placeholder="批/流作业名，逗号分隔" />
+              </label>
+              <label class="form-field">
+                <span class="form-label">权限范围</span>
+                <input v-model="saForm.privilegeScope" class="input input-sm" placeholder="湖表写 / 加速层写 / 对象存储" />
+              </label>
+              <label class="form-field">
+                <span class="form-label">有效期</span>
+                <input v-model="saForm.expireAt" class="input input-sm" placeholder="yyyy-MM-dd（可空）" />
+              </label>
+            </div>
+            <div class="sec-sa-form-actions">
+              <button type="button" class="btn btn-sm btn-primary" :disabled="saBusy" @click="submitRegisterSa">
+                {{ saBusy ? '提交中…' : '确认注册' }}
+              </button>
+              <button type="button" class="btn btn-sm" :disabled="saBusy" @click="saFormOpen = false">取消</button>
+            </div>
+          </div>
+          <table class="table">
+            <thead>
+              <tr>
+                <th>SA</th>
+                <th>域</th>
+                <th>绑定</th>
+                <th>状态</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="!saItems.length">
+                <td colspan="5" class="sec-empty">{{ saHint || '暂无服务账号' }}</td>
+              </tr>
+              <tr v-for="s in saItems" :key="s.id">
+                <td>
+                  <div class="sec-vault-label">{{ s.saName }}</div>
+                  <code class="sec-vault-path">{{ s.vaultPath }}</code>
+                </td>
+                <td>{{ s.domain || '—' }}</td>
+                <td>{{ s.jobBind || '—' }}</td>
+                <td>{{ s.status || '—' }}</td>
+                <td>
+                  <button
+                    type="button"
+                    class="btn btn-sm"
+                    :disabled="saBusy || s.status === 'retired'"
+                    @click="onRetireSa(s)"
+                  >
+                    退役
+                  </button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="sec-footnote">铁律：一个 SA 对应一个作业域 · 禁止人持有 SA 凭证 · 凭证仅进 Vault</div>
         </div>
       </div>
 
       <div class="card">
         <div class="card-header">
           <div class="card-title">🔐 Vault 凭证轮换</div>
+          <button
+            type="button"
+            class="btn btn-sm btn-primary"
+            :disabled="vaultRotating || !vaultItems.length"
+            @click="rotateVault()"
+          >
+            {{ vaultRotating ? '轮换中…' : '⚡ 立即轮换' }}
+          </button>
         </div>
-        <div class="card-body">
-          <div v-if="!vaultItems.length" class="tip">暂无轮换台账（P0 合法空）</div>
-          <div class="sec-vault-action">
-            <button type="button" class="btn btn-sm btn-primary" @click="rotateVault">⚡ 立即轮换</button>
-          </div>
+        <div v-if="vaultStatusText" class="sec-vault-status" :class="{ busy: vaultRotating }">
+          {{ vaultStatusText }}
+        </div>
+        <div class="card-body" style="padding: 0">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>绑定</th>
+                <th>周期</th>
+                <th>剩余</th>
+                <th>状态</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="!vaultItems.length">
+                <td colspan="5" class="sec-empty">{{ vaultHint || '暂无轮换台账' }}</td>
+              </tr>
+              <tr v-for="v in vaultItems" :key="v.vaultPath">
+                <td>
+                  <div class="sec-vault-label">{{ v.bindLabel || '—' }}</div>
+                  <code class="sec-vault-path">{{ v.vaultPath }}</code>
+                </td>
+                <td>{{ v.rotateDays != null ? `${v.rotateDays}d` : '—' }}</td>
+                <td>{{ v.remainingDays != null ? `${v.remainingDays}d` : '—' }}</td>
+                <td>
+                  <span class="sec-health" :class="v.health || 'ok'">{{ healthLabel(v.health) }}</span>
+                </td>
+                <td>
+                  <button
+                    type="button"
+                    class="btn btn-sm"
+                    :disabled="vaultRotating || v.rotatable === false"
+                    @click="rotateVault(v)"
+                  >
+                    {{ vaultRotatingPath === v.vaultPath ? '轮换中…' : '轮换' }}
+                  </button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <div v-if="vaultHint && vaultItems.length" class="sec-footnote">{{ vaultHint }}</div>
         </div>
       </div>
     </div>
@@ -415,13 +645,61 @@ watchListScope(() => loadBoard())
 }
 .sec-footnote {
   margin-top: 12px;
-  padding-top: 8px;
+  padding: 8px 12px;
   font-size: 11px;
   color: var(--text-3);
   border-top: 1px solid var(--border);
 }
-.sec-vault-action {
-  margin-top: 12px;
+.sec-vault-label {
+  font-size: 13px;
+  font-weight: 500;
+}
+.sec-vault-path {
+  display: block;
+  font-size: 11px;
+  color: var(--text-3);
+  margin-top: 2px;
+  word-break: break-all;
+}
+.sec-vault-status {
+  padding: 8px 14px;
+  font-size: 12px;
+  color: var(--text-2);
+  background: var(--bg-2, #f5f7fa);
+  border-bottom: 1px solid var(--border);
+}
+.sec-vault-status.busy {
+  color: var(--primary, #1e6fff);
+  font-weight: 500;
+}
+.sec-sa-form {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-2, #f5f7fa);
+}
+.sec-sa-form .form-grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.sec-sa-form-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+.sec-health {
+  font-size: 12px;
+  font-weight: 600;
+}
+.sec-health.ok {
+  color: var(--success);
+}
+.sec-health.warn {
+  color: var(--warning, #d48806);
+}
+.sec-health.expired,
+.sec-health.missing {
+  color: var(--danger);
 }
 .sec-path-body {
   padding: 14px;

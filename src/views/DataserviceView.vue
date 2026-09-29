@@ -237,7 +237,7 @@ async function syncFromSqlrest() {
     try {
       const r = await runSyncFromSqlrest()
       showToast(
-        `已从 SQLREST 同步 · 写入 ${r?.upserted ?? 0} · 跳过 ${r?.skipped ?? 0}`,
+        `已从接口服务同步 · 写入 ${r?.upserted ?? 0} · 跳过 ${r?.skipped ?? 0}`,
         'success',
       )
     } catch (e) {
@@ -350,8 +350,9 @@ async function downloadOpenapi(id) {
 <template>
   <div class="ds-page">
     <PageHeader
+      page-id="dataservice"
       title="数据服务中心"
-      subtitle="经 SQLREST Manager API 构建（SQL/Groovy）· 默认边缘 Gateway · 门户负责投影绑定与发布编排"
+      subtitle="接口构建与发布 · 绑定资产/指标 · 调用监控"
       :guide="guide"
     >
       <button type="button" class="btn btn-sm btn-primary" @click="buildApi">构建 API</button>
@@ -398,21 +399,21 @@ async function downloadOpenapi(id) {
           <span class="ds-step-n">1</span>
           <div>
             <div class="ds-step-t">投影数据源</div>
-            <div class="tip">门户数据源 → SQLREST（可映射类型）</div>
+            <div class="tip">门户数据源 → 接口服务（可映射类型）</div>
           </div>
         </div>
         <div class="ds-step">
           <span class="ds-step-n">2</span>
           <div>
             <div class="ds-step-t">API 构建</div>
-            <div class="tip">门户向导 → SQLREST create/debug API（SQL/Groovy）</div>
+            <div class="tip">门户向导 → 创建/调试接口（SQL/脚本）</div>
           </div>
         </div>
         <div class="ds-step">
           <span class="ds-step-n">3</span>
           <div>
             <div class="ds-step-t">发布上线</div>
-            <div class="tip">SQLREST publish/deploy · 绑定资产/指标</div>
+            <div class="tip">发布部署 · 绑定资产/指标</div>
           </div>
         </div>
         <div class="ds-step">
@@ -566,7 +567,7 @@ async function downloadOpenapi(id) {
           </div>
         </div>
         <div v-else class="ds-empty">
-          暂无绑定 · 请先在 SQLREST 构建，再「同步接口目录」或「登记绑定」
+          暂无绑定 · 请先在接口工作台构建，再「同步接口目录」或「登记绑定」
         </div>
         <ListPager
           v-model:page="page"
@@ -584,7 +585,7 @@ async function downloadOpenapi(id) {
       <div class="card">
         <div class="card-header">
           <div class="card-title">近 7 日调用趋势</div>
-          <span class="tag tag-green">SQLREST overview</span>
+          <span class="tag tag-green">调用概览</span>
         </div>
         <div class="card-body ds-trend">
           <div v-if="callTrend.length" class="ds-trend-bars">
@@ -593,7 +594,7 @@ async function downloadOpenapi(id) {
               <div class="ds-trend-day">{{ String(t.day).slice(-5) }}</div>
             </div>
           </div>
-          <p v-else class="tip" style="padding: 12px 0">暂无调用趋势。有流量后由 SQLREST overview/trend 回填。</p>
+          <p v-else class="tip" style="padding: 12px 0">暂无调用趋势。有流量后由调用概览自动回填。</p>
         </div>
       </div>
 
@@ -656,7 +657,7 @@ async function downloadOpenapi(id) {
       <div class="card-header">
         <div class="card-title">
           对外边缘
-          <span class="tip">· SQLREST Gateway（唯一）</span>
+          <span class="tip">· 统一网关（唯一边缘）</span>
         </div>
         <div class="ds-edge-actions">
           <span class="tag tag-green">gateway</span>
@@ -679,7 +680,7 @@ async function downloadOpenapi(id) {
           <tbody>
             <tr v-for="r in routes" :key="r.path">
               <td><code class="route-path">{{ r.path }}</code></td>
-              <td style="font-size: 12px">{{ r.upstream || 'SQLREST Gateway → Executor' }}</td>
+              <td style="font-size: 12px">{{ r.upstream || '网关 → 执行器' }}</td>
               <td><span class="tag tag-purple" style="font-size: 10px">{{ r.auth }}</span></td>
               <td style="font-size: 12px">{{ r.rate }}</td>
               <td>
@@ -867,7 +868,7 @@ async function downloadOpenapi(id) {
           label="SQL / Groovy"
           hint="深编请回工作台或 Manager"
         />
-        <p v-else class="tip detail-empty">正文在 SQLREST；点下方打开工作台或 Manager</p>
+        <p v-else class="tip detail-empty">正文在接口服务；点下方打开工作台或管理端</p>
 
         <div class="detail-sec-title">入参</div>
         <table v-if="detail.params?.length" class="table detail-table">

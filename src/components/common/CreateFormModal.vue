@@ -1,6 +1,7 @@
 <script setup>
 import { computed, reactive, ref, watch } from 'vue'
 import { useToast } from '@/composables/useToast'
+import { t, tt, useLocale } from '@/composables/useLocale'
 import SearchSelect from '@/components/common/SearchSelect.vue'
 import MultiSearchSelect from '@/components/common/MultiSearchSelect.vue'
 
@@ -17,7 +18,34 @@ const props = defineProps({
 
 const emit = defineEmits(['close', 'submit'])
 const { showToast } = useToast()
+const { locale } = useLocale()
 
+const displayTitle = computed(() => {
+  void locale.value
+  return tt(props.title)
+})
+const displayIntro = computed(() => {
+  void locale.value
+  return props.intro ? tt(props.intro) : ''
+})
+const displaySubmit = computed(() => {
+  void locale.value
+  return tt(props.submitLabel)
+})
+
+function fieldLabel(f) {
+  void locale.value
+  return tt(f.label || '')
+}
+function fieldHint(f) {
+  void locale.value
+  const h = resolveHint(f)
+  return h ? tt(h) : ''
+}
+function fieldPlaceholder(f, fallback = '') {
+  void locale.value
+  return tt(f.placeholder || fallback)
+}
 const form = reactive({})
 const presetPick = reactive({})
 /** 异步 optionsLoad 完成后递增，驱动 resolveOptions 重算 */
@@ -374,7 +402,7 @@ watch(
     } else if (kind === '衍生') {
       if (!form.atomRef) {
         const atomDef = props.fields.find((f) => f.key === 'atomRef')
-        form.atomRef = atomDef ? defaultForField(atomDef) : 'A-0012'
+        form.atomRef = atomDef ? defaultForField(atomDef) : ''
       }
       form.formula = ''
       if (!Array.isArray(form.qualifier)) form.qualifier = []
@@ -384,7 +412,7 @@ watch(
     } else if (kind === '复合') {
       const deriveDef = props.fields.find((f) => f.key === 'deriveRef')
       if (!form.deriveRef?.length) {
-        form.deriveRef = deriveDef ? defaultForField(deriveDef) : ['M-0001', 'A-0012']
+        form.deriveRef = deriveDef ? defaultForField(deriveDef) : []
       }
       form.dim = []
       form.qualifier = []
@@ -433,7 +461,7 @@ function submit() {
       (f.requiredWhen && matchWhen(f.requiredWhen))
     if (!need) continue
     if (isEmptyValue(form[f.key])) {
-      showToast(`请填写${f.label}`, 'warning')
+      showToast(`${tt('请填写')}${tt(f.label || '')}`, 'warning')
       return
     }
     if (typeof f.validate === 'function') {
@@ -470,8 +498,8 @@ const visibleFields = computed(() => props.fields.filter((f) => !isHidden(f)))
       <div class="modal" :style="{ width }">
         <div class="modal-header">
           <div>
-            <div class="modal-title">{{ title }}</div>
-            <div v-if="intro" class="modal-sub">{{ intro }}</div>
+            <div class="modal-title">{{ displayTitle }}</div>
+            <div v-if="displayIntro" class="modal-sub">{{ displayIntro }}</div>
           </div>
           <button type="button" class="btn btn-sm" @click="close">✕</button>
         </div>
@@ -495,7 +523,7 @@ const visibleFields = computed(() => props.fields.filter((f) => !isHidden(f)))
                   <span
                     v-if="f.required || (f.requiredWhen && matchWhen(f.requiredWhen))"
                     class="req"
-                  >*</span>{{ f.label }}
+                  >*</span>{{ fieldLabel(f) }}
                 </span>
 
                 <template v-if="f.type === 'preset-text'">
@@ -509,18 +537,18 @@ const visibleFields = computed(() => props.fields.filter((f) => !isHidden(f)))
                       v-for="p in resolvePresets(f)"
                       :key="p.key || p.label"
                       :value="p.key || p.label"
-                    >{{ p.label }}</option>
-                    <option value="__custom__">自定义…</option>
+                    >{{ tt(p.label) }}</option>
+                    <option value="__custom__">{{ tt('自定义…') }}</option>
                   </select>
                   <textarea
                     v-model="form[f.key]"
                     class="input"
                     :readonly="!isCustomExpr(f)"
-                    :placeholder="f.placeholder || '选择预设或自定义表达式'"
+                    :placeholder="fieldPlaceholder(f, '选择预设或自定义表达式')"
                     rows="3"
                   />
                   <div v-if="!isCustomExpr(f)" class="preset-hint">
-                    {{ f.presetHint || '已选用预设（依赖指标 ID 已代入）；切到「自定义…」可编辑' }}
+                    {{ tt(f.presetHint || '已选用预设（依赖指标 ID 已代入）；切到「自定义…」可编辑') }}
                   </div>
                 </template>
 
@@ -528,7 +556,7 @@ const visibleFields = computed(() => props.fields.filter((f) => !isHidden(f)))
                   v-else-if="f.type === 'textarea'"
                   v-model="form[f.key]"
                   class="input"
-                  :placeholder="f.placeholder || ''"
+                  :placeholder="fieldPlaceholder(f)"
                   rows="3"
                 />
                 <select
@@ -542,14 +570,14 @@ const visibleFields = computed(() => props.fields.filter((f) => !isHidden(f)))
                     :key="optionValue(o)"
                     :value="optionValue(o)"
                   >
-                    {{ optionLabel(o) }}
+                    {{ tt(optionLabel(o)) }}
                   </option>
                 </select>
                 <SearchSelect
                   v-else-if="f.type === 'search-select'"
                   v-model="form[f.key]"
                   :options="resolveOptions(f)"
-                  :placeholder="f.placeholder || '搜索并选择'"
+                  :placeholder="fieldPlaceholder(f, '搜索并选择')"
                   :sub-key="f.subKey || 'sub'"
                   :search-keys="f.searchKeys || ['name', 'caliber']"
                   :allow-custom="!!f.allowCustom"
@@ -558,7 +586,7 @@ const visibleFields = computed(() => props.fields.filter((f) => !isHidden(f)))
                   v-else-if="f.type === 'multi-search-select'"
                   v-model="form[f.key]"
                   :options="resolveOptions(f)"
-                  :placeholder="f.placeholder || '搜索并多选'"
+                  :placeholder="fieldPlaceholder(f, '搜索并多选')"
                   :sub-key="f.subKey || 'sub'"
                   :search-keys="f.searchKeys || ['name', 'caliber', 'type']"
                   :max="f.max || 0"
@@ -569,16 +597,16 @@ const visibleFields = computed(() => props.fields.filter((f) => !isHidden(f)))
                   class="input"
                   style="width: 100%"
                   :type="f.type === 'number' ? 'number' : 'text'"
-                  :placeholder="f.placeholder || ''"
+                  :placeholder="fieldPlaceholder(f)"
                 />
-                <div v-if="resolveHint(f)" class="field-hint">{{ resolveHint(f) }}</div>
+                <div v-if="fieldHint(f)" class="field-hint">{{ fieldHint(f) }}</div>
               </label>
             </div>
           </div>
         </div>
         <div class="modal-footer">
-          <button type="button" class="btn btn-sm" @click="close">取消</button>
-          <button type="button" class="btn btn-sm btn-primary" @click="submit">{{ submitLabel }}</button>
+          <button type="button" class="btn btn-sm" @click="close">{{ t('common.cancel') }}</button>
+          <button type="button" class="btn btn-sm btn-primary" @click="submit">{{ displaySubmit }}</button>
         </div>
       </div>
     </div>

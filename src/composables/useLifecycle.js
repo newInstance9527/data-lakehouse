@@ -7,6 +7,8 @@ import {
   fetchLcJobsLatest,
   fetchLcOverview,
   fetchLcPolicies,
+  fetchLcCompliancePreview,
+  fetchLcArchiveCandidates,
   fetchLcStorageTables,
   fetchLcStorageTrend,
   runLcJobsNow,
@@ -17,6 +19,7 @@ import {
   upsertLcPolicy,
 } from '@/api/lifecycle'
 import { LC_STAGES, lcJobStatusMeta } from '@/data/lifecycle'
+import { complianceTypeCls } from '@/data/compliance'
 
 const loading = ref(false)
 const loaded = ref(false)
@@ -30,6 +33,8 @@ const topStorage = ref([])
 const orphanRows = ref([])
 const lastOrphanScan = ref(null)
 const storageTrend = ref(null)
+const compliancePreviewRows = ref([])
+const archiveCandidateRows = ref([])
 
 let loadPromise = null
 
@@ -94,7 +99,7 @@ const EMPTY_ST_KPIS = [
 ]
 
 async function applyBoard(ws) {
-  const [ov, jobs, tablesPage, pols, trend] = await Promise.all([
+  const [ov, jobs, tablesPage, pols, trend, compliance, archives] = await Promise.all([
     fetchLcOverview(ws),
     fetchLcJobsLatest(ws),
     fetchLcStorageTables({
@@ -107,6 +112,8 @@ async function applyBoard(ws) {
     }),
     fetchLcPolicies(ws),
     fetchLcStorageTrend(ws, '30d').catch(() => null),
+    fetchLcCompliancePreview(ws, 10).catch(() => []),
+    fetchLcArchiveCandidates(ws).catch(() => []),
   ])
   overview.value = ov
   jobsLatest.value = jobs
@@ -121,7 +128,9 @@ async function applyBoard(ws) {
   }))
   policies.value = pols || []
   storageTrend.value = trend
-  return { overview: ov, jobs, top: list, policies: pols, trend }
+  compliancePreviewRows.value = Array.isArray(compliance) ? compliance : []
+  archiveCandidateRows.value = Array.isArray(archives) ? archives : []
+  return { overview: ov, jobs, top: list, policies: pols, trend, compliance, archives }
 }
 
 export function useLifecycle() {
@@ -163,10 +172,14 @@ export function useLifecycle() {
       {
         icon: '🗄️',
         color: 'orange',
-        value: String(ov.archiveCandidatePartitions ?? '—'),
-        unit: '分区',
+        value: String(ov.archiveCandidatePartitions ?? 0),
+        unit: ov.archiveUnit === 'tables' ? '表' : '分区',
         label: '归档候选',
-        trend: 'ODS 分区过期',
+        trend: ov.archiveCandidateTables
+          ? `湖内分区 · ${ov.archiveCandidateTables} 表`
+          : '湖内分区过期',
+        clickable: true,
+        focus: 'archive',
       },
       {
         icon: '⚠️',
@@ -176,9 +189,24 @@ export function useLifecycle() {
         label: '合规删除待审',
         trend: '见合规工单',
         trendDown: n(ov.compliancePending) > 0,
+        clickable: true,
+        focus: 'compliance',
       },
     ]
   })
+
+  const reclaimAxes = computed(() => overview.value?.reclaimAxes || null)
+
+  const archiveCandidates = computed(() =>
+    (archiveCandidateRows.value || []).map((r) => ({
+      table: r.tableFqn || r.table,
+      layer: r.layer || '—',
+      days: r.partitionExpireDays ?? '—',
+      status: r.status || '—',
+      hint: r.hint || '',
+      coldBucket: r.coldBucketPrefix || '',
+    })),
+  )
 
   const jobSteps = computed(() => {
     const steps = jobsLatest.value?.steps
@@ -247,7 +275,7 @@ export function useLifecycle() {
   })
 
   const stages = computed(() => LC_STAGES)
-  const compliancePreview = computed(() => [])
+  const compliancePreview = computed(() => compliancePreviewRows.value || [])
 
   const trendKpis = computed(() => {
     const tr = storageTrend.value
@@ -431,6 +459,8 @@ export function useLifecycle() {
       topStorage.value = []
       orphanRows.value = []
       storageTrend.value = null
+      compliancePreviewRows.value = []
+      archiveCandidateRows.value = []
       loaded.value = true
       throw e
     } finally {
@@ -526,7 +556,10 @@ export function useLifecycle() {
     snapshotPolicies,
     compactionRows,
     stages,
+    reclaimAxes,
+    archiveCandidates,
     compliancePreview,
+    complianceTypeCls,
     trendKpis,
     trendLayers,
     trendDaily,

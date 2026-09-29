@@ -4,13 +4,14 @@
 import { computed, ref } from 'vue'
 import {
   createAiSession,
+  deleteAiSession,
   fetchAiContextSummary,
   fetchAiSessions,
   fetchAiSessionTurns,
   runAiSql,
   streamAiChat,
 } from '@/api/ai'
-import { ensureOnce } from '@/composables/useEnsureSamples'
+import { formatAiMarkdown } from '@/utils/aiMarkdown'
 
 const sessionId = ref('')
 const messages = ref([])
@@ -21,7 +22,42 @@ const lastError = ref(null)
 const lastMeta = ref(null)
 let abortCtrl = null
 
+function mapTurns(turns) {
+  return (Array.isArray(turns) ? turns : []).map((t) => {
+    if (t.role === 'user') {
+      return { role: 'user', text: t.content || '' }
+    }
+    let citations = []
+    try {
+      if (t.citationsJson) {
+        const parsed = typeof t.citationsJson === 'string' ? JSON.parse(t.citationsJson) : t.citationsJson
+        citations = Array.isArray(parsed) ? parsed : []
+      }
+    } catch {
+      citations = []
+    }
+    return {
+      role: 'assistant',
+      text: String(t.content || ''),
+      html: formatAiMarkdown(String(t.content || '')),
+      citations,
+      actions: [],
+      intent: t.intent,
+      modelId: t.modelId,
+    }
+  })
+}
+
 export function useAiAssistant() {
+  async function refreshSessions(ws) {
+    const sessions = await fetchAiSessions(ws).catch(() => [])
+    recentSessions.value = Array.isArray(sessions) ? sessions : sessions?.records || []
+    return recentSessions.value
+  }
+
+  /**
+   * 初始化：拉上下文 + 会话列表；默认打开最近一次对话（无则新建空会话）。
+   */
   async function init(ws, { resetSession = false } = {}) {
     lastError.value = null
     try {
@@ -30,37 +66,39 @@ export function useAiAssistant() {
         messages.value = []
         lastMeta.value = null
       }
-      const [summary, sessions] = await Promise.all([
+      const [summary, list] = await Promise.all([
         fetchAiContextSummary(ws).catch(() => null),
-        fetchAiSessions(ws).catch(() => []),
+        refreshSessions(ws),
       ])
       contextSummary.value = summary
-      const list = Array.isArray(sessions) ? sessions : sessions?.records || []
-      recentSessions.value = list
 
-      await ensureOnce(
-        'ai_sample_session',
-        () => !sessionId.value && list.length === 0,
-        async () => {
-          const s = await createAiSession({ ws, title: '新对话' })
-          sessionId.value = s?.id || s?.sessionId || ''
-          return s
-        },
-        async () => {
-          const again = await fetchAiSessions(ws).catch(() => [])
-          recentSessions.value = Array.isArray(again) ? again : again?.records || []
-        },
-      )
-
-      if (!sessionId.value) {
-        const s = await createAiSession({ ws, title: '新对话' })
-        sessionId.value = s?.id || s?.sessionId || ''
+      if (sessionId.value && list.some((s) => s.id === sessionId.value)) {
+        await loadSession(sessionId.value, ws)
+        return
       }
+
+      if (list.length) {
+        await loadSession(list[0].id, ws)
+        return
+      }
+
+      await newChat(ws, { title: '新对话', silent: true })
     } catch (e) {
       lastError.value = e
       recentSessions.value = []
       throw e
     }
+  }
+
+  /** 新建对话并切到该会话 */
+  async function newChat(ws, { title = '新对话', silent = false } = {}) {
+    stop()
+    const s = await createAiSession({ ws, title })
+    sessionId.value = s?.id || s?.sessionId || ''
+    messages.value = []
+    lastMeta.value = null
+    await refreshSessions(ws)
+    return { sessionId: sessionId.value, silent }
   }
 
   function clearLocal() {
@@ -75,34 +113,35 @@ export function useAiAssistant() {
 
   async function loadSession(id, ws) {
     if (!id) return
+    stop()
     const turns = await fetchAiSessionTurns(id)
     sessionId.value = id
-    messages.value = (Array.isArray(turns) ? turns : []).map((t) => {
-      if (t.role === 'user') {
-        return { role: 'user', text: t.content || '' }
-      }
-      let citations = []
-      try {
-        if (t.citationsJson) {
-          const parsed = typeof t.citationsJson === 'string' ? JSON.parse(t.citationsJson) : t.citationsJson
-          citations = Array.isArray(parsed) ? parsed : []
-        }
-      } catch {
-        citations = []
-      }
-      return {
-        role: 'assistant',
-        html: String(t.content || '').replace(/\n/g, '<br/>'),
-        citations,
-        actions: [],
-        intent: t.intent,
-        modelId: t.modelId,
-      }
-    })
+    messages.value = mapTurns(turns)
+    lastMeta.value = null
     if (ws) {
-      const again = await fetchAiSessions(ws).catch(() => [])
-      recentSessions.value = Array.isArray(again) ? again : again?.records || []
+      await refreshSessions(ws).catch(() => {})
     }
+  }
+
+  /**
+   * 软删会话；若删的是当前会话则切到下一条或新建。
+   * @returns {Promise<{ deletedId: string, nextSessionId?: string }>}
+   */
+  async function deleteSession(id, ws) {
+    if (!id) return { deletedId: '' }
+    stop()
+    await deleteAiSession(id)
+    const wasCurrent = sessionId.value === id
+    const list = await refreshSessions(ws)
+    if (!wasCurrent) {
+      return { deletedId: id, nextSessionId: sessionId.value }
+    }
+    if (list.length) {
+      await loadSession(list[0].id, ws)
+      return { deletedId: id, nextSessionId: list[0].id }
+    }
+    await newChat(ws, { title: '新对话', silent: true })
+    return { deletedId: id, nextSessionId: sessionId.value }
   }
 
   /**
@@ -114,7 +153,7 @@ export function useAiAssistant() {
     sending.value = true
     lastError.value = null
 
-    const assistantMsg = { role: 'assistant', html: '', citations: [], actions: [] }
+    const assistantMsg = { role: 'assistant', text: '', html: '', citations: [], actions: [] }
     messages.value.push(assistantMsg)
     const idx = messages.value.length - 1
 
@@ -124,7 +163,6 @@ export function useAiAssistant() {
       text,
       scene,
     }
-    // 仅用户显式选择模型时才 override；空字符串不传，走后端 gov_ai_route
     if (modelOverride) {
       body.modelOverride = modelOverride
     }
@@ -142,8 +180,8 @@ export function useAiAssistant() {
           }
           if (event === 'token') {
             const t = typeof data === 'string' ? data : data?.text || data?.token || ''
-            const chunk = String(t).replace(/\n/g, '<br/>')
-            msg.html = (msg.html || '') + chunk
+            msg.text = (msg.text || '') + String(t)
+            msg.html = formatAiMarkdown(msg.text)
             messages.value[idx] = { ...msg }
           }
           if (event === 'citation') {
@@ -157,17 +195,15 @@ export function useAiAssistant() {
             messages.value[idx] = { ...msg }
           }
           if (event === 'done') {
-            if (data?.content && !msg.html) {
-              msg.html = data.content
+            if (data?.content) {
+              msg.text = String(data.content)
             }
+            msg.html = formatAiMarkdown(msg.text || '')
             if (data?.citations) msg.citations = data.citations
             if (data?.error) {
               lastError.value = new Error(data.error)
-              const errHtml = `<br><span style="color:#cf1322">⚠️ ${String(data.error)
-                .replace(/&/g, '&amp;')
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;')}</span>`
-              msg.html = (msg.html || '') + errHtml
+              msg.text = `${msg.text || ''}\n\n⚠️ ${data.error}`
+              msg.html = formatAiMarkdown(msg.text)
             }
             messages.value[idx] = { ...msg }
           }
@@ -176,9 +212,8 @@ export function useAiAssistant() {
           lastError.value = e
           const msg = messages.value[idx]
           if (msg) {
-            msg.html =
-              (msg.html || '') +
-              `<br><span style="color:#cf1322">⚠️ ${e?.message || '请求失败'}；可稍后重试或检查后端 /lh/ai/chat。</span>`
+            msg.text = `${msg.text || ''}\n\n⚠️ ${e?.message || '请求失败'}；可稍后重试或检查后端 /lh/ai/chat。`
+            msg.html = formatAiMarkdown(msg.text)
             messages.value[idx] = { ...msg }
           }
           sending.value = false
@@ -187,6 +222,7 @@ export function useAiAssistant() {
         onDone(data) {
           sending.value = false
           abortCtrl = null
+          refreshSessions(ws).catch(() => {})
           resolve({
             citations: messages.value[idx]?.citations,
             actions: messages.value[idx]?.actions,
@@ -217,10 +253,13 @@ export function useAiAssistant() {
     sending,
     lastError,
     init,
+    newChat,
+    refreshSessions,
     clearLocal,
     stop,
     send,
     loadSession,
+    deleteSession,
     confirmRunSql,
   }
 }

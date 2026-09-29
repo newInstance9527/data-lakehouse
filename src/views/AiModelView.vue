@@ -11,9 +11,6 @@ import { useAiModels } from '@/composables/useAiModels'
 import { useActionLock } from '@/composables/useActionLock'
 import { AI_MODEL_EDIT_FORM, AI_MODEL_FORM } from '@/data/createForms'
 import { pageGuideOf } from '@/data/pageGuides'
-import { ensureOnce } from '@/composables/useEnsureSamples'
-import { SAMPLE_AI_MODEL } from '@/data/sampleSeeds'
-import { createAiModel } from '@/api/ai'
 import {
   formatUsageCalls,
   modelKindLabel,
@@ -82,35 +79,6 @@ onMounted(async () => {
   try {
     await api.loadAll()
     applyApiPayload()
-    const findDatagoo = () =>
-      models.value.find(
-        (m) =>
-          m.id === SAMPLE_AI_MODEL.id ||
-          m.modelName === SAMPLE_AI_MODEL.modelId ||
-          String(m.endpoint || m.baseUrl || '').includes('ai.datagoo.cn'),
-      )
-    // 仅在完全没有 DataGoo 模型时创建一次；禁止每次进页 rotate 覆盖用户已保存的 Vault Key
-    await ensureOnce(
-      'ai_datagoo_dsflash',
-      () => !findDatagoo(),
-      () =>
-        createAiModel({
-          vendor: SAMPLE_AI_MODEL.provider,
-          name: SAMPLE_AI_MODEL.name,
-          modelName: SAMPLE_AI_MODEL.modelId,
-          baseUrl: SAMPLE_AI_MODEL.baseUrl,
-          ...(SAMPLE_AI_MODEL.apiKey ? { key: SAMPLE_AI_MODEL.apiKey } : {}),
-          roleLabel: SAMPLE_AI_MODEL.remark,
-          kind: 'chat',
-          enabled: true,
-          egressApproved: true,
-          priceUnit: 'cny_1m',
-        }),
-      async () => {
-        await api.loadAll()
-        applyApiPayload()
-      },
-    )
   } catch (e) {
     loadError.value = e?.message || '加载失败'
     models.value = []
@@ -368,6 +336,7 @@ watch(
 <template>
   <div class="aim-page">
     <PageHeader
+      page-id="aimodel"
       title="AI 模型管理"
       subtitle="多模型 API 配置 · 密钥保管（Vault）· 价格与上下文 · 路由策略 · 用量计量"
       :guide="guide"
@@ -502,7 +471,7 @@ watch(
         <span class="tag tag-green">{{ enabledCount }} 启用</span>
       </div>
       <div class="card-body">
-        <div v-if="!models.length" class="aim-empty tip">暂无模型 · 点击「接入模型」或检查 /lh/ai/models</div>
+        <div v-if="!models.length" class="aim-empty tip">暂无模型 · 点击「接入模型」或刷新列表</div>
         <div class="grid grid-3 aim-model-grid">
           <div
             v-for="m in paged"

@@ -143,7 +143,8 @@ async function remove(n) {
 
 <template>
   <div class="sys-page">
-    <PageHeader title="菜单管理" subtitle="资源树 · 增删改 · 对接 /sys/menu">
+    <PageHeader
+      page-id="sys-menus" title="菜单管理" subtitle="资源树 · 增删改 · 对接 /sys/menu">
       <button type="button" class="btn btn-sm btn-primary" @click="openAdd(null)">＋ 新建根菜单</button>
       <button type="button" class="btn btn-sm" :disabled="loading" @click="load">↻ 刷新</button>
     </PageHeader>

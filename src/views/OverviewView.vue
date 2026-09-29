@@ -267,6 +267,7 @@ const rangeLabel = computed(() => {
 <template>
   <div class="ov">
     <PageHeader
+      page-id="overview"
       title="总览仪表盘"
       subtitle="平台健康度一览 · 接入 → 入湖 → 治理 → 服务"
       :guide-title="guide.title"
@@ -707,9 +708,9 @@ const rangeLabel = computed(() => {
             <p>
               {{
                 availability.serviceCalls
-                  ? '服务来自 /lh/dataapi/overview · 指标来自 /lh/metric'
+                  ? '服务来自数据服务概览 · 指标来自指标目录'
                   : availability.metrics
-                    ? '指标来自 /lh/metric'
+                    ? '指标来自指标目录'
                     : '尚未接入治理统计'
               }}
             </p>
@@ -738,7 +739,7 @@ const rangeLabel = computed(() => {
               <small>
                 已发布
                 <template v-if="serviceStats.draft"> · 草稿 {{ serviceStats.draft }}</template>
-                <template v-if="serviceStats.sqlrestOnline != null"> · SQLREST 上线 {{ serviceStats.sqlrestOnline }}</template>
+                <template v-if="serviceStats.sqlrestOnline != null"> · 接口服务上线 {{ serviceStats.sqlrestOnline }}</template>
               </small>
             </template>
             <template v-else>

@@ -50,6 +50,7 @@ export function upsertQualityRule(payload) {
     severity: payload.severity || payload.sev,
     enabled: payload.enabled,
     omTestFqn: payload.omTestFqn,
+    stdCodeSetId: payload.stdCodeSetId,
     remark: payload.remark,
   })
 }
@@ -62,5 +63,45 @@ export function createQualityTicket(payload = {}) {
   return http.post(`${Q}/tickets`, {
     ruleId: payload.ruleId,
     remark: payload.remark,
+  })
+}
+
+/** OM Profiler/Test 水位 + soft-fail 投影（ws 走 query，对齐 Controller @RequestParam） */
+export function syncQualityOm(params = {}) {
+  return http.post(`${Q}/sync-om`, null, { params: { ws: params.ws } })
+}
+
+/** Flink 流式探针 → VM lh_dq_stream_* */
+export function postStreamProbe(payload = {}) {
+  return http.post(`${Q}/rules/stream-probe`, payload)
+}
+
+export function fetchQualityGates(params = {}) {
+  return http.get(`${Q}/gates`, { ws: params.ws })
+}
+
+export function upsertQualityGate(payload = {}) {
+  return http.put(`${Q}/gates`, {
+    id: payload.id,
+    ws: payload.ws,
+    assetId: payload.assetId || '',
+    // 显式传空串，后端 blank→null（整层门禁）；勿省略字段导致更新不清空
+    tableName: payload.tableName != null ? payload.tableName : payload.table || '',
+    layer: payload.layer || '',
+    minScore: payload.minScore,
+    blockOnFail: payload.blockOnFail,
+  })
+}
+
+export function deleteQualityGate(id) {
+  return http.post(`${Q}/gates/delete`, { id })
+}
+
+export function fetchQualityRuns(ruleId, params = {}) {
+  return http.get(`${Q}/rules/runs`, {
+    ruleId,
+    ws: params.ws,
+    current: params.current ?? 1,
+    size: params.size ?? 20,
   })
 }

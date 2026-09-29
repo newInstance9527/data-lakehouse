@@ -1,27 +1,81 @@
 <script setup>
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
 import { useToast } from '@/composables/useToast'
+import { useWsListScope } from '@/composables/useWsListScope'
 import { pageGuideOf } from '@/data/pageGuides'
 import {
-  INFRA_ALERTS,
-  INFRA_CAPACITY_TIPS,
-  INFRA_KPIS,
   INFRA_LAYER_ROWS,
-  INFRA_NODES,
-  INFRA_PROCS,
+  emptyInfraKpis,
   infraBarColor,
   infraNodeStatusTag,
   infraProcStatusTag,
   infraSevTag,
 } from '@/data/infra'
+import {
+  fetchObsInfraAlerts,
+  fetchObsInfraNodes,
+  fetchObsInfraProcs,
+  fetchObsInfraSummary,
+} from '@/api/observability'
 
 const router = useRouter()
 const { showToast } = useToast()
+const { listWsParams, watchListScope } = useWsListScope()
 const guide = pageGuideOf('infra')
 
+const loading = ref(false)
+const loadError = ref('')
+const source = ref('empty')
+const kpis = ref(emptyInfraKpis())
+const nodes = ref([])
+const procs = ref([])
+const alerts = ref([])
+const capacityTips = ref([])
+
+const headerTags = computed(() => {
+  const tags = []
+  const down = nodes.value.filter((n) => n.st === 'down')
+  const diskWarn = nodes.value.filter((n) => Number(n.disk) >= 85)
+  if (down.length) tags.push({ tag: 'tag-red', text: `${down.length} NotReady` })
+  if (diskWarn.length) tags.push({ tag: 'tag-orange', text: `${diskWarn.length} 磁盘将满` })
+  return tags
+})
+
+async function loadBoard() {
+  loading.value = true
+  loadError.value = ''
+  try {
+    const params = listWsParams()
+    const [sum, nodePage, procPage, alertPage] = await Promise.all([
+      fetchObsInfraSummary(params),
+      fetchObsInfraNodes(params),
+      fetchObsInfraProcs(params),
+      fetchObsInfraAlerts(params),
+    ])
+    source.value = sum?.source || 'empty'
+    kpis.value = Array.isArray(sum?.kpis) && sum.kpis.length ? sum.kpis : emptyInfraKpis()
+    capacityTips.value = Array.isArray(sum?.capacityTips) ? sum.capacityTips : []
+    nodes.value = Array.isArray(nodePage?.records) ? nodePage.records : []
+    procs.value = Array.isArray(procPage?.records) ? procPage.records : []
+    alerts.value = Array.isArray(alertPage?.records) ? alertPage.records : []
+  } catch (e) {
+    loadError.value = e?.message || '基础设施 API 加载失败'
+    source.value = 'empty'
+    kpis.value = emptyInfraKpis()
+    nodes.value = []
+    procs.value = []
+    alerts.value = []
+    capacityTips.value = []
+    showToast(loadError.value, 'warning')
+  } finally {
+    loading.value = false
+  }
+}
+
 function exportDaily() {
-  showToast('📄 基础设施日报导出中 · CSV · 节点水位+告警+扩容建议', 'success')
+  showToast('功能待接后端 · 无采集数据可导出', 'info')
 }
 
 function silenceWindow() {
@@ -29,11 +83,25 @@ function silenceWindow() {
 }
 
 function silenceAlerts() {
-  showToast('🔇 一键静默 · node-07 · 60min 维护窗口', 'warning')
+  showToast('功能待接后端', 'info')
 }
 
 function goLinktrace() {
   router.push('/linktrace')
+}
+
+function goStorageTrend(bucket) {
+  const q = {}
+  if (bucket) q.bucket = bucket
+  router.push({ path: '/lifecycle/storage', query: q })
+}
+
+function onAlertAct(a) {
+  if (a.sev === '容量' || (a.t && String(a.t).includes('磁盘'))) {
+    goStorageTrend()
+    return
+  }
+  goLinktrace()
 }
 
 function onProcAct(p) {
@@ -41,19 +109,23 @@ function onProcAct(p) {
     goLinktrace()
     return
   }
+  if (p.act === '扩容' || (p.comp && String(p.comp).includes('MinIO'))) {
+    goStorageTrend()
+    return
+  }
   if (p.act === '重试') {
-    showToast(`↻ 组件重启重试 · ${p.comp}`, 'info')
+    showToast('功能待接后端', 'info')
     return
   }
-  if (p.act === '扩容') {
-    showToast(`📈 生成扩容建议 · ${p.comp}`, 'info')
-    return
-  }
-  showToast(`📋 ${p.comp} 详情 · ${p.inst} · ${p.metric} · ${p.st}`, 'info')
+  showToast('功能待接后端', 'info')
 }
 
 function nodeTrend(n) {
-  showToast(`📊 节点趋势 · ${n.node} · CPU ${n.cpu}% / 内存 ${n.mem}% / 磁盘 ${n.disk}%`, 'info')
+  if (n.disk >= 85 || (n.comps && String(n.comps).includes('MinIO'))) {
+    goStorageTrend()
+    return
+  }
+  showToast('节点趋势待接监控时序', 'info')
 }
 
 function kpiTrendClass(k) {
@@ -61,23 +133,35 @@ function kpiTrendClass(k) {
   if (k.trendWarn) return 'warn'
   return k.trendUp ? 'up' : 'down'
 }
+
+onMounted(loadBoard)
+watchListScope(loadBoard)
 </script>
 
 <template>
   <div class="infra-page">
     <PageHeader
-      title="基础设施监控 · §30"
-      subtitle="四层模型：节点资源 / 容器 / 集群对象 / 平台组件进程 · 复用 Categraf + VictoriaMetrics + 夜莺 · 承载任务运维与链路监控的底座"
+      page-id="infra"
+      title="基础设施监控"
+      subtitle="节点资源 / 容器 / 集群 / 平台进程 · 任务与链路监控的底座"
       :guide="guide"
     >
-      <span class="tag tag-blue infra-ver">v1.2 新增</span>
+      <button type="button" class="btn btn-sm" :disabled="loading" @click="loadBoard">
+        {{ loading ? '刷新中…' : '↻ 刷新' }}
+      </button>
       <button type="button" class="btn btn-sm" @click="exportDaily">📄 日报</button>
       <button type="button" class="btn btn-sm" @click="silenceWindow">🔇 维护静默</button>
       <button type="button" class="btn btn-sm btn-primary" @click="goLinktrace">🧵 看链路影响</button>
     </PageHeader>
 
+    <p class="tip infra-banner">
+      监控采集未就绪时为空态，不加载演示节点与假告警。
+      <span v-if="source && source !== 'empty'"> · 数据源已接通</span>
+    </p>
+    <p v-if="loadError" class="tip infra-banner warn">加载失败：{{ loadError }}</p>
+
     <div class="kpi-grid infra-kpi">
-      <div v-for="(k, i) in INFRA_KPIS" :key="i" class="kpi-card" :class="k.color">
+      <div v-for="(k, i) in kpis" :key="i" class="kpi-card" :class="k.color">
         <div class="kpi-icon" :class="k.color">{{ k.icon }}</div>
         <div class="kpi-value">
           {{ k.value }}<span class="kpi-unit">{{ k.unit }}</span>
@@ -91,11 +175,11 @@ function kpiTrendClass(k) {
       <div class="card-header">
         <div class="card-title">
           📊 节点资源四象限 · CPU / 内存 / 磁盘 / 网络
-          <span class="tip">· Categraf node 模块 · 点击节点看趋势</span>
+          <span class="tip">· 节点探针 · 点击节点看趋势</span>
         </div>
         <div class="infra-header-tags">
-          <span class="tag tag-red">node-07 NotReady</span>
-          <span class="tag tag-orange">3 磁盘将满</span>
+          <span v-for="(t, i) in headerTags" :key="i" class="tag" :class="t.tag">{{ t.text }}</span>
+          <span v-if="!headerTags.length" class="tip">暂无节点告警标签</span>
         </div>
       </div>
       <div class="card-body infra-table-wrap">
@@ -113,8 +197,16 @@ function kpiTrendClass(k) {
             </tr>
           </thead>
           <tbody>
+            <tr v-if="loading && !nodes.length">
+              <td colspan="8" class="empty-cell">加载中…</td>
+            </tr>
+            <tr v-else-if="!nodes.length">
+              <td colspan="8" class="empty-cell">
+                暂无节点 · 空列表合法，请完成监控采集接入后刷新
+              </td>
+            </tr>
             <tr
-              v-for="n in INFRA_NODES"
+              v-for="n in nodes"
               :key="n.node"
               class="infra-node-row"
               @click="nodeTrend(n)"
@@ -176,7 +268,6 @@ function kpiTrendClass(k) {
           <div class="card-title">
             ⚙️ 平台组件进程健康 <span class="tip">· L3 进程探针 + JMX/HTTP</span>
           </div>
-          <span class="tag tag-orange">1 端口不通</span>
         </div>
         <div class="card-body infra-scroll">
           <table class="table">
@@ -190,7 +281,10 @@ function kpiTrendClass(k) {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="p in INFRA_PROCS" :key="p.inst">
+              <tr v-if="!procs.length">
+                <td colspan="5" class="empty-cell">暂无进程探针 · 空列表合法</td>
+              </tr>
+              <tr v-for="p in procs" :key="p.inst">
                 <td><b>{{ p.comp }}</b></td>
                 <td class="inst-cell">{{ p.inst }}</td>
                 <td>
@@ -201,7 +295,7 @@ function kpiTrendClass(k) {
                 <td class="metric-cell">{{ p.metric }}</td>
                 <td>
                   <button type="button" class="btn-link btn-sm" @click.stop="onProcAct(p)">
-                    {{ p.act }}
+                    {{ p.act || '详情' }}
                   </button>
                 </td>
               </tr>
@@ -213,18 +307,21 @@ function kpiTrendClass(k) {
       <div class="card">
         <div class="card-header">
           <div class="card-title">
-            🚨 基础设施告警事件流 <span class="tip">· 夜莺分级路由 · 已去重/抑制</span>
+            🚨 基础设施告警事件流 <span class="tip">· 按优先级路由</span>
           </div>
           <button type="button" class="btn btn-sm" @click="silenceAlerts">🔇 静默</button>
         </div>
         <div class="card-body infra-scroll infra-alerts">
-          <div v-for="(a, i) in INFRA_ALERTS" :key="i" class="infra-alert-row">
+          <div v-if="!alerts.length" class="empty-cell">暂无告警 · 空列表合法，不回落演示事件</div>
+          <div v-for="(a, i) in alerts" :key="i" class="infra-alert-row">
             <span class="tag" :class="infraSevTag(a.sev)" style="flex-shrink: 0">{{ a.sev }}</span>
             <div class="infra-alert-main">
               <div class="infra-alert-title">{{ a.live ? '🔴 ' : '' }}{{ a.t }}</div>
               <div class="infra-alert-meta">{{ a.time }} · {{ a.host }} · {{ a.act }}</div>
             </div>
-            <button type="button" class="btn-link btn-sm" @click="goLinktrace">链路影响→</button>
+            <button type="button" class="btn-link btn-sm" @click="onAlertAct(a)">
+              {{ a.sev === '容量' || (a.t && String(a.t).includes('磁盘')) ? '存储趋势→' : '链路影响→' }}
+            </button>
           </div>
         </div>
       </div>
@@ -234,11 +331,15 @@ function kpiTrendClass(k) {
       <article class="card">
         <div class="card-header">
           <div class="card-title">
-            📈 容量趋势与扩容建议 <span class="tip">· VM downsample 7/30 天</span>
+            📈 容量趋势与扩容建议 <span class="tip">· 近 7/30 天</span>
           </div>
+          <button type="button" class="btn btn-sm" @click="goStorageTrend()">去存储趋势 →</button>
         </div>
         <div class="card-body infra-tips">
-          <div v-for="(tip, i) in INFRA_CAPACITY_TIPS" :key="i" class="infra-tip">
+          <div v-if="!capacityTips.length" class="empty-cell">
+            暂无容量建议 · 无采集时空态合法
+          </div>
+          <div v-for="(tip, i) in capacityTips" :key="i" class="infra-tip">
             {{ tip.icon }}
             <b v-if="tip.bold">{{ tip.bold }}</b>{{ tip.text }}
           </div>
@@ -273,9 +374,27 @@ function kpiTrendClass(k) {
 </template>
 
 <style scoped>
-.infra-ver {
+.infra-banner {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: var(--bg-2);
+  color: var(--text-2);
   font-size: 12px;
-  align-self: center;
+  line-height: 1.5;
+}
+.infra-banner.warn {
+  background: var(--warning-light);
+  color: var(--text-1);
+}
+.infra-banner code {
+  font-size: 11px;
+}
+.empty-cell {
+  text-align: center;
+  color: var(--text-3);
+  padding: 24px !important;
+  font-size: 12px;
 }
 .infra-kpi {
   grid-template-columns: repeat(4, 1fr);
@@ -295,6 +414,7 @@ function kpiTrendClass(k) {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+  align-items: center;
 }
 .infra-table-wrap {
   padding: 0;

@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import AppDrawer from '@/components/common/AppDrawer.vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import { useToast } from '@/composables/useToast'
 import { useStorageTrend } from '@/composables/useStorageTrend'
@@ -29,18 +30,40 @@ const {
   showbackCostNote,
   collectBanner,
   chartFoot,
+  dualChart,
+  detailOpen,
+  detailLoading,
+  detailData,
+  detailError,
+  detailCurve,
   loadAll,
   setRange,
   setTableFilter,
+  openDetail,
+  closeDetail,
+  downloadReport,
   lifecycleQuery,
-  stBarHeight,
   stGrowthCls,
+  humanBytes,
 } = useStorageTrend()
+
+const highlightBucket = computed(() => {
+  const b = route.query.bucket
+  return b ? String(b) : ''
+})
+
+const capacityRowsView = computed(() => {
+  const rows = capacityRows.value || []
+  if (!highlightBucket.value) return rows
+  const hit = rows.filter((r) => String(r.label || '').includes(highlightBucket.value))
+  return hit.length ? hit : rows
+})
 
 const subtitle = computed(() => {
   const b = collectBanner.value
   const src = b?.source ? ' · ' + String(b.source).split(';')[0] : ''
-  return `三口径度量 · ${range.value} 窗口 · 建议只深链生命周期${src}`
+  const bucket = highlightBucket.value ? ` · 聚焦桶 ${highlightBucket.value}` : ''
+  return `三口径度量 · ${range.value} 窗口 · 建议只深链生命周期${src}${bucket}`
 })
 
 async function reload() {
@@ -53,6 +76,10 @@ onMounted(async () => {
   }
   try {
     await reload()
+    const table = route.query.table
+    if (table) {
+      await openDetail(String(table), currentWs.value)
+    }
   } catch (e) {
     showToast(`存储趋势加载失败：${e.message || e}`, 'error')
   }
@@ -84,8 +111,17 @@ async function refreshMetrics() {
   }
 }
 
-function exportReport() {
-  showToast('📄 存储日报导出 · P1 接 /storage/report/export', 'info')
+async function exportReport() {
+  try {
+    const res = await downloadReport(currentWs.value)
+    if (res?.source === 'client-fallback') {
+      showToast('📄 已下载本地拼装日报（后端 export 未就绪或格式未知）', 'info')
+    } else {
+      showToast('📄 存储日报已下载', 'success')
+    }
+  } catch (e) {
+    showToast(`导出失败：${e.message || e}`, 'error')
+  }
 }
 
 function goLifecycle(extra = {}) {
@@ -103,18 +139,21 @@ function goQuerygov(ws) {
   })
 }
 
+function goCatalog(q) {
+  router.push({ path: '/catalog', query: { q } })
+}
+
 /** 本页只读：合并/过期一律深链主台 */
 function runAction(kind, table, adviceId) {
   if (kind === 'catalog' && table) {
-    router.push({ path: '/catalog', query: { q: table } })
+    goCatalog(table)
     return
   }
   goLifecycle(lifecycleQuery(kind, table, adviceId))
 }
 
-const dailyMax = () => {
-  const vals = daily.value.map((d) => Number(d.total) || 0)
-  return Math.max(3.5, ...vals, 1)
+function onRowClick(row) {
+  openDetail(row.table, row.ws && row.ws !== '—' ? row.ws : currentWs.value)
 }
 
 const FILTERS = [
@@ -129,7 +168,8 @@ const RANGES = ['7d', '30d', '90d']
 
 <template>
   <div class="st-page">
-    <PageHeader title="存储趋势" :subtitle="subtitle" :guide="guide">
+    <PageHeader
+      page-id="storage-trend" title="存储趋势" :subtitle="subtitle" :guide="guide">
       <div class="st-range">
         <button
           v-for="r in RANGES"
@@ -175,32 +215,155 @@ const RANGES = ['7d', '30d', '90d']
         <div class="card-header">
           <div class="card-title">
             📈 存储趋势（{{ range }}）
-            <span class="tip">· 单位 TB · 物理日终水位</span>
+            <span class="tip">· 单位 TB · 物理/活跃双线 + 可回收缺口</span>
           </div>
-          <span class="tag tag-blue">物理</span>
+          <div class="st-legend">
+            <span class="st-leg phys">物理</span>
+            <span class="st-leg act">活跃</span>
+            <span class="st-leg gap">缺口</span>
+            <span v-if="dualChart.showForecast" class="st-leg fc">预测</span>
+          </div>
         </div>
         <div class="card-body">
-          <div class="st-chart">
-            <div
-              v-for="d in daily"
-              :key="d.day"
-              class="st-col"
-              :title="`${d.day} · 物理 ${d.total} TB · 活跃 ${d.active ?? '—'} TB`"
+          <div v-if="!daily.length" class="st-chart-empty">暂无趋势点</div>
+          <svg
+            v-else
+            class="st-svg"
+            :viewBox="dualChart.viewBox"
+            preserveAspectRatio="xMidYMid meet"
+            role="img"
+            aria-label="物理与活跃双线趋势"
+          >
+            <line
+              v-for="(t, i) in dualChart.yTicks"
+              :key="'gy' + i"
+              :x1="40"
+              :x2="dualChart.width - 16"
+              :y1="t.y"
+              :y2="t.y"
+              class="st-grid"
+            />
+            <text
+              v-for="(t, i) in dualChart.yTicks"
+              :key="'yl' + i"
+              :x="36"
+              :y="t.y + 3"
+              class="st-axis"
+              text-anchor="end"
             >
-              <div class="st-bar-wrap">
-                <div
-                  class="st-bar"
-                  :class="{ hot: d.total >= dailyMax() * 0.95 }"
-                  :style="{ height: `${stBarHeight(d.total, dailyMax())}%` }"
-                />
-              </div>
-              <div class="st-val">{{ d.total }}</div>
-              <div class="st-day">{{ String(d.day).slice(-2) }}</div>
-            </div>
-          </div>
+              {{ t.text }}
+            </text>
+
+            <line
+              v-if="dualChart.capacityY != null"
+              :x1="40"
+              :x2="dualChart.width - 16"
+              :y1="dualChart.capacityY"
+              :y2="dualChart.capacityY"
+              class="st-cap-line"
+            />
+            <text
+              v-if="dualChart.capacityY != null"
+              :x="dualChart.width - 18"
+              :y="dualChart.capacityY - 4"
+              class="st-cap-lab"
+              text-anchor="end"
+            >
+              容量 {{ dualChart.capacityLabel }}
+            </text>
+
+            <path v-if="dualChart.gapPath" :d="dualChart.gapPath" class="st-gap" />
+
+            <path
+              v-if="dualChart.forecastBand"
+              :d="dualChart.forecastBand"
+              class="st-fc-band"
+            />
+            <polyline
+              v-if="dualChart.forecastP95"
+              :points="dualChart.forecastP95"
+              class="st-fc-line p95"
+              fill="none"
+            />
+            <polyline
+              v-if="dualChart.forecastP50"
+              :points="dualChart.forecastP50"
+              class="st-fc-line p50"
+              fill="none"
+            />
+
+            <polyline
+              v-if="dualChart.physicalLine"
+              :points="dualChart.physicalLine"
+              class="st-line phys"
+              fill="none"
+            />
+            <polyline
+              v-if="dualChart.activeLine"
+              :points="dualChart.activeLine"
+              class="st-line act"
+              fill="none"
+            />
+
+            <circle
+              v-for="(p, i) in dualChart.physicalPts"
+              :key="'pp' + i"
+              :cx="p.x"
+              :cy="p.y"
+              r="2.5"
+              class="st-dot-phys"
+            >
+              <title>{{ p.day }} · 物理 {{ p.v }} TB · 活跃 {{ dualChart.activePts[i]?.v ?? '—' }} TB</title>
+            </circle>
+
+            <g v-if="dualChart.intersectP95">
+              <circle
+                :cx="dualChart.intersectP95.x"
+                :cy="dualChart.intersectP95.y"
+                r="4"
+                class="st-intersect p95"
+              />
+              <text
+                :x="dualChart.intersectP95.x"
+                :y="dualChart.intersectP95.y - 8"
+                class="st-intersect-lab"
+                text-anchor="middle"
+              >
+                {{ dualChart.intersectP95.label }}
+              </text>
+            </g>
+            <g v-if="dualChart.intersectP50">
+              <circle
+                :cx="dualChart.intersectP50.x"
+                :cy="dualChart.intersectP50.y"
+                r="4"
+                class="st-intersect p50"
+              />
+              <text
+                :x="dualChart.intersectP50.x"
+                :y="dualChart.intersectP50.y - 8"
+                class="st-intersect-lab"
+                text-anchor="middle"
+              >
+                {{ dualChart.intersectP50.label }}
+              </text>
+            </g>
+
+            <text
+              v-for="(l, i) in dualChart.xLabels"
+              :key="'xl' + i"
+              :x="l.x"
+              :y="l.y"
+              class="st-axis"
+              text-anchor="middle"
+            >
+              {{ l.text }}
+            </text>
+          </svg>
+          <p v-if="dualChart.forecastNote" class="st-fc-note">{{ dualChart.forecastNote }}</p>
           <div class="st-chart-foot">
             <span>起始 {{ chartFoot.start }}</span>
-            <span>今日 {{ chartFoot.end }}</span>
+            <span>今日 {{ chartFoot.end }} · {{ chartFoot.gap }}</span>
             <span class="st-delta">{{ chartFoot.delta }}</span>
           </div>
         </div>
@@ -248,11 +411,11 @@ const RANGES = ['7d', '30d', '90d']
         <div class="card-header">
           <div class="card-title">
             💧 桶水位 · days-to-full
-            <span class="tip">· 按桶分列 · CK 单列</span>
+            <span class="tip">· 按桶分列 · 加速层单列</span>
           </div>
         </div>
         <div class="card-body">
-          <div v-for="(b, i) in capacityRows" :key="i" class="st-cap-row">
+          <div v-for="(b, i) in capacityRowsView" :key="i" class="st-cap-row">
             <div class="st-cap-label">{{ b.label }}</div>
             <div class="progress st-cap-bar">
               <div class="progress-bar" :style="{ width: `${b.pct}%`, background: b.gradient }" />
@@ -295,7 +458,7 @@ const RANGES = ['7d', '30d', '90d']
       <div class="card-header">
         <div class="card-title">
           🏢 按空间 showback
-          <span class="tip">· 配额读 gov_ws_quota · 金额引 §24.3 同源单价</span>
+          <span class="tip">· 配额读 gov_ws_quota · 金额引 FinOps 同源单价</span>
         </div>
         <button type="button" class="btn btn-sm" @click="goQuerygov()">去查询治理成本 →</button>
       </div>
@@ -344,7 +507,7 @@ const RANGES = ['7d', '30d', '90d']
       <div class="card-header st-table-hd">
         <div class="card-title">
           ⚠️ 表级画像
-          <span class="tip">· 三口径 · {{ range }} · 动作只深链</span>
+          <span class="tip">· 三口径 · {{ range }} · 点行开抽屉 · 动作只深链</span>
         </div>
         <div class="st-filters">
           <button
@@ -376,14 +539,23 @@ const RANGES = ['7d', '30d', '90d']
             </tr>
           </thead>
           <tbody>
-            <tr v-for="row in tableRows" :key="row.table + (row.ws || '')">
-              <td><code>{{ row.table }}</code></td>
+            <tr
+              v-for="row in tableRows"
+              :key="row.table + (row.ws || '')"
+              class="st-row"
+              @click="onRowClick(row)"
+            >
+              <td>
+                <button type="button" class="btn-link" @click.stop="onRowClick(row)">
+                  <code>{{ row.table }}</code>
+                </button>
+              </td>
               <td>
                 <button
                   v-if="row.ws && row.ws !== '—'"
                   type="button"
                   class="btn-link"
-                  @click="goWorkspace(row.ws)"
+                  @click.stop="goWorkspace(row.ws)"
                 >
                   {{ row.ws }}
                 </button>
@@ -398,7 +570,11 @@ const RANGES = ['7d', '30d', '90d']
               </td>
               <td style="font-size: 12px; color: var(--text-2)">{{ row.reason }}</td>
               <td>
-                <button type="button" class="btn-link" @click="runAction(row.action, row.table)">
+                <button
+                  type="button"
+                  class="btn-link"
+                  @click.stop="runAction(row.action, row.table)"
+                >
                   {{ row.actionLabel }}
                 </button>
               </td>
@@ -412,6 +588,138 @@ const RANGES = ['7d', '30d', '90d']
         </table>
       </div>
     </div>
+
+    <AppDrawer
+      :open="detailOpen"
+      storage-key="storage-trend-detail"
+      :default-width="560"
+      @close="closeDetail"
+    >
+      <div class="st-drawer">
+        <div class="st-drawer-hd">
+          <div>
+            <div class="st-drawer-title">
+              {{ detailData?.fqtn || '表详情' }}
+            </div>
+            <div class="st-drawer-sub tip">
+              90d 三口径 · 分区 / 快照 · 最近作业
+              <span v-if="detailLoading"> · 加载中…</span>
+            </div>
+          </div>
+          <button type="button" class="btn btn-sm" @click="closeDetail">关闭</button>
+        </div>
+
+        <div v-if="detailLoading && !detailData" class="st-drawer-empty">加载中…</div>
+        <div v-else-if="detailError && !detailData" class="st-drawer-empty warn">
+          {{ detailError.message || detailError }}
+        </div>
+        <template v-else-if="detailData">
+          <div class="st-drawer-kpis">
+            <div>
+              <span class="tip">活跃</span>
+              <b>{{ humanBytes(detailData.row?.activeBytes) }}</b>
+            </div>
+            <div>
+              <span class="tip">物理</span>
+              <b>{{ humanBytes(detailData.row?.totalBytes) }}</b>
+            </div>
+            <div>
+              <span class="tip">可回收</span>
+              <b>{{ humanBytes(detailData.row?.reclaimableBytes) }}</b>
+            </div>
+          </div>
+
+          <div class="st-drawer-sec">
+            <div class="st-drawer-sec-t">90d 曲线</div>
+            <svg
+              v-if="detailCurve?.physicalLine"
+              class="st-svg st-svg-sm"
+              :viewBox="detailCurve.viewBox"
+              preserveAspectRatio="xMidYMid meet"
+            >
+              <path v-if="detailCurve.gapPath" :d="detailCurve.gapPath" class="st-gap" />
+              <polyline :points="detailCurve.physicalLine" class="st-line phys" fill="none" />
+              <polyline :points="detailCurve.activeLine" class="st-line act" fill="none" />
+              <text
+                v-for="(l, i) in detailCurve.xLabels"
+                :key="'dx' + i"
+                :x="l.x"
+                :y="l.y"
+                class="st-axis"
+                text-anchor="middle"
+              >
+                {{ l.text }}
+              </text>
+            </svg>
+            <p v-else class="tip">暂无曲线</p>
+          </div>
+
+          <div class="st-drawer-sec">
+            <div class="st-drawer-sec-t">分区 / 快照</div>
+            <div class="st-kv">
+              <div>
+                <span>分区数</span>
+                <b>{{ detailData.partitionHint?.partitionCount ?? detailData.row?.partitionCount ?? '—' }}</b>
+              </div>
+              <div>
+                <span>快照数</span>
+                <b>{{ detailData.snapshotCount ?? detailData.row?.snapshotCount ?? '—' }}</b>
+              </div>
+              <div>
+                <span>最老快照年龄</span>
+                <b>
+                  <template v-if="detailData.oldestSnapshotAgeDays != null">
+                    {{ detailData.oldestSnapshotAgeDays }} 天
+                  </template>
+                  <template v-else>—</template>
+                </b>
+              </div>
+            </div>
+            <p v-if="detailData.partitionHint?.note" class="tip" style="margin-top: 6px">
+              {{ detailData.partitionHint.note }}
+            </p>
+          </div>
+
+          <div v-if="detailData.policy" class="st-drawer-sec">
+            <div class="st-drawer-sec-t">当前策略</div>
+            <div class="st-kv">
+              <div><span>keepCount</span><b>{{ detailData.policy.keepCount ?? '—' }}</b></div>
+              <div><span>keepDays</span><b>{{ detailData.policy.keepDays ?? '—' }}</b></div>
+              <div><span>compact</span><b>{{ detailData.policy.compactLevel ?? '—' }}</b></div>
+            </div>
+          </div>
+
+          <div class="st-drawer-sec">
+            <div class="st-drawer-sec-t">最近生命周期作业</div>
+            <div v-if="!detailData.recentRuns?.length" class="tip">暂无作业记录</div>
+            <div v-else class="st-runs">
+              <div v-for="r in detailData.recentRuns" :key="r.runId || r.id" class="st-run-row">
+                <span class="tag tag-blue">{{ r.kind }}</span>
+                <span>{{ r.status }}</span>
+                <span class="tip">{{ r.startedAt }}</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="st-drawer-acts">
+            <button
+              type="button"
+              class="btn btn-sm"
+              @click="goCatalog(detailData.fqtn)"
+            >
+              看资产 →
+            </button>
+            <button
+              type="button"
+              class="btn btn-sm btn-primary"
+              @click="goLifecycle({ table: detailData.fqtn, from: 'storage-trend' })"
+            >
+              看策略 / 去执行 →
+            </button>
+          </div>
+        </template>
+      </div>
+    </AppDrawer>
   </div>
 </template>
 
@@ -463,44 +771,121 @@ const RANGES = ['7d', '30d', '90d']
   margin-top: 16px;
 }
 
-.st-chart {
+.st-legend {
   display: flex;
-  align-items: flex-end;
-  gap: 8px;
-  height: 160px;
-  padding: 8px 4px 0;
-}
-.st-col {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
+  gap: 10px;
   align-items: center;
-  min-width: 0;
-}
-.st-bar-wrap {
-  flex: 1;
-  width: 100%;
-  display: flex;
-  align-items: flex-end;
-  justify-content: center;
-}
-.st-bar {
-  width: 70%;
-  max-width: 36px;
-  border-radius: 4px 4px 0 0;
-  background: linear-gradient(180deg, #4d8dff, #82aaff);
-  min-height: 8px;
-}
-.st-bar.hot {
-  background: linear-gradient(180deg, #ff7875, #ffa39e);
-}
-.st-val {
   font-size: 11px;
-  font-weight: 600;
-  margin-top: 4px;
+  color: var(--text-3);
 }
-.st-day {
+.st-leg::before {
+  content: '';
+  display: inline-block;
+  width: 10px;
+  height: 3px;
+  margin-right: 4px;
+  vertical-align: middle;
+  border-radius: 1px;
+}
+.st-leg.phys::before {
+  background: #4d8dff;
+}
+.st-leg.act::before {
+  background: #3dd68c;
+}
+.st-leg.gap::before {
+  height: 8px;
+  background: rgba(230, 180, 80, 0.35);
+}
+.st-leg.fc::before {
+  background: transparent;
+  border-top: 2px dashed #a78bfa;
+  height: 0;
+}
+
+.st-svg {
+  width: 100%;
+  height: 180px;
+  display: block;
+}
+.st-svg-sm {
+  height: 140px;
+}
+.st-chart-empty {
+  height: 160px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-3);
+  font-size: 13px;
+}
+.st-grid {
+  stroke: var(--border);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+.st-axis {
+  fill: var(--text-3);
   font-size: 10px;
+}
+.st-gap {
+  fill: rgba(230, 180, 80, 0.28);
+  stroke: none;
+}
+.st-line {
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.st-line.phys {
+  stroke: #4d8dff;
+}
+.st-line.act {
+  stroke: #3dd68c;
+}
+.st-dot-phys {
+  fill: #4d8dff;
+}
+.st-fc-band {
+  fill: rgba(167, 139, 250, 0.12);
+  stroke: none;
+}
+.st-fc-line {
+  stroke-width: 1.5;
+  stroke-dasharray: 5 4;
+}
+.st-fc-line.p50 {
+  stroke: #a78bfa;
+}
+.st-fc-line.p95 {
+  stroke: #f97316;
+}
+.st-cap-line {
+  stroke: var(--danger, #ff7875);
+  stroke-width: 1;
+  stroke-dasharray: 6 4;
+}
+.st-cap-lab {
+  fill: var(--danger, #ff7875);
+  font-size: 10px;
+}
+.st-intersect {
+  stroke: #fff;
+  stroke-width: 1.5;
+}
+.st-intersect.p50 {
+  fill: #a78bfa;
+}
+.st-intersect.p95 {
+  fill: #f97316;
+}
+.st-intersect-lab {
+  fill: var(--text-2);
+  font-size: 10px;
+}
+.st-fc-note {
+  margin: 6px 0 0;
+  font-size: 11px;
   color: var(--text-3);
 }
 .st-chart-foot {
@@ -511,6 +896,8 @@ const RANGES = ['7d', '30d', '90d']
   border-top: 1px dashed var(--border);
   font-size: 12px;
   color: var(--text-3);
+  gap: 8px;
+  flex-wrap: wrap;
 }
 .st-delta {
   color: var(--warning);
@@ -634,6 +1021,13 @@ const RANGES = ['7d', '30d', '90d']
   gap: 8px;
 }
 
+.st-row {
+  cursor: pointer;
+}
+.st-row:hover {
+  background: var(--bg-2, #f7f8fa);
+}
+
 .btn-link {
   border: none;
   background: none;
@@ -644,5 +1038,98 @@ const RANGES = ['7d', '30d', '90d']
 }
 .btn-link:hover {
   text-decoration: underline;
+}
+
+.st-drawer {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 16px 18px 20px;
+  box-sizing: border-box;
+  overflow: auto;
+}
+.st-drawer-hd {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.st-drawer-title {
+  font-size: 15px;
+  font-weight: 700;
+  word-break: break-all;
+}
+.st-drawer-sub {
+  margin-top: 4px;
+}
+.st-drawer-empty {
+  padding: 32px 8px;
+  text-align: center;
+  color: var(--text-3);
+  font-size: 13px;
+}
+.st-drawer-empty.warn {
+  color: var(--warning);
+}
+.st-drawer-kpis {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.st-drawer-kpis > div {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+}
+.st-drawer-sec {
+  margin-bottom: 14px;
+}
+.st-drawer-sec-t {
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.st-kv {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  font-size: 12px;
+}
+.st-kv > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--text-3);
+}
+.st-kv b {
+  color: var(--text-1, #1f2329);
+  font-weight: 600;
+}
+.st-runs {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.st-run-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.st-drawer-acts {
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 </style>

@@ -370,7 +370,7 @@ async function doExecute() {
   if (res) {
     confirmNo.value = ''
     drawerTab.value = 'exec'
-    showToast('⚡ 已执行：Iceberg 已合并并定向过期快照，进入验证', 'success')
+    showToast('⚡ 已执行：湖表已合并并定向过期快照，进入验证', 'success')
   }
 }
 
@@ -447,8 +447,9 @@ function exportList() {
 <template>
   <div class="cp-page">
     <PageHeader
+      page-id="compliance"
       title="合规删除 / 被遗忘权"
-      subtitle="主体索引 · 载体矩阵 · Iceberg/CK 硬删序列 · 限制处理兜底 · 证据链"
+      subtitle="主体索引 · 载体矩阵 · 硬删序列 · 限制处理兜底 · 证据链"
       :guide="guide"
     >
       <button type="button" class="btn btn-sm" @click="exportList">📤 导出</button>
@@ -506,8 +507,8 @@ function exportList() {
         </div>
       </div>
       <div class="cp-flow-note">
-        ⚠ Iceberg 必须走完 <code>DELETE → rewrite_data_files → 定向 expire_snapshots → 孤儿收尾</code>：
-        只做 DELETE 等于没删（旧快照仍可时间旅行读回）；只做 TTL 过期也不等于合规删除。
+        ⚠ 湖表必须走完 <code>删除 → 重写数据文件 → 定向过期快照 → 孤儿收尾</code>：
+        只做删除等于没删（旧快照仍可时间旅行读回）；只做 TTL 过期也不等于合规删除。
       </div>
     </div>
 
@@ -873,8 +874,8 @@ function exportList() {
           <div class="cp-exec-box">
             <div class="cp-sec-title">执行（不可逆）</div>
             <div class="cp-warn">
-              执行将按 源库 → 湖表 → CK → 回流 → 出湖 → 平台 → 备份 的顺序推进；
-              涉及的 Iceberg 表会被定向 <code>expire_snapshots(retain_last=1)</code>，短期失去回滚窗口。
+              执行将按 源库 → 湖表 → 加速层 → 回流 → 出湖 → 平台 → 备份 的顺序推进；
+              涉及的湖表会被定向过期快照（仅保留最近 1 份），短期失去回滚窗口。
             </div>
             <div class="cp-inline-form">
               <input v-model="confirmNo" class="input input-sm" :placeholder="`回填 ${detail.reqNo} 确认`" />

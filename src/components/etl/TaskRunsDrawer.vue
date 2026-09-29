@@ -731,7 +731,7 @@ checkpoint: {{ detail.app.checkpoint }}</pre>
                 </div>
               </div>
               <div v-if="nodeLogMeta" class="form-hint trd-log-meta">
-                来源 {{ nodeLogMeta.source === 'ds' ? 'DolphinScheduler' : '门户' }}
+                来源 {{ nodeLogMeta.source === 'ds' ? '调度器' : '门户' }}
                 <template v-if="nodeLogMeta.taskInstanceId"> · taskInstanceId={{ nodeLogMeta.taskInstanceId }}</template>
                 · 已读 {{ nodeLogLineNum }} 行
                 <template v-if="nodeLogMeta.degraded"> · 降级</template>

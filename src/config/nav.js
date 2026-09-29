@@ -1,12 +1,14 @@
-/** 侧栏导航 · 与演示 HTML 模块顺序一致 */
+/** 侧栏导航 · 与演示 HTML 模块顺序一致（文案经 i18n，label 为中文兜底） */
 export const NAV_GROUPS = [
   {
+    key: 'workbench',
     title: '工作台',
     items: [
       { id: 'overview', label: '总览仪表盘', icon: '🏠', path: '/' },
     ],
   },
   {
+    key: 'ingest',
     title: '① 数据接入',
     items: [
       { id: 'datasource', label: '数据源管理', icon: '🔌', path: '/datasource' },
@@ -14,8 +16,10 @@ export const NAV_GROUPS = [
     ],
   },
   {
+    key: 'asset',
     title: '② 数据资产',
     items: [
+      { id: 'domain', label: '数据域', icon: '🗂️', path: '/domain' },
       { id: 'catalog', label: '资产目录', icon: '📚', path: '/catalog' },
       { id: 'lineage', label: '字段血缘', icon: '🔗', path: '/lineage' },
       { id: 'standard', label: '数据标准', icon: '📐', path: '/standard' },
@@ -25,6 +29,7 @@ export const NAV_GROUPS = [
     ],
   },
   {
+    key: 'dev',
     title: '③ 数据开发',
     items: [
       { id: 'develop', label: '数据开发 / SQL', icon: '💻', path: '/develop' },
@@ -33,6 +38,7 @@ export const NAV_GROUPS = [
     ],
   },
   {
+    key: 'quality',
     title: '④ 数据质量',
     items: [
       { id: 'quality', label: '数据质量', icon: '✅', path: '/quality', badge: '3' },
@@ -41,6 +47,7 @@ export const NAV_GROUPS = [
     ],
   },
   {
+    key: 'service',
     title: '⑤ 数据服务',
     items: [
       { id: 'dataservice', label: '数据服务', icon: '🔌', path: '/dataservice' },
@@ -49,12 +56,14 @@ export const NAV_GROUPS = [
     ],
   },
   {
+    key: 'apply',
     title: '⑥ 申请与审批',
     items: [
       { id: 'apply', label: '申请中心', icon: '📝', path: '/apply' },
     ],
   },
   {
+    key: 'ops',
     title: '⑦ 运维监控',
     items: [
       { id: 'ops', label: '任务运维', icon: '⚙️', path: '/ops' },
@@ -66,6 +75,7 @@ export const NAV_GROUPS = [
     ],
   },
   {
+    key: 'platform',
     title: '⑧ 平台能力',
     items: [
       { id: 'workspace', label: '工作空间', icon: '🗂️', path: '/workspace' },
@@ -75,6 +85,7 @@ export const NAV_GROUPS = [
     ],
   },
   {
+    key: 'sys',
     title: '⑨ 系统管理',
     items: [
       { id: 'sys-org', label: '部门管理', icon: '🏢', path: '/sys/org' },

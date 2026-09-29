@@ -62,6 +62,8 @@ function enrichGraphNodes(nodes = [], focusTable, edges = []) {
       desc: n.desc || '',
       icon: n.icon || LAYER_ICON[guessLayer(id)] || '📋',
       assetId: n.assetId,
+      metricCode: n.metricCode || (n.type === 'metric' || layer === 'metric' ? id : undefined),
+      path: n.path,
       focus: normalizeTable(id) === normalizeTable(focusTable),
       hop: n.hop,
     }
@@ -81,6 +83,25 @@ function guessLayer(table) {
 
 function normalizeTable(t) {
   return String(t || '').trim().toLowerCase()
+}
+
+function mapImpactItem(x = {}) {
+  return {
+    key: x.key,
+    type: x.type || '表',
+    note: x.note || '',
+    assetId: x.assetId,
+    nodeId: x.nodeId,
+    metricCode: x.metricCode,
+    name: x.name,
+    path: x.path,
+    owner: x.owner,
+    ver: x.ver,
+    kind: x.kind,
+    status: x.status,
+    confidence: x.confidence,
+    hop: x.hop,
+  }
 }
 
 function focusApiKey(focusId) {
@@ -150,20 +171,10 @@ export function useLineage() {
         omDegraded: !!g?.omDegraded,
       }
       impactPayload.value = {
-        up: (imp?.up || []).map((x) => ({
-          key: x.key,
-          type: x.type || '表',
-          note: x.note || '',
-          assetId: x.assetId,
-          nodeId: x.nodeId,
-        })),
-        down: (imp?.down || []).map((x) => ({
-          key: x.key,
-          type: x.type || '表',
-          note: x.note || '',
-          assetId: x.assetId,
-          nodeId: x.nodeId,
-        })),
+        up: (imp?.up || []).map(mapImpactItem),
+        down: (imp?.down || []).map(mapImpactItem),
+        metricCount: imp?.metricCount ?? 0,
+        source: imp?.source,
       }
       return { graph: graphPayload.value, impact: impactPayload.value }
     } catch (e) {

@@ -5,7 +5,7 @@ export const CONTRACT_CDC_FLOW = [
   { icon: '📡', title: 'Kafka', sub: '__deleted=true' },
   { icon: '🧊', title: 'ODS', sub: 'equality delete' },
   { icon: '📊', title: 'DWD', sub: '日批剔除/拉链闭链' },
-  { icon: '📈', title: 'ADS → CK', sub: '重算+重导' },
+  { icon: '📈', title: 'ADS → 加速层', sub: '重算+重导' },
 ]
 
 export const ICEBERG_EVOLUTION_RULES = [
@@ -18,13 +18,13 @@ export const ICEBERG_EVOLUTION_RULES = [
   {
     change: '列改名',
     allow: 'warn',
-    action: 'Iceberg 用列 ID 不靠名字；SQL/报表按 ID 映射后改展示名',
+    action: '湖表用列 ID 不靠名字；SQL/报表按 ID 映射后改展示名',
     ck: '—',
   },
   {
     change: '改类型（int→long）',
     allow: 'warn',
-    action: '仅 Iceberg 支持的提升；CK 同步表单独 ALTER',
+    action: '仅湖表支持的提升；加速层同步表单独 ALTER',
     ck: 'ALTER MODIFY',
   },
   {
@@ -37,12 +37,12 @@ export const ICEBERG_EVOLUTION_RULES = [
 
 export const CONTRACT_CDC_SEMANTICS = [
   { q: '首次接入', a: '先全量快照（有界）再切增量；同一主键幂等写入 ODS' },
-  { q: '有主键', a: 'Iceberg equality upsert；op=D 必须 delete，不能吞掉' },
+  { q: '有主键', a: '湖表等式 upsert；op=D 必须 delete，不能吞掉' },
   { q: '无主键表', a: '只允许 append-only ODS，或源端补业务键；禁止盲 upsert' },
   { q: '乱序 / 迟到', a: '事件时间 + watermark；迟到写入侧输出或修数 topic，不默默丢' },
   { q: '更新覆盖', a: 'ODS 保留 __op, __ts_ms, __deleted；DWD 再做成当前快照或拉链' },
   { q: '时区', a: '统一 UTC 存储，展示层转本地' },
-  { q: '源库 DDL', a: '先契约，Flink 新版本兼容，再放行 binlog' },
+  { q: '源库 DDL', a: '先契约，流作业新版本兼容，再放行 binlog' },
 ]
 
 const SCHEMA_STATUS = {

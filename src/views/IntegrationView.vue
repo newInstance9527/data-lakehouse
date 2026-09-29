@@ -415,8 +415,8 @@ async function onSetStatus(status) {
       showToast(
         synced
           ? deg
-            ? `${label}（门户已更新；DS 同步降级）`
-            : `${label} · DS 已同步`
+            ? `${label}（门户已更新；调度同步降级）`
+            : `${label} · 调度已同步`
           : label,
         deg ? 'warning' : 'success',
       )
@@ -505,7 +505,7 @@ async function onPublish() {
       const sinkN = se.sinkTarget?.created != null ? `建表${se.sinkTarget.created}` : ''
       const side = [mapN, linN, dqN, vaultN, sinkN].filter(Boolean).join('·')
       const tip = resp?.degraded
-        ? `（DS 降级，已登记 ${wf}）`
+        ? `（调度降级，已登记 ${wf}）`
         : [wf && `→ ${wf}`, side, se.qualityGateBlocked ? '⚠质量阻断' : ''].filter(Boolean).join(' ')
       showToast(`🚀 已发布 ${current.value.name} ${current.value.ver} ${tip}`.trim(), se.qualityGateBlocked ? 'warning' : 'success')
     } catch (e) {
@@ -540,7 +540,7 @@ async function onDeleteTask() {
     try {
       const resp = await deleteCurrent()
       const deg = resp?.dsSchedule?.degraded
-      showToast(deg ? '已删除（DS 下线同步降级）' : '已删除任务', deg ? 'warning' : 'success')
+      showToast(deg ? '已删除（调度下线同步降级）' : '已删除任务', deg ? 'warning' : 'success')
     } catch (e) {
       if (!toastNeedApply(e)) showToast(e.message || '删除失败', 'error')
     }
@@ -584,8 +584,9 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 <template>
   <div class="etl-page">
     <PageHeader
+      page-id="integration"
       title="🛠️ ETL 编排"
-      subtitle="Flink / Spark / DataX · 对接门户 /lh/etl"
+      subtitle="多引擎编排入湖清洗出湖 · 画布配置 · 试跑与发布"
       :guide-title="guide.title"
       :guide="guide"
     >
@@ -643,7 +644,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
             </div>
           </button>
           <div v-if="loading && !filteredTasks.length" class="dag-config-empty">加载任务中…</div>
-          <div v-else-if="!filteredTasks.length" class="dag-config-empty">无匹配任务 · 可新建或检查后端 /lh/etl</div>
+          <div v-else-if="!filteredTasks.length" class="dag-config-empty">无匹配任务 · 可新建或刷新列表</div>
         </div>
       </aside>
       <button

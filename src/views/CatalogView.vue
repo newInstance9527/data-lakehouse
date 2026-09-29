@@ -8,7 +8,8 @@ import { useAssets } from '@/composables/useAssets'
 import { useDatasources } from '@/composables/useDatasources'
 import { useToast } from '@/composables/useToast'
 import { useSession } from '@/composables/useSession'
-import { ASSET_DOMAINS, ASSET_LAYERS } from '@/data/assetMeta'
+import { ASSET_LAYERS } from '@/data/assetMeta'
+import { useDomains } from '@/composables/useDomains'
 import DsTypeIcon from '@/components/datasource/DsTypeIcon.vue'
 import { dsTypeMeta } from '@/data/dsForm'
 import { inferDsTypeCode } from '@/data/dsTypeIcons'
@@ -22,6 +23,7 @@ const catalogGuide = pageGuideOf('catalog')
 const { sources, loadSources, updateSource } = useDatasources()
 const { assets, loading, loadAssets, loadDetail, addAsset, findAsset } = useAssets()
 const { currentWs } = useSession()
+const { domainOptions, ensureDomains } = useDomains()
 
 const search = ref(String(route.query.q || ''))
 const domain = ref('')
@@ -122,7 +124,7 @@ watch(currentWs, () => reload())
 
 onMounted(async () => {
   try {
-    await loadSources()
+    await Promise.all([loadSources(), ensureDomains().catch(() => {})])
   } catch (e) {
     showToast(`加载数据源失败：${e.message || e}`, 'error')
   }
@@ -315,6 +317,7 @@ function onAssetUpdated(row) {
 <template>
   <div>
     <PageHeader
+      page-id="catalog"
       title="数据资产目录"
       :guide-title="catalogGuide.title"
       :guide="catalogGuide"
@@ -359,7 +362,7 @@ function onAssetUpdated(row) {
             <label>
               <input v-model="domain" type="radio" value="" /> 全部域
             </label>
-            <label v-for="d in ASSET_DOMAINS" :key="d.value">
+            <label v-for="d in domainOptions" :key="d.value">
               <input v-model="domain" type="radio" :value="d.value" /> {{ d.label }}
             </label>
           </div>
@@ -374,7 +377,7 @@ function onAssetUpdated(row) {
           </div>
           <select v-model="domain" class="select input-sm">
             <option value="">全部域</option>
-            <option v-for="d in ASSET_DOMAINS" :key="'tb-' + d.value" :value="d.value">
+            <option v-for="d in domainOptions" :key="'tb-' + d.value" :value="d.value">
               {{ d.label }}
             </option>
           </select>

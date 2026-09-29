@@ -46,12 +46,12 @@ const {
 function sqlrestBadge(s) {
   if (!s?.sqlrestProjectable) return null
   if (s.sqlrestProjected || s.sqlrestSyncState === 'synced') {
-    return { tag: 'tag-green', label: 'SQLREST✓', title: `已投影 #${s.sqlrestDatasourceId || ''}` }
+    return { tag: 'tag-green', label: '已投影', title: `已投影 #${s.sqlrestDatasourceId || ''}` }
   }
   if (s.sqlrestSyncState === 'error') {
-    return { tag: 'tag-red', label: '投影失败', title: s.sqlrestLastError || 'SQLREST 投影失败，可重试' }
+    return { tag: 'tag-red', label: '投影失败', title: s.sqlrestLastError || '接口服务投影失败，可重试' }
   }
-  return { tag: 'tag-orange', label: '待投影', title: '尚未投影到 SQLREST' }
+  return { tag: 'tag-orange', label: '待投影', title: '尚未投影到接口服务' }
 }
 
 async function retrySqlrest(s) {
@@ -63,7 +63,7 @@ async function retrySqlrest(s) {
     showToast(
       err > 0
         ? `投影失败 ${err} · 成功 ${ok}：${r?.details?.[0]?.message || s.sqlrestLastError || ''}`
-        : `已投影到 SQLREST · ${ok}`,
+        : `已投影到接口服务 · ${ok}`,
       err > 0 ? 'warning' : 'success',
     )
     await reloadSources()
@@ -206,10 +206,10 @@ const kpis = computed(() => {
   const types = new Set(all.map((s) => s.type))
   return [
     { label: '数据源总数', value: remote?.total ?? all.length, sub: '已注册', icon: '📚', color: 'var(--primary)' },
-    { label: '● 在线', value: remote?.online ?? all.filter((s) => s.status === 'online').length, sub: '正常可用', icon: '✅', color: 'var(--success)' },
-    { label: '⚠ 告警', value: remote?.warn ?? all.filter((s) => s.status === 'warn').length, sub: '需处理', icon: '⚠', color: 'var(--warning)' },
-    { label: '⏸ 停用', value: remote?.paused ?? all.filter((s) => s.status === 'paused').length, sub: '维护中', icon: '⏸', color: 'var(--text-3)' },
-    { label: '覆盖类型', value: remote?.typeCount ?? types.size, sub: '种异构源', icon: '🧩', color: '#722ed1' },
+    { label: '● 在线', value: remote?.online ?? all.filter((s) => s.status === 'online').length, sub: '正常可用', icon: '✅', color: 'var(--primary)' },
+    { label: '⚠ 告警', value: remote?.warn ?? all.filter((s) => s.status === 'warn').length, sub: '需处理', icon: '⚠', color: 'var(--primary)' },
+    { label: '⏸ 停用', value: remote?.paused ?? all.filter((s) => s.status === 'paused').length, sub: '维护中', icon: '⏸', color: 'var(--primary)' },
+    { label: '覆盖类型', value: remote?.typeCount ?? types.size, sub: '种异构源', icon: '🧩', color: 'var(--primary)' },
   ]
 })
 
@@ -226,16 +226,16 @@ const topoLayers = [
 ]
 
 const catColors = {
-  rdb: '#08979c',
+  rdb: '#1890ff',
   dw: '#1890ff',
-  mq: '#722ed1',
-  nosql: '#52c41a',
-  search: '#f5222d',
-  storage: '#595959',
-  api: '#722ed1',
-  dashboard: '#389e0d',
-  pipeline: '#13c2c2',
-  outbound: '#fa541c',
+  mq: '#1890ff',
+  nosql: '#1890ff',
+  search: '#1890ff',
+  storage: '#1890ff',
+  api: '#1890ff',
+  dashboard: '#1890ff',
+  pipeline: '#1890ff',
+  outbound: '#1890ff',
 }
 
 function clearFilter() {
@@ -388,7 +388,7 @@ async function onRegisterSubmit(payload) {
     // 新建时前端曾带临时 id，以服务端返回为准
     if (!existed && saved?.id) page.value = 1
     if (existed) showToast(`✅ 已更新数据源 ${body.name}`, 'success')
-    else showToast(`✅ 已注册 ${body.name}（门户已保存；Grav/OM 按类型尽力同步）`, 'success')
+    else showToast(`✅ 已注册 ${body.name}（门户已保存；元数据按类型尽力同步）`, 'success')
     await reloadSources()
     kpiRemote.value = await fetchDatasourceKpi(currentWs.value || 'default')
   } catch (e) {
@@ -432,6 +432,7 @@ function goPage(p) {
 <template>
   <div>
     <PageHeader
+      page-id="datasource"
       title="🔌 数据源管理中心"
       subtitle="多类型异构源注册 · 连通性管理 · Schema 同步 · 分类分级"
       :guide-title="dsGuide.title"
@@ -520,7 +521,7 @@ function goPage(p) {
                 <div v-if="sqlrestBadge(s)" class="ds-card-sqlrest" :title="sqlrestBadge(s).title">
                   <span class="tag" :class="sqlrestBadge(s).tag">{{ sqlrestBadge(s).label }}</span>
                   <button
-                    v-if="sqlrestBadge(s).label !== 'SQLREST✓' && canEditDatasource(s)"
+                    v-if="sqlrestBadge(s).label !== '已投影' && canEditDatasource(s)"
                     type="button"
                     class="btn-link btn-sm"
                     @click.stop="retrySqlrest(s)"
@@ -641,7 +642,7 @@ function goPage(p) {
 
           <div v-else class="ds-topo">
             <div style="font-size: 11px; color: var(--text-3); margin-bottom: 10px">
-              登记类型对齐 OpenMetadata 连接器分类 · 数据入湖 ≠ 仅采元数据 · 点击查看详情
+              登记类型覆盖关系库 / 消息 / 对象存储 / API 等 · 数据入湖 ≠ 仅采元数据 · 点击查看详情
             </div>
             <div v-for="L in topoLayers" :key="L.key" style="margin-bottom: 10px">
               <div style="font-weight: 600; font-size: 12px; color: var(--text-2); margin-bottom: 4px">{{ L.label }}</div>

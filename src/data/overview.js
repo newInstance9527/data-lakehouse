@@ -30,7 +30,7 @@ export const OVERVIEW_MODULES = [
 
 export const OV_PIPELINE = [
   { id: 'in', label: '接入', sub: '源 / CDC', to: '/datasource' },
-  { id: 'lake', label: '入湖加工', sub: 'Flink · Spark', to: '/integration' },
+  { id: 'lake', label: '入湖加工', sub: '流 · 批', to: '/integration' },
   { id: 'asset', label: '资产治理', sub: '目录 · 标准 · 血缘', to: '/catalog' },
   { id: 'govern', label: '质量安全', sub: '规则 · 脱敏', to: '/quality' },
   { id: 'serve', label: '服务消费', sub: 'API · 指标 · 查询', to: '/dataservice' },

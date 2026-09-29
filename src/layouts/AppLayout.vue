@@ -1,24 +1,53 @@
 <script setup>
 import { useRoute, useRouter } from 'vue-router'
 import { computed, onMounted, ref } from 'vue'
-import { CRUMBS } from '@/config/nav'
 import { useSession } from '@/composables/useSession'
 import { useToast } from '@/composables/useToast'
 import { useWorkspace } from '@/composables/useWorkspace'
 import { switchWsWithMemberGuard } from '@/composables/useWsSwitch'
+import { useLocale, t } from '@/composables/useLocale'
 import AppToast from '@/components/common/AppToast.vue'
 import ConfirmDeleteModal from '@/components/common/ConfirmDeleteModal.vue'
 import GlobalAiAssistant from '@/components/ai/GlobalAiAssistant.vue'
+import UiPrefsMenu from '@/components/common/UiPrefsMenu.vue'
 
 const route = useRoute()
 const router = useRouter()
 const { showToast } = useToast()
+const { locale } = useLocale()
 const { user, filteredNavGroups, logout, isSuperAdmin, currentWs, setCurrentWs } = useSession()
 /** 与 WorkspaceView 共用 spaces，创建/删除后顶栏自动刷新 */
 const { spaces: wsSpaces, ensureLoaded: ensureWsSpaces } = useWorkspace()
 
 const activeId = computed(() => route.meta?.id || 'overview')
-const crumbs = computed(() => CRUMBS[activeId.value] || ['工作台', '总览仪表盘'])
+
+const navGroups = computed(() => {
+  void locale.value
+  return filteredNavGroups.value.map((g) => ({
+    ...g,
+    title: t(`nav.g.${g.key}`, g.title),
+    items: g.items.map((item) => ({
+      ...item,
+      label: t(`nav.${item.id}`, item.label),
+      badge:
+        item.badge === '新' || item.badge === 'New'
+          ? t('nav.badge.new')
+          : item.badge,
+    })),
+  }))
+})
+
+const crumbs = computed(() => {
+  void locale.value
+  const id = activeId.value
+  const group = filteredNavGroups.value.find((g) => g.items.some((i) => i.id === id))
+  const item = group?.items.find((i) => i.id === id)
+  if (!group || !item) {
+    return [t('nav.g.workbench'), t('nav.overview')]
+  }
+  return [t(`nav.g.${group.key}`, group.title), t(`nav.${item.id}`, item.label)]
+})
+
 const avatarText = computed(() => {
   const n = user.value?.name || user.value?.account || '?'
   return String(n).slice(0, 2).toUpperCase()
@@ -43,10 +72,10 @@ async function onSwitchWs(e) {
     const hit = wsSpaces.value.find((s) => (s.id || s.wsCode) === code)
     await switchWsWithMemberGuard(code, { label: hit?.name || code })
     setCurrentWs(code)
-    showToast(`当前工作空间：${hit?.name || code} · 列表已切换`, 'success')
+    showToast(t('app.ws.switched', { name: hit?.name || code }), 'success')
   } catch (err) {
     if (!err?.cancelled) {
-      showToast(err?.message || '切换工作空间失败', 'warning')
+      showToast(err?.message || t('app.ws.fail'), 'warning')
     }
     e.target.value = currentWs.value || 'default'
   } finally {
@@ -61,7 +90,7 @@ function go(path) {
 function onSearch(e) {
   const v = e.target.value?.trim()
   if (!v || e.key !== 'Enter') return
-  showToast(`🔍 全站搜索「${v}」· 跳转资产目录`, 'success')
+  showToast(t('app.search.toast', { q: v }), 'success')
   router.push({ path: '/catalog', query: { q: v } })
 }
 
@@ -87,11 +116,11 @@ onMounted(() => {
         <div class="logo-icon">DL</div>
         <div>
           <div class="logo-text">DataLakeHub</div>
-          <span class="logo-sub">湖仓一体 · 治理平台 v0.1</span>
+          <span class="logo-sub">{{ t('app.logoSub') }}</span>
         </div>
       </div>
       <nav class="side-nav">
-        <div v-for="group in filteredNavGroups" :key="group.title" class="nav-group">
+        <div v-for="group in navGroups" :key="group.key || group.title" class="nav-group">
           <div class="nav-group-title">{{ group.title }}</div>
           <div
             v-for="item in group.items"
@@ -120,13 +149,13 @@ onMounted(() => {
         <div class="header-center">
           <div class="global-search">
             <span class="search-icon">🔍</span>
-            <input type="text" placeholder="搜索表、字段、指标、报表…（支持跨模块）" @keydown="onSearch" />
+            <input type="text" :placeholder="t('app.search.placeholder')" @keydown="onSearch" />
             <span class="search-shortcut">⌘K</span>
           </div>
         </div>
         <div class="header-right">
-          <label class="ws-switch" title="切换工作空间：整站列表默认跟随当前空间；授权仍走申请中心">
-            <span class="ws-switch-label">空间</span>
+          <label class="ws-switch" :title="t('app.ws.title')">
+            <span class="ws-switch-label">{{ t('app.ws') }}</span>
             <select
               class="ws-switch-select"
               :value="currentWs || 'default'"
@@ -141,15 +170,20 @@ onMounted(() => {
                 :key="s.id || s.wsCode"
                 :value="s.id || s.wsCode"
               >
-                {{ s.name || s.id || s.wsCode }}{{ isWsMember(s) ? '' : ' · 非成员' }}
+                {{ s.name || s.id || s.wsCode }}{{ isWsMember(s) ? '' : t('app.ws.nonMember') }}
               </option>
             </select>
           </label>
           <span class="env-tag">PROD</span>
-          <span v-if="isSuperAdmin" class="env-tag" style="background: var(--primary-light); color: var(--primary)">超管</span>
-          <button class="icon-btn" title="通知" @click="showToast('3 条未读告警', 'warning')">🔔</button>
+          <span
+            v-if="isSuperAdmin"
+            class="env-tag"
+            style="background: var(--primary-light); color: var(--primary)"
+          >{{ t('app.superAdmin') }}</span>
+          <UiPrefsMenu />
+          <button class="icon-btn" :title="t('app.notify')" @click="showToast(t('app.notify.toast'), 'warning')">🔔</button>
           <div class="user-avatar" :title="userTitle">{{ avatarText }}</div>
-          <button class="icon-btn" title="退出登录" @click="onLogout">⎋</button>
+          <button class="icon-btn" :title="t('app.logout')" @click="onLogout">⎋</button>
         </div>
       </header>
 

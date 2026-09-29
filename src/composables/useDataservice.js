@@ -21,12 +21,9 @@ import {
   trialDataapi,
 } from '@/api/dataapi.js'
 import { pageMyTickets } from '@/api/apply.js'
-import { fetchAssetPage } from '@/api/catalog'
 import {
   defaultSqlrestEmbed,
 } from '@/data/dataservice'
-import { ensureOnce } from '@/composables/useEnsureSamples'
-import { SAMPLE_DATAAPI } from '@/data/sampleSeeds'
 import { useSession } from '@/composables/useSession'
 
 const loaded = ref(false)
@@ -130,7 +127,7 @@ function mapOverview(ov) {
     return [
       { label: '门户已发布', value: '—', unit: '个', delta: '未加载', deltaCls: '' },
       { label: '近 24h 调用', value: '—', unit: '次', delta: '', deltaCls: '' },
-      { label: 'SQLREST 接口', value: '—', unit: '个', delta: '', deltaCls: '' },
+      { label: '接口目录', value: '—', unit: '个', delta: '', deltaCls: '' },
       { label: '活动订阅方', value: '—', unit: '个', delta: '', deltaCls: '' },
     ]
   }
@@ -151,14 +148,14 @@ function mapOverview(ov) {
       delta:
         latency != null
           ? `均延迟 ${Math.round(Number(latency))} ms`
-          : ov.callsNote || 'SQLREST overview',
+          : ov.callsNote || '调用概览',
       deltaCls: '',
     },
     {
-      label: 'SQLREST 接口',
+      label: '接口目录',
       value: ov.sqlrestTotal != null ? String(ov.sqlrestTotal) : '—',
       unit: '个',
-      delta: ov.sqlrestOnline != null ? `上线 ${ov.sqlrestOnline}` : '来自 Manager',
+      delta: ov.sqlrestOnline != null ? `上线 ${ov.sqlrestOnline}` : '来自接口服务',
       deltaCls: '',
     },
     {
@@ -227,32 +224,6 @@ export function useDataservice() {
       if (Array.isArray(list)) {
         apis.value = list
         degraded.value = false
-        await ensureOnce(
-          `dataservice_sample_api_${ws}`,
-          async () => {
-            if (apis.value.length > 0) return false
-            const assets = await fetchAssetPage({ ws }, { current: 1, size: 1 }).catch(() => null)
-            return !!(assets?.records?.length)
-          },
-          async () => {
-            const assets = await fetchAssetPage({ ws }, { current: 1, size: 1 })
-            const asset = assets?.records?.[0]
-            if (!asset?.id && !asset?.assetCode) {
-              throw new Error('无可用资产，跳过数据服务示例')
-            }
-            await buildDataapi({
-              ...SAMPLE_DATAAPI,
-              sourceKind: 'asset',
-              sourceRef: asset.id || asset.assetCode,
-              description: SAMPLE_DATAAPI.description,
-              ws,
-            })
-          },
-          async () => {
-            const again = await fetchDataapiApis({ ws }).catch(() => null)
-            if (Array.isArray(again)) apis.value = again
-          },
-        )
       } else {
         apis.value = []
         degraded.value = true
@@ -263,7 +234,7 @@ export function useDataservice() {
       } else if (routePack?.apisix?.length) {
         routes.value = routePack.apisix.map((r) => ({
           path: r.path,
-          upstream: r.upstream || 'APISIX → SQLREST',
+          upstream: r.upstream || '网关 → 接口服务',
           auth: r.auth || 'Token',
           rate: r.rate || '—',
           breaker: r.breaker || '—',
@@ -362,9 +333,9 @@ export function useDataservice() {
       contentType: form.contentType,
     })
     const binding = buildRes?.binding
-    if (!binding?.id) throw new Error(buildRes?.sqlrest?.message || '构建失败（SQLREST API）')
+    if (!binding?.id) throw new Error(buildRes?.sqlrest?.message || '构建失败（接口服务）')
     if (buildRes?.ok === false) {
-      throw new Error(buildRes?.sqlrest?.message || binding.lastError || 'SQLREST 创建/更新失败')
+      throw new Error(buildRes?.sqlrest?.message || binding.lastError || '接口服务创建/更新失败')
     }
     const pub = await publishDataapi(binding.id)
     await ensureLoaded(true)

@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
 import { useToast } from '@/composables/useToast'
 import { pageGuideOf } from '@/data/pageGuides'
-import { fetchMetricBoard, fetchReconPartition, runReconPartition } from '@/api/metric'
+import { fetchMetricBoard, fetchReconDiff, fetchReconPartition, fetchReconRules, postReconGolden, rewriteCk, runReconPartition } from '@/api/metric'
 
 const router = useRouter()
 const { showToast } = useToast()
@@ -17,6 +17,8 @@ const boardReady = ref(0)
 const boardBlocked = ref(0)
 const reconLoading = ref(false)
 const loadError = ref('')
+const ruleApiRows = ref([])
+const diffRows = ref([])
 
 const kpis = computed(() => {
   const total = reconRows.value.length
@@ -87,8 +89,8 @@ const liveHistory = computed(() => {
       drillDetail: [
         `metric=${r.metricCode || '—'}`,
         `partition=${r.partitionKey}`,
-        `Iceberg rows=${lake}`,
-        `ClickHouse rows=${ck}`,
+        `湖表行数=${lake}`,
+        `加速层行数=${ck}`,
         `status=${r.status}`,
         r.traceId ? `trace=${r.traceId}` : '',
       ]
@@ -99,6 +101,18 @@ const liveHistory = computed(() => {
 })
 
 const ruleRows = computed(() => {
+  if (ruleApiRows.value.length) {
+    return ruleApiRows.value.map((r) => ({
+      id: r.id,
+      table: r.lakeTable || r.ckTable || r.ruleCode,
+      rule: r.ruleType || 'rule',
+      content: r.ruleName || r.ruleCode,
+      threshold: r.threshold != null ? String(r.threshold) : '—',
+      job: r.cron || '—',
+      ok: r.lastStatus === 'pass' || r.enabled === 1 || r.enabled === true,
+      statusLabel: r.lastStatus || (r.enabled ? '启用' : '停用'),
+    }))
+  }
   const byMetric = new Map()
   for (const r of reconRows.value) {
     const key = r.metricCode || r.ckTable || r.lakeTable
@@ -148,9 +162,11 @@ async function loadReconBoard() {
   reconLoading.value = true
   loadError.value = ''
   try {
-    const [recon, board] = await Promise.all([
+    const [recon, board, rules, diffs] = await Promise.all([
       fetchReconPartition({ limit: 30 }),
       fetchMetricBoard().catch(() => null),
+      fetchReconRules().catch(() => null),
+      fetchReconDiff({ limit: 30 }).catch(() => null),
     ])
     if (recon) {
       reconRows.value = recon.records || []
@@ -161,6 +177,8 @@ async function loadReconBoard() {
     } else {
       reconRows.value = []
     }
+    ruleApiRows.value = rules?.records || []
+    diffRows.value = diffs?.records || []
     if (board) {
       boardCards.value = board.cards || []
       boardReady.value = board.readyCount ?? 0
@@ -173,6 +191,8 @@ async function loadReconBoard() {
   } catch (e) {
     reconRows.value = []
     boardCards.value = []
+    ruleApiRows.value = []
+    diffRows.value = []
     loadError.value = e?.message || '对账数据拉取失败'
     showToast(loadError.value, 'warning')
   } finally {
@@ -185,11 +205,11 @@ onMounted(() => {
 })
 
 function degradeDrill() {
-  showToast('Gravitino 降级演练 · 需后端预案接口', 'info')
+  showToast('元数据服务降级演练 · 需后端预案接口', 'info')
 }
 
 function backupLog() {
-  showToast('暂无备份记录 API', 'info')
+  showToast('暂无备份记录', 'info')
 }
 
 function goOps() {
@@ -197,7 +217,7 @@ function goOps() {
 }
 
 function newReconcileRule() {
-  showToast('新建对账规则 · 请到指标中心配置分区对账', 'info')
+  showToast('请在对账规则中新建（支持五类规则类型）', 'info')
 }
 
 async function rerunReconcile() {
@@ -216,20 +236,67 @@ async function rerunReconcile() {
 }
 
 function drillDiff(row) {
+  if (diffRows.value.length) {
+    const hit = diffRows.value.find(
+      (d) =>
+        (d.lakeTable && String(d.lakeTable).includes(String(row.table || ''))) ||
+        (row.table && String(row.table).includes(String(d.lakeTable || ''))),
+    )
+    if (hit) {
+      showToast(
+        `差异 ${hit.diffType} · pk=${hit.pkValue || '—'} · ${hit.partitionKey || ''}`,
+        'info',
+      )
+      return
+    }
+  }
   if (!row.drillDetail) return
   showToast(`差异下钻 · ${row.table}\n${row.drillDetail}`, 'info')
 }
 
-function forceReimport() {
-  showToast('强制重导 CK · 以 Iceberg 为准', 'info')
+async function forceReimport() {
+  const table =
+    reconRows.value.find((r) => r.status !== 'pass')?.ckTable ||
+    reconRows.value[0]?.ckTable ||
+    reconRows.value[0]?.lakeTable
+  if (!table) {
+    showToast('暂无可重导表', 'warning')
+    return
+  }
+  try {
+    await rewriteCk(table, { note: 'portal rewrite-ck' })
+    showToast(`已提交 rewrite-ck · ${table}`, 'success')
+    await loadReconBoard()
+  } catch (e) {
+    showToast(e?.message || '重导失败', 'warning')
+  }
+}
+
+async function goldenDelist() {
+  const table =
+    boardCards.value.find((c) => !c.ready)?.metricCode ||
+    reconRows.value.find((r) => r.status !== 'pass')?.ckTable ||
+    reconRows.value[0]?.ckTable
+  if (!table) {
+    showToast('暂无可摘牌对象', 'warning')
+    return
+  }
+  try {
+    await postReconGolden('delist', { lakeTable: table, note: 'portal delist' })
+    showToast(`已摘牌 · ${table}`, 'success')
+    await loadReconBoard()
+  } catch (e) {
+    showToast(e?.message || '摘牌失败', 'warning')
+  }
 }
 </script>
 
 <template>
   <div class="rel-page">
     <PageHeader
+      page-id="reliability"
       title="可靠性中心"
-      subtitle="组件 HA · 降级预案 · 备份恢复 · 流式 compaction SLA · Gravitino 只读缓存"
+      subtitle="高可用 · 降级预案 · 备份恢复 · 对账摘牌与恢复"
       :guide="guide"
     >
       <button type="button" class="btn btn-sm" @click="degradeDrill">降级演练</button>
@@ -276,10 +343,10 @@ function forceReimport() {
 
       <div class="card">
         <div class="card-header">
-          <div class="card-title">流式 compaction SLA</div>
+          <div class="card-title">流式合并 SLA</div>
         </div>
         <div class="card-body" style="padding: 14px">
-          <div class="tip">暂无 compaction SLA 数据（可至生命周期中心查看）</div>
+          <div class="tip">暂无合并 SLA 数据（可至生命周期中心查看）</div>
         </div>
       </div>
     </div>
@@ -287,7 +354,7 @@ function forceReimport() {
     <div class="card rel-section">
       <div class="card-header">
         <div class="card-title">
-          湖/CK 对账规则 · §33.1 <span class="tip">· 按指标近窗对账聚合</span>
+          湖仓对账规则 <span class="tip">· 按指标近窗对账聚合</span>
         </div>
         <button type="button" class="btn btn-sm" @click="newReconcileRule">新建对账规则</button>
       </div>
@@ -300,7 +367,7 @@ function forceReimport() {
               <th>规则</th>
               <th>比对内容</th>
               <th>频率</th>
-              <th>DS 作业</th>
+              <th>调度作业</th>
               <th>状态</th>
             </tr>
           </thead>
@@ -325,7 +392,7 @@ function forceReimport() {
     <div class="grid grid-2 rel-section">
       <div class="card">
         <div class="card-header">
-          <div class="card-title">对账执行历史 · §33.2 <span class="tip">· 差异根因下钻</span></div>
+          <div class="card-title">对账执行历史 <span class="tip">· 差异根因下钻</span></div>
           <button type="button" class="btn btn-sm" @click="rerunReconcile">重跑对账</button>
         </div>
         <div class="card-body rel-history-body">
@@ -368,7 +435,7 @@ function forceReimport() {
 
       <div class="card rel-delist-card">
         <div class="card-header">
-          <div class="card-title">摘牌与恢复闭环 · §33.3 <span class="tip">· 以 Iceberg 为准</span></div>
+          <div class="card-title">摘牌与恢复闭环 <span class="tip">· 以湖表为准</span></div>
           <span class="tag" :class="boardBlocked > 0 ? 'tag-red' : 'tag-green'">
             {{ reconLoading ? '…' : boardBlocked > 0 ? `${boardBlocked} 未就绪` : '全部就绪' }}
           </span>
@@ -383,8 +450,9 @@ function forceReimport() {
             </div>
           </div>
           <div style="margin-top: 8px">
-            <button type="button" class="btn btn-sm btn-primary" @click="forceReimport">
-              强制重导 CK
+            <button type="button" class="btn btn-sm" @click="goldenDelist">黄金摘牌</button>
+            <button type="button" class="btn btn-sm btn-primary" style="margin-left: 6px" @click="forceReimport">
+              强制重导加速层
             </button>
             <button type="button" class="btn btn-sm" style="margin-left: 6px" @click="rerunReconcile">
               重跑对账

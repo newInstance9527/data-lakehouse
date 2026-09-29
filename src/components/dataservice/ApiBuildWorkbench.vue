@@ -146,6 +146,7 @@ const tplOptions = ref([])
 const tplSelected = ref('')
 const tplPreview = ref('')
 const tplHint = ref('')
+const tplPinnedVer = ref('')
 const tplPortalDsId = ref('')
 
 /** 构建 API：AI 对话生成 SQL/Groovy → 确认后写入当前窗口 */
@@ -604,7 +605,7 @@ const editorHint = computed(() => {
   const d = sqlDialect.value
   if (d.sql === false) return `${d.label} · ${d.quoteHint}`
   const name = d.family ? `${d.label} · 按 ${d.family}` : d.label
-  const pageTip = ' · SQLREST 自动分页，勿写末尾 LIMIT/分号'
+  const pageTip = ' · 接口服务自动分页，勿写末尾 LIMIT/分号'
   if (d.fallback && !selectedDs.value) return `未选数据源，暂按 ${d.label} · ${d.quoteHint}${pageTip}`
   if (d.fallback) return `${name}${d.raw ? `（${d.raw}）` : ''} · ${d.quoteHint}${pageTip}`
   return `${name} · ${d.quoteHint} · 支持表列自动补全 · Ctrl+Space · 双击表列插入${pageTip}`
@@ -1108,7 +1109,7 @@ function aiQuick(chip) {
   }
   if (chip === 'groovy') {
     if (form.engine !== 'GROOVY') setEngine('GROOVY')
-    sendAiChat('生成 SQLREST 风格 Groovy 脚本骨架，return 行列表，注释说明入参')
+    sendAiChat('生成接口服务风格 Groovy 脚本骨架，return 行列表，注释说明入参')
   }
 }
 
@@ -1912,7 +1913,7 @@ async function save() {
       dirty.value = false
       if (res?.degraded || res?.sqlrestOk === false) {
         showToast(
-          `草稿已保存（id=${binding.id}），但 SQLREST 同步失败：${res?.sqlrest?.message || binding.lastError || '请检查 Manager'}`,
+          `草稿已保存（id=${binding.id}），但接口服务同步失败：${res?.sqlrest?.message || binding.lastError || '请检查管理端'}`,
           'warning',
         )
       } else {
@@ -1965,7 +1966,7 @@ async function doDebug() {
     }
     form.tested = form.testResult.ok
     if (strippedLimit) {
-      showToast('已自动去掉末尾 LIMIT/分号（SQLREST 会自动分页）', 'info')
+      showToast('已自动去掉末尾 LIMIT/分号（接口服务会自动分页）', 'info')
     }
     if (form.testResult.ok) {
       showToast('调试成功', 'success')
@@ -2162,7 +2163,7 @@ async function openTplPicker(kind) {
   tplPreview.value = ''
   tplHint.value =
     kind === 'metric'
-      ? '编译口径 SQL（Trino）写入当前窗口；binding.sourceKind=metric。'
+      ? '编译口径 SQL（查询引擎）写入当前窗口；binding.sourceKind=metric。'
       : '按资产 schema 生成 SELECT 模板；binding.sourceKind=asset。'
   tplLoading.value = true
   try {
@@ -2236,8 +2237,10 @@ async function onTplSelect(val) {
       if (!sql) throw new Error('编译结果无 sqlText')
       tplPreview.value = toSqlrestPlaceholders(sql)
       const ver = meta?.ver ? ` · ${meta.ver}` : ''
-      tplHint.value = `已编译 ${meta?.metricCode || val}${ver}（dialect=${meta?.dialect || 'trino'}）；占位符已转为 SQLREST #{…}`
+      tplHint.value = `已编译 ${meta?.metricCode || val}${ver}（dialect=${meta?.dialect || 'trino'}）；占位符已转为 #{…}；应用将钉 sourceRef=code@version`
+      tplPinnedVer.value = meta?.ver || meta?.currentVer || ''
     } else {
+      tplPinnedVer.value = ''
       const [schema, sources] = await Promise.all([
         fetchAssetSchema(val),
         fetchAssetSources(val).catch(() => []),
@@ -2302,8 +2305,10 @@ async function applyTpl() {
     tab.value = 'sql'
     if (tplKind.value === 'metric') {
       const opt = tplOptions.value.find((o) => o.value === tplSelected.value)
+      const code = tplSelected.value
+      const ver = tplPinnedVer.value || opt?.ver || ''
       form.sourceKind = 'metric'
-      form.sourceRef = tplSelected.value
+      form.sourceRef = ver ? `${code}@${ver}` : code
       if (!form.name?.trim()) form.name = opt?.name || tplSelected.value
       if (!form.path || form.path === '/api/') {
         form.path = `/api/metric/${String(tplSelected.value).toLowerCase()}`
@@ -2349,7 +2354,7 @@ async function applyTpl() {
           <div>
             <div class="wb-title">构建 API{{ form.name ? ` · ${form.name}` : '' }}</div>
             <div class="wb-sub">
-              元数据走平台 /lh/datasource/meta · 定义 SoT = SQLREST · 边缘默认 Gateway
+              元数据走平台数据源服务 · 定义以接口服务为准 · 边缘默认统一网关
               <template v-if="form.sourceKind && form.sourceKind !== 'sql'">
                 · 来源 <code>{{ form.sourceKind }}</code>/<code>{{ form.sourceRef || '—' }}</code>
               </template>
@@ -2762,7 +2767,7 @@ async function applyTpl() {
                 </p>
               </label>
               <p class="field-hint">
-                模块 / 授权来自 SQLREST <code>module/listAll</code>、<code>group/listAll</code>；未拉到列表时回落
+                模块 / 授权来自接口服务模块与授权组；未拉到列表时回落
                 <code>lh.sqlrest.default*</code>。路径前缀来自 Gateway。
               </p>
             </div>
@@ -2836,13 +2841,13 @@ async function applyTpl() {
               </div>
               <div class="auth-copy">
                 <p class="field-hint">
-                  <strong>SQLREST open</strong>：仅控制接口在 SQLREST 侧是否公开可见，<em>不等于</em>平台授权。
+                  <strong>公开可见</strong>：仅控制接口在接口服务侧是否公开，<em>不等于</em>平台授权。
                 </p>
                 <p class="field-hint">
                   <strong>平台 ACL</strong>：谁能构建 / 发布 / 订阅由门户权限与申请中心工单决定（源级 grant、API Owner、订阅审批）。
                 </p>
                 <p class="field-hint">
-                  <strong>调用鉴权</strong>：边缘仅 <strong>SQLREST Gateway</strong>；调用方持订阅签发的 API Key（Vault +
+                  <strong>调用鉴权</strong>：边缘仅 <strong>统一网关</strong>；调用方持订阅签发的 API Key（密钥库 +
                   <code>dataapi_api_key_meta</code>）。本平台<strong>不做 APISIX</strong>，无独立网关路由配置页。
                 </p>
                 <p class="field-hint tip">订阅 Key：申请中心 →「API 订阅」工单审批通过后签发；可在数据服务 Key 列表查看元数据。</p>
@@ -2862,10 +2867,10 @@ async function applyTpl() {
               </div>
               <div class="auth-copy">
                 <p class="field-hint">
-                  本开关写入 SQLREST <code>assignment.alarm</code>，表示该接口是否参与 SQLREST 告警。
+                  本开关表示该接口是否参与接口服务告警。
                 </p>
                 <p class="field-hint">
-                  规则阈值、通知渠道等明细在 <strong>SQLREST Manager 告警配置</strong>中维护；门户不代理 APISIX / 第三方网关告警。
+                  规则阈值、通知渠道等明细在 <strong>接口服务管理端告警配置</strong>中维护；门户不代理第三方网关告警。
                 </p>
                 <p class="field-hint tip">运行面观测：Gateway 访问日志 + 后续调用大盘（E5）；与「是否告警」开关相互独立。</p>
               </div>
@@ -2905,7 +2910,7 @@ async function applyTpl() {
                   <input v-model.number="form.burst" class="input" type="number" min="1" @input="markDirty" />
                 </label>
               </div>
-              <p class="field-hint">关闭时不启用 SQLREST 流控。边缘 QPS 写入绑定，由 Gateway / SQLREST 侧生效（不做 APISIX）。</p>
+              <p class="field-hint">关闭时不启用接口流控。边缘 QPS 写入绑定，由网关侧生效。</p>
             </div>
           </main>
 
@@ -2947,7 +2952,7 @@ async function applyTpl() {
               <p v-if="form.probeResult.bindingState || form.probeResult.sqlrestOnline != null" class="tip">
                 绑定 {{ form.probeResult.bindingState || '—' }}
                 <template v-if="form.probeResult.sqlrestOnline != null">
-                  · SQLREST {{ form.probeResult.sqlrestOnline ? 'online' : 'offline' }}
+                  · 接口服务 {{ form.probeResult.sqlrestOnline ? '在线' : '离线' }}
                 </template>
                 <template v-if="form.probeResult.httpStatus != null">
                   · HTTP {{ form.probeResult.httpStatus }} · {{ form.probeResult.latencyMs }}ms

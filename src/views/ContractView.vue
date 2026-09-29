@@ -157,8 +157,9 @@ watchListScope(() => loadBoard())
 <template>
   <div class="ctr-page">
     <PageHeader
+      page-id="contract"
       title="数据契约"
-      subtitle="门户 Schema SoT · 兼容性 · CDC · Iceberg 演进"
+      subtitle="Schema 变更 · 兼容性 · 同步语义 · 湖表演进约定"
       :guide="guide"
     >
       <label class="ws-mine-chk" title="默认跟随顶栏当前空间；勾选后查看全部归属">
@@ -180,7 +181,7 @@ watchListScope(() => loadBoard())
       @submit="onRegisterSchema"
     />
 
-    <p class="tip ctr-banner">列表/KPI 接 `/lh/contract/*`；下方 Iceberg/CDC 约定为流程规则，非业务假数。</p>
+    <p class="tip ctr-banner">列表/KPI 接契约服务；下方湖表演进与 CDC 约定为流程规则，非业务假数。</p>
 
     <div class="kpi-grid ctr-kpi">
       <div v-for="(k, i) in kpis" :key="i" class="kpi-card" :class="k.color">
@@ -315,7 +316,7 @@ watchListScope(() => loadBoard())
     <div class="grid grid-2">
       <div class="card">
         <div class="card-header">
-          <div class="card-title">🧊 Iceberg 演进约定</div>
+          <div class="card-title">🧊 湖表演进约定</div>
         </div>
         <div class="card-body" style="padding: 0">
           <table class="table">
@@ -324,7 +325,7 @@ watchListScope(() => loadBoard())
                 <th>变更</th>
                 <th>允许</th>
                 <th>动作</th>
-                <th>CK</th>
+                <th>加速层</th>
               </tr>
             </thead>
             <tbody>

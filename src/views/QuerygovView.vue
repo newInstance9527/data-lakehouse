@@ -12,6 +12,11 @@ import {
   formatScanBytes,
   upsertCatalogMap,
 } from '@/api/query'
+import {
+  fetchObsTrinoQueues,
+  fetchObsTrinoSlow,
+  fetchObsTrinoTopUsers,
+} from '@/api/observability'
 import { fetchWsQuotaAlerts } from '@/api/workspace'
 import { auditStatusMeta, costTrendClass, truncateQuery } from '@/data/querygov'
 
@@ -28,6 +33,9 @@ const loadError = ref('')
 const costsError = ref('')
 const overview = ref(null)
 const costsPayload = ref(null)
+const trinoQueues = ref([])
+const trinoTopUsers = ref([])
+const trinoSlow = ref([])
 
 const quotaAlerts = ref([])
 const quotaAlertsError = ref('')
@@ -69,7 +77,9 @@ const kpis = computed(() => {
 })
 
 const queues = computed(() => {
-  const list = overview.value?.queues
+  const list = trinoQueues.value.length
+    ? trinoQueues.value
+    : overview.value?.queues
   if (!Array.isArray(list) || !list.length) return []
   return list.map((q) => ({
     name: q.name,
@@ -162,20 +172,49 @@ async function loadOverview() {
   loading.value = true
   loadError.value = ''
   try {
-    const data = await fetchQueryGovOverview()
+    const [data, queuesPage, topUsers, slow] = await Promise.all([
+      fetchQueryGovOverview(),
+      fetchObsTrinoQueues({ ws: costWs.value || undefined }).catch(() => null),
+      fetchObsTrinoTopUsers({
+        ws: costWs.value || undefined,
+        range: costRange.value || '30d',
+      }).catch(() => null),
+      fetchObsTrinoSlow({
+        ws: costWs.value || undefined,
+        range: costRange.value || '30d',
+        limit: 10,
+      }).catch(() => null),
+    ])
     overview.value = data || null
     live.value = !!data
+    trinoQueues.value = queuesPage?.queues || []
+    trinoTopUsers.value = topUsers?.records || []
+    trinoSlow.value = slow?.records || []
     if (data?.querySurface) {
       surface.value = data.querySurface
     }
   } catch (e) {
     overview.value = null
     live.value = false
+    trinoQueues.value = []
+    trinoTopUsers.value = []
+    trinoSlow.value = []
     loadError.value = e?.message || '治理总览拉取失败'
     showToast(loadError.value, 'warning')
   } finally {
     loading.value = false
   }
+}
+
+function goStorageTrend() {
+  router.push({
+    path: '/lifecycle/storage',
+    query: {
+      ws: costWs.value || undefined,
+      range: costRange.value || '30d',
+      from: 'querygov',
+    },
+  })
 }
 
 async function loadCosts() {
@@ -238,7 +277,7 @@ async function saveCatalogMap() {
     showToast(lastMapMessage.value, res?.queryable ? 'success' : 'info')
     await loadFederation()
   } catch (e) {
-    showToast(e?.message || '联邦开通失败（须先在 Trino 挂载 catalog）', 'error')
+    showToast(e?.message || '联邦开通失败（须先挂载查询 catalog）', 'error')
   } finally {
     mapSaving.value = false
   }
@@ -257,7 +296,7 @@ function fillMapFromRow(row) {
 }
 
 function newQueryRule() {
-  showToast('规则 SoT = CpQueryScanGuard（与即席 exec 同源）；外置配置表 P1', 'info')
+  showToast('扫描规则与即席查询同源；外置配置表后续开放', 'info')
 }
 
 function exportCostReport() {
@@ -330,13 +369,15 @@ onMounted(() => {
 <template>
   <div class="qg-page">
     <PageHeader
+      page-id="querygov"
       title="查询治理与成本"
-      subtitle="规则/队列与即席同源 · Trino 扫描限额 · cp_query_exec 审计"
+      subtitle="规则与即席同源 · 扫描限额 · 查询审计与成本分摊"
       :guide="guide"
     >
       <button type="button" class="btn btn-sm" :disabled="loading" @click="loadOverview">
         {{ loading ? '…' : '刷新' }}
       </button>
+      <button type="button" class="btn btn-sm" @click="goStorageTrend">📦 存储趋势</button>
       <button type="button" class="btn btn-sm" @click="newQueryRule">＋ 查询规则</button>
       <button type="button" class="btn btn-sm" @click="exportCostReport">📊 成本报表</button>
       <button type="button" class="btn btn-sm btn-primary" @click="goQuery">🔗 即席查询</button>
@@ -348,13 +389,14 @@ onMounted(() => {
       {{ formatScanBytes(overview?.scanDefaultBytes) }} / 硬顶
       {{ formatScanBytes(overview?.scanHardBytes) }} · adhoc 在途
       {{ overview?.adhocConcurrent }}/{{ overview?.adhocMaxConcurrent }}
+      · 慢查询 {{ trinoSlow.length }} · Top 用户 {{ trinoTopUsers.length }}
     </div>
 
     <div class="card qg-section">
       <div class="card-header">
         <div class="card-title">
           🔗 查询面与联邦源
-          <span class="tip">· whitelist ∩ SHOW CATALOGS · POST catalog-map</span>
+          <span class="tip">· 查询面目录白名单 · 联邦源映射</span>
         </div>
         <button type="button" class="btn btn-sm" :disabled="surfaceLoading" @click="loadFederation">
           {{ surfaceLoading ? '…' : '刷新查询面' }}
@@ -394,7 +436,7 @@ onMounted(() => {
             </label>
             <label class="fed-field">
               <span>trinoCatalog</span>
-              <input v-model="mapForm.trinoCatalog" type="text" placeholder="真实 Trino 名，如 clickhouse" />
+              <input v-model="mapForm.trinoCatalog" type="text" placeholder="查询引擎 catalog 名，如 clickhouse" />
             </label>
             <label class="fed-field">
               <span>kind</span>
@@ -426,8 +468,8 @@ onMounted(() => {
             <table v-if="catalogMaps.length" class="table">
               <thead>
                 <tr>
-                  <th>Grav</th>
-                  <th>Trino</th>
+                  <th>元数据目录</th>
+                  <th>查询引擎</th>
                   <th>kind</th>
                   <th>启用</th>
                   <th>可查</th>
@@ -474,8 +516,8 @@ onMounted(() => {
     <div class="card qg-section">
       <div class="card-header">
         <div class="card-title">
-          🎚️ Trino 查询队列
-          <span class="tip">· adhoc 并发与扫描与即席 exec 同源</span>
+          🎚️ 查询队列
+          <span class="tip">· adhoc 并发与扫描与即席执行同源</span>
         </div>
       </div>
       <div class="card-body qg-queue-body">
@@ -573,7 +615,7 @@ onMounted(() => {
       <div class="card-header">
         <div class="card-title">
           🚨 工作空间配额水位
-          <span class="tip">· ≥60% 提示 · ≥80% 告警 · /lh/workspace/quota-alerts</span>
+          <span class="tip">· 配额与告警 · 工作空间同源</span>
         </div>
         <button type="button" class="btn btn-sm" @click="loadQuotaAlerts">↻ 刷新</button>
       </div>
@@ -631,7 +673,7 @@ onMounted(() => {
       </div>
       <div class="card-body">
         <div v-if="costsLive" class="tip cost-live">
-          已接真 /lh/observability/costs?group=ws · range={{ costsPayload?.range || costRange }}
+          已接真成本分摊 · range={{ costsPayload?.range || costRange }}
           <template v-if="costsPayload?.totals?.totalCost != null">
             · 合计 {{ formatCny(costsPayload.totals.totalCost) }}
           </template>

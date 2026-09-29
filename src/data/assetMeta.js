@@ -9,9 +9,10 @@ export const ASSET_LAYERS = [
 ]
 
 export const ASSET_DOMAINS = [
+  { value: 'common', label: '通用' },
   { value: 'trade', label: '交易域' },
   { value: 'user', label: '用户域' },
-  { value: 'product', label: '商品域' },
+  { value: 'goods', label: '商品域' },
   { value: 'marketing', label: '营销域' },
   { value: 'finance', label: '财务域' },
 ]
@@ -28,7 +29,8 @@ export function layerMeta(layer) {
 }
 
 export function domainMeta(domain) {
-  return ASSET_DOMAINS.find((d) => d.value === domain) || ASSET_DOMAINS[0]
+  const code = domain === 'product' ? 'goods' : domain
+  return ASSET_DOMAINS.find((d) => d.value === code) || ASSET_DOMAINS[0]
 }
 
 export function levelClass(level) {

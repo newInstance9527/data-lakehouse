@@ -8,14 +8,17 @@ import { useToast } from '@/composables/useToast'
 import { usePager } from '@/composables/usePager'
 import { useWsListScope } from '@/composables/useWsListScope'
 import { EXPORT_APPLY_FORM } from '@/data/createForms'
+import { ensureMetricBindTables, metricBindMetaOf } from '@/data/metricBindAssets'
 import { pageGuideOf } from '@/data/pageGuides'
 import { EXPORT_FLOW, exportJobStatusMeta } from '@/data/export'
 import { pushExportApply } from '@/composables/useApplyBoard'
 import { fetchExportSummary, fetchExportJobs, fetchExportAudit } from '@/api/export'
+import { tt, useLocale } from '@/composables/useLocale'
 
 const route = useRoute()
 const router = useRouter()
 const { showToast } = useToast()
+const { locale } = useLocale()
 const { user, currentWs, showAll, listWsParams, watchListScope } = useWsListScope()
 const guide = pageGuideOf('export')
 
@@ -26,41 +29,42 @@ const summary = ref(null)
 const { page, pageSize, total, totalPages, paged, pageNums, goPage, resetPage } = usePager(jobs)
 
 const kpis = computed(() => {
+  void locale.value
   const s = summary.value || {}
   return [
     {
       icon: '📤',
       color: 'blue',
       value: String(s.activeJobs ?? '—'),
-      unit: '个',
-      label: '活跃出湖作业',
-      trend: s.sinkCount != null ? `ETL 挂接 ${s.sinkCount}` : '独立 SA',
+      unit: tt('个'),
+      label: tt('活跃出湖作业'),
+      trend: s.sinkCount != null ? `${tt('ETL 挂接')} ${s.sinkCount}` : tt('独立 SA'),
       trendUp: true,
     },
     {
       icon: '✅',
       color: 'green',
       value: String(s.approved ?? '—'),
-      unit: '个',
-      label: '已审批',
-      trend: '含脱敏',
+      unit: tt('个'),
+      label: tt('已审批'),
+      trend: tt('含脱敏'),
       trendUp: true,
     },
     {
       icon: '⏳',
       color: 'orange',
       value: String(s.pending ?? '—'),
-      unit: '个',
-      label: '待审批',
-      trend: '申请中心',
+      unit: tt('个'),
+      label: tt('待审批'),
+      trend: tt('申请中心'),
       trendUp: false,
     },
     {
       icon: '🔄',
       color: 'purple',
       value: String(s.targets ?? '—'),
-      unit: '个',
-      label: '回流目标',
+      unit: tt('个'),
+      label: tt('回流目标'),
       trend: 'MySQL/Redis/ES',
       trendUp: true,
     },
@@ -68,9 +72,9 @@ const kpis = computed(() => {
       icon: '⏰',
       color: 'red',
       value: String(s.expiringSoon ?? '—'),
-      unit: '个',
-      label: '即将到期',
-      trend: '7 天内',
+      unit: tt('个'),
+      label: tt('即将到期'),
+      trend: tt('7 天内'),
       trendUp: false,
     },
   ]
@@ -80,7 +84,10 @@ onMounted(async () => {
   if (route.query.action === 'apply') {
     createOpen.value = true
   }
-  await loadBoard()
+  await Promise.all([loadBoard(), ensureMetricBindTables().catch(() => {})])
+  if (route.query.focus === 'expire') {
+    document.getElementById('exp-expire-anchor')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
 })
 
 watchListScope(() => loadBoard())
@@ -143,6 +150,7 @@ function formatExpire(payload) {
 
 async function onExportApply(payload) {
   const expire = formatExpire(payload)
+  const meta = metricBindMetaOf(payload.table)
   try {
     const result = await pushExportApply({
       table: payload.table,
@@ -150,6 +158,7 @@ async function onExportApply(payload) {
       target: payload.target,
       expire,
       applicant: '我',
+      assetId: meta?.assetId,
     })
     const ticketNo = result.ticketNo
     createOpen.value = false
@@ -210,6 +219,11 @@ function go(path) {
   router.push(path)
 }
 
+function goExpireFocus() {
+  router.replace({ path: '/export', query: { focus: 'expire' } })
+  document.getElementById('exp-expire-anchor')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
 function goCatalog(src) {
   router.push({ path: '/catalog', query: { q: src } })
 }
@@ -226,20 +240,21 @@ function goEtl(j) {
 <template>
   <div class="exp-page">
     <PageHeader
+      page-id="export"
       title="出湖与回流"
       subtitle="申请→审批→脱敏→出湖→审计→到期回收 · 独立 SA · 禁止私下灌库"
       :guide="guide"
     >
-      <label class="ws-mine-chk" title="默认跟随顶栏当前空间；勾选后查看全部归属">
+      <label class="ws-mine-chk" :title="tt('默认跟随顶栏当前空间；勾选后查看全部归属')">
         <input v-model="showAll" type="checkbox" />
-        查看全部
+        {{ tt('查看全部') }}
       </label>
-      <button type="button" class="btn btn-sm" @click="newExportApply">＋ 出湖申请</button>
-      <button type="button" class="btn btn-sm" @click="exportAudit">📋 出湖审计</button>
+      <button type="button" class="btn btn-sm" @click="newExportApply">{{ tt('＋ 出湖申请') }}</button>
+      <button type="button" class="btn btn-sm" @click="exportAudit">{{ tt('📋 出湖审计') }}</button>
       <button type="button" class="btn btn-sm" @click="loadBoard" :disabled="loading">
-        {{ loading ? '刷新中…' : '↻ 刷新' }}
+        {{ loading ? tt('刷新中…') : tt('↻ 刷新') }}
       </button>
-      <button type="button" class="btn btn-sm btn-primary" @click="goApply">🔗 申请审批</button>
+      <button type="button" class="btn btn-sm btn-primary" @click="goApply">{{ tt('🔗 申请审批') }}</button>
     </PageHeader>
 
     <CreateFormModal
@@ -248,6 +263,10 @@ function goEtl(j) {
       @close="createOpen = false"
       @submit="onExportApply"
     />
+
+    <p class="tip exp-banner">
+      作业 / KPI 接出湖服务；无数据为空态，不加载演示作业。出湖申请源表来自资产目录。
+    </p>
 
     <div class="kpi-grid exp-kpi">
       <div v-for="(k, i) in kpis" :key="i" class="kpi-card" :class="k.color">
@@ -268,7 +287,17 @@ function goEtl(j) {
         <div class="flow-chain exp-flow">
           <template v-for="(node, ni) in EXPORT_FLOW" :key="ni">
             <div v-if="ni > 0" class="flow-arrow">→</div>
-            <div class="flow-node">
+            <button
+              v-if="node.focus === 'expire'"
+              type="button"
+              class="flow-node flow-node-btn"
+              @click="goExpireFocus"
+            >
+              <div class="fn-icon">{{ node.icon }}</div>
+              <div class="fn-title">{{ node.title }}</div>
+              <div class="fn-sub">{{ node.sub }}</div>
+            </button>
+            <div v-else class="flow-node">
               <div class="fn-icon">{{ node.icon }}</div>
               <div class="fn-title">{{ node.title }}</div>
               <div class="fn-sub">{{ node.sub }}</div>
@@ -276,14 +305,14 @@ function goEtl(j) {
           </template>
         </div>
         <p class="exp-note">
-          <b class="text-danger">禁止：</b>分析师个人从 Trino 导出后私下灌生产库。回流作业用<b>独立 SA</b>。
+          <b class="text-danger">禁止：</b>分析师个人从即席查询导出后私下灌生产库。回流作业用<b>独立服务账号</b>。
         </p>
       </div>
     </div>
 
-    <div class="card exp-jobs">
+    <div id="exp-expire-anchor" class="card exp-jobs">
       <div class="card-header">
-        <div class="card-title">📋 活跃出湖作业</div>
+        <div class="card-title">📋 活跃出湖作业 <span class="tip">· 到期回收=停 DAG + 通知删副本（非湖内分区归档）</span></div>
       </div>
       <div class="card-body" style="padding: 0">
         <table class="table">
@@ -306,7 +335,7 @@ function goEtl(j) {
             </tr>
             <tr v-else-if="!paged.length">
               <td colspan="9" style="text-align: center; color: var(--text-3); padding: 24px">
-                暂无作业 · 可先「出湖申请」或在 ETL 出湖 sink 填入已审批 EXP
+                暂无作业 · 空列表合法，请先「出湖申请」或在 ETL 出湖 sink 填入已审批 EXP（不回落演示）
               </td>
             </tr>
             <tr v-for="j in paged" :key="j.job">
@@ -366,11 +395,14 @@ function goEtl(j) {
           <span>→</span>
           <button type="button" class="btn-link" @click="go('/catalog')">ADS 资产</button>
           <span>→</span>
-          <button type="button" class="btn-link" @click="go('/lifecycle')">到期回收</button>
+          <button type="button" class="btn-link" @click="goExpireFocus">出湖到期回收</button>
+          <span class="muted">·</span>
+          <button type="button" class="btn-link" @click="go('/lifecycle?focus=archive')">湖内分区归档</button>
         </div>
         <p class="exp-example">
-          示例：业务方申请 <code>ads_gmv_board</code> 回流到 MySQL → 审批通过 → DS 作业脱敏后写出 → Gravitino
-          记录出库审计 → 到期停作业 + 通知下游删除副本。
+          示例：业务方在资产目录选表申请回流到 MySQL → 审批签发 EXP → ETL sink 回填 ticketNo 并脱敏写出 →
+          <code>gov_export_audit</code> 落库 → <b>到期停作业 + 通知下游删除副本</b>（出湖回收）。
+          湖内分区过期/冷存储迁移见生命周期「归档候选」，两套语义不双写。
         </p>
       </div>
     </div>
@@ -378,6 +410,18 @@ function goEtl(j) {
 </template>
 
 <style scoped>
+.exp-banner {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: var(--bg-2, #f5f7fa);
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.exp-banner code {
+  font-size: 11px;
+}
 .exp-kpi {
   grid-template-columns: repeat(5, 1fr);
 }
@@ -404,6 +448,15 @@ function goEtl(j) {
   padding: 10px 12px;
   text-align: center;
   min-width: 88px;
+}
+.flow-node-btn {
+  background: var(--bg, #fff);
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+.flow-node-btn:hover {
+  border-color: var(--primary, #1e6fff);
 }
 .fn-icon {
   font-size: 20px;

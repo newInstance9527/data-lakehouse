@@ -40,12 +40,25 @@ export function fetchSecAudit(params = {}) {
   })
 }
 
-export function fetchSecSa() {
-  return http.get(`${BASE}/sa`)
+export function fetchSecSa(params = {}) {
+  return http.get(`${BASE}/sa`, { ws: params.ws })
+}
+
+export function registerSecSa(body) {
+  return http.post(`${BASE}/sa`, body)
+}
+
+export function retireSecSa(id) {
+  return http.post(`${BASE}/sa/retire`, { id })
 }
 
 export function fetchSecVaultHealth() {
   return http.get(`${BASE}/vault/health`)
+}
+
+/** 本地动态密轮换；数据源另置 binding stale。body: { vaultPath } */
+export function rotateSecVault(body) {
+  return http.post(`${BASE}/vault/rotate`, body)
 }
 
 export function fetchSecRouteWhitelist() {

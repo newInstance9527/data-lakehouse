@@ -86,6 +86,44 @@ export function runReconPartition(payload = {}) {
   return http.post('/lh/recon/partition/run', payload)
 }
 
+export function fetchReconRules({ ws, ruleType, enabled } = {}) {
+  return http.get('/lh/recon/rules', { ws, ruleType, enabled })
+}
+
+export function upsertReconRule(payload = {}) {
+  return http.post('/lh/recon/rules', payload)
+}
+
+export function deleteReconRule(id) {
+  return http.post('/lh/recon/rules/delete', { id })
+}
+
+export function fetchReconDiff({ ws, lakeTable, table, partitionKey, dt, ruleId, limit } = {}) {
+  return http.get('/lh/recon/diff', {
+    ws,
+    lakeTable: lakeTable || table,
+    partitionKey: partitionKey || dt,
+    ruleId,
+    limit,
+  })
+}
+
+export function recordReconDiff(payload = {}) {
+  return http.post('/lh/recon/diff', payload)
+}
+
+export function postReconGolden(action, payload = {}) {
+  const act = action || payload.action
+  if (act) {
+    return http.post(`/lh/recon/golden/${encodeURIComponent(act)}`, payload)
+  }
+  return http.post('/lh/recon/golden', payload)
+}
+
+export function rewriteCk(table, payload = {}) {
+  return http.post(`/lh/recon/${encodeURIComponent(table)}/rewrite-ck`, payload)
+}
+
 function toUpsertBody(payload = {}) {
   return {
     metricCode: payload.metricCode || payload.id,

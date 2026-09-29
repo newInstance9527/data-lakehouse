@@ -366,18 +366,26 @@ function goStandardMapping() {
 
 function onGraphGo(target) {
   if (target === 'report') {
-    showToast('报表数据源：ads_gmv_board CK/Iceberg 双源，未对账切 Iceberg 降级', 'info')
+    showToast('报表节点：进资产目录或申请中心查看授权', 'info')
     return
   }
-  if (target === '/metrics') {
-    showToast('跳转指标中心…', 'info')
+  if (target === '/metrics' || target === 'metrics') {
     router.push('/metrics')
+    return
+  }
+  if (typeof target === 'string' && target.startsWith('/metrics')) {
+    router.push(target)
     return
   }
   router.push(target || '/integration')
 }
 
 function onImpactClick(item) {
+  if (item?.type === '指标' || item?.metricCode) {
+    const code = item.metricCode || item.key
+    router.push(item.path || `/metrics?q=${encodeURIComponent(code || '')}`)
+    return
+  }
   if (item.nodeId) {
     focusId.value = resolveFocusIdFromTable(item.nodeId)
     return
@@ -491,6 +499,7 @@ watch(currentWs, async () => {
 <template>
   <div class="lineage-page">
     <PageHeader
+      page-id="lineage"
       title="字段级血缘图谱"
       subtitle="端到端血缘 · 可输入上下游钻取层数（默认 5）· 支持变更影响分析"
       :guide-title="guide.title"
@@ -546,16 +555,16 @@ watch(currentWs, async () => {
                 class="tag tag-blue"
                 style="margin-left: 8px"
                 :title="graphSource"
-              >{{ graphSource.includes('portal') ? '门户边' : graphSource.includes('openmetadata') ? 'OM' : graphSource }}</span>
-              <span v-if="omDegraded" class="tag tag-orange" style="margin-left: 8px" title="OM Lineage soft-fail">
-                OM 降级
+              >{{ graphSource.includes('portal') ? '门户边' : graphSource.includes('openmetadata') ? '外部目录' : graphSource }}</span>
+              <span v-if="omDegraded" class="tag tag-orange" style="margin-left: 8px" title="外部血缘 soft-fail">
+                外部降级
               </span>
             </div>
             <div class="flex align-center gap-8">
               <span class="tag layer-ods" style="border: none">ODS</span>
               <span class="tag layer-dwd" style="border: none">DWD</span>
               <span class="tag layer-dws" style="border: none">DWS</span>
-              <span class="tag layer-ads" style="border: none">ADS/CK</span>
+              <span class="tag layer-ads" style="border: none">ADS/加速层</span>
               <span class="tag tag-purple" style="border: none">报表</span>
             </div>
           </div>

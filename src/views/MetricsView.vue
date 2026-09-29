@@ -12,14 +12,15 @@ import { enrichMetricBindPayload, warmMetricBindAssets } from '@/data/metricBind
 import { METRIC_CREATE_FORM } from '@/data/createForms'
 import { pageGuideOf } from '@/data/pageGuides'
 import {
-  METRIC_DOMAIN_TABS,
   METRIC_LIFECYCLE_STAGES,
   METRIC_STATUS_TABS,
   formatMetricCalcDisplay,
   metricActions,
   metricToFormPayload,
 } from '@/data/metrics'
+import { useDomains } from '@/composables/useDomains'
 import { createApplyTicket, pageMyTickets } from '@/api/apply'
+import { fetchMetricLineage } from '@/api/metric'
 import { useSession } from '@/composables/useSession'
 import { useActionLock } from '@/composables/useActionLock'
 import {
@@ -49,6 +50,8 @@ const {
   runMaterialize,
 } = useMetrics()
 
+const { domainTabs, ensureDomains } = useDomains()
+
 const domainTab = ref('all')
 const typeTab = ref('all')
 const statusTab = ref('all')
@@ -61,6 +64,8 @@ const saving = computed(() => busy('save') || busy('publish') || busy('transitio
 const trialBusy = computed(() => busy('trial'))
 const trialResult = ref(null)
 const trialDt = ref('')
+/** 详情抽屉：下游指标 + API 绑定 */
+const detailLineage = ref(null)
 /** metricCode → 最近发布单 { ticketNo, status, remark } */
 const publishTickets = ref({})
 
@@ -179,6 +184,7 @@ onMounted(async () => {
       warmMetricBindAssets().catch(() => {}),
       refreshPublishTickets(),
       ensureWorkspaceUserOptions().catch(() => {}),
+      ensureDomains().catch(() => {}),
     ])
     const q = typeof route.query.q === 'string' ? route.query.q.trim() : ''
     if (q) {
@@ -223,16 +229,38 @@ async function openDetail(id) {
   activeId.value = id
   detailOpen.value = true
   trialResult.value = null
+  detailLineage.value = null
   try {
     await reloadDetail(id)
   } catch {
     /* 列表数据仍可用 */
+  }
+  try {
+    detailLineage.value = await fetchMetricLineage(id, currentWs.value || 'default')
+  } catch {
+    detailLineage.value = null
   }
 }
 
 function closeDetail() {
   detailOpen.value = false
   trialResult.value = null
+  detailLineage.value = null
+}
+
+async function confirmDeprecate(row) {
+  let impactHint = ''
+  try {
+    const lin = await fetchMetricLineage(row.id, currentWs.value || 'default')
+    const nDown = lin?.downstream?.length || lin?.downstreamCount || 0
+    const nApi = lin?.apiCount || lin?.apiBindings?.length || 0
+    if (nDown || nApi) {
+      impactHint = `\n下游影响：衍生/复合 ${nDown} · 数据服务 API ${nApi}`
+    }
+  } catch {
+    /* soft */
+  }
+  return window.confirm(`确认废弃 ${row.id}？废弃后禁止新引用。${impactHint}`)
 }
 
 async function doTrial() {
@@ -250,7 +278,7 @@ async function doTrial() {
       } else if (res?.blocked || res?.status === 'blocked') {
         showToast(res.message || res.statusLabel || '试跑被阻断', 'warning')
       } else {
-        showToast(res?.message || '试跑未执行（检查 Trino）', 'warning')
+        showToast(res?.message || '试跑未执行（请检查查询引擎）', 'warning')
       }
     } catch (e) {
       trialResult.value = { executed: false, message: e?.message || String(e), rows: [], columns: [] }
@@ -400,7 +428,7 @@ async function runAction(row, action) {
     return
   }
   if (action === 'deprecate') {
-    if (!window.confirm(`确认废弃 ${row.id}？废弃后禁止新引用。`)) return
+    if (!(await confirmDeprecate(row))) return
   }
   await runLocked('transition', async () => {
     try {
@@ -469,6 +497,7 @@ async function refresh() {
 <template>
   <div class="met-page">
     <PageHeader
+      page-id="metrics"
       title="指标中心"
       subtitle="原子 / 衍生 / 复合 · 草稿→待发布→启用→变更→废弃 · 发布审批对齐申请中心"
       :guide="guide"
@@ -484,8 +513,11 @@ async function refresh() {
       </button>
     </PageHeader>
 
+    <p class="tip met-banner">
+      KPI / 目录接指标服务；无数据为空态，不加载演示行。原子绑表来自资产目录。
+    </p>
     <p v-if="lastError && !catalog.length" class="met-banner warn">
-      加载失败：{{ lastError.message || lastError }} · 请确认后端已迁移 V16 且已登录
+      加载失败：{{ lastError.message || lastError }} · 请确认后端已迁移（含 V72 下线演示种子）且已登录
     </p>
     <p v-else-if="loading && !catalog.length" class="met-banner">正在加载指标目录…</p>
 
@@ -507,7 +539,7 @@ async function refresh() {
 
     <div class="met-domain-tabs">
       <button
-        v-for="t in METRIC_DOMAIN_TABS"
+        v-for="t in domainTabs"
         :key="t.id"
         type="button"
         class="met-domain-tab"
@@ -702,7 +734,9 @@ async function refresh() {
               </td>
             </tr>
             <tr v-if="!paged.length">
-              <td colspan="10" class="met-empty">{{ loading ? '加载中…' : '暂无指标' }}</td>
+              <td colspan="10" class="met-empty">
+                {{ loading ? '加载中…' : '暂无指标 · 空列表合法，请新建（不回落演示目录）' }}
+              </td>
             </tr>
           </tbody>
         </table>
@@ -785,6 +819,45 @@ async function refresh() {
           </div>
         </div>
 
+        <div class="met-sec-title">下游影响</div>
+        <div class="met-kv" style="margin-bottom: 12px">
+          <div class="met-kv-row">
+            <span>衍生 / 复合</span>
+            <div>
+              <template v-if="detailLineage?.downstream?.length">
+                <div
+                  v-for="d in detailLineage.downstream"
+                  :key="d.metricCode"
+                  style="margin: 2px 0"
+                >
+                  <code>{{ d.metricCode }}</code>
+                  <span class="tip"> · {{ d.name || d.kind || '' }} · {{ d.status || '' }}</span>
+                </div>
+              </template>
+              <span v-else class="tip">无下游指标依赖</span>
+            </div>
+          </div>
+          <div class="met-kv-row">
+            <span>数据服务 API</span>
+            <div>
+              <template v-if="detailLineage?.apiBindings?.length">
+                <div
+                  v-for="a in detailLineage.apiBindings"
+                  :key="a.id || a.publicPath"
+                  style="margin: 2px 0"
+                >
+                  <code>{{ a.publicPath || a.name }}</code>
+                  <span class="tip">
+                    · {{ a.sourceRef || '' }}
+                    <template v-if="a.pinnedVer"> · 钉 {{ a.pinnedVer }}</template>
+                  </span>
+                </div>
+              </template>
+              <span v-else class="tip">无钉版本 API 绑定</span>
+            </div>
+          </div>
+        </div>
+
         <div class="met-sec-title">状态流转记录</div>
         <div class="met-timeline">
           <div
@@ -812,7 +885,7 @@ async function refresh() {
             :disabled="trialBusy || saving"
             @click="doTrial"
           >
-            {{ trialBusy ? '试跑中…' : '▶ 试跑 Trino' }}
+            {{ trialBusy ? '试跑中…' : '▶ 试跑' }}
           </button>
           <button
             v-if="active.status === 'active' || active.status === 'review'"

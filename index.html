@@ -1,10 +1,24 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="default">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>DataLakeHub · 全栈湖仓一体数据治理平台</title>
+    <script>
+      (function () {
+        try {
+          var theme = localStorage.getItem('lh_theme')
+          if (theme === 'light' || theme === 'dark' || theme === 'default') {
+            document.documentElement.setAttribute('data-theme', theme)
+          }
+          var locale = localStorage.getItem('lh_locale')
+          if (locale === 'en' || locale === 'zh') {
+            document.documentElement.lang = locale === 'en' ? 'en' : 'zh-CN'
+          }
+        } catch (e) {}
+      })()
+    </script>
   </head>
   <body>
     <div id="app"></div>

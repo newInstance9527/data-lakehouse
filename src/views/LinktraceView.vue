@@ -177,7 +177,8 @@ watchListScope(() => loadBoard())
 <template>
   <div class="lt-page">
     <PageHeader
-      title="链路调用监控 · §29"
+      page-id="linktrace"
+      title="链路调用监控"
       subtitle="按 A–L 链路采跨组件 span · K=合规删除 · L=作业发布"
       :guide="guide"
     >

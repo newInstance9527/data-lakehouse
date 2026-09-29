@@ -9,6 +9,7 @@ import RegisterMappingModal from '@/components/standard/RegisterMappingModal.vue
 import { useStandards } from '@/composables/useStandards'
 import { useSession } from '@/composables/useSession'
 import { useToast } from '@/composables/useToast'
+import { useDomains } from '@/composables/useDomains'
 import { pageGuideOf } from '@/data/pageGuides'
 import { STD_KPIS, stdStatusMeta } from '@/data/standards'
 
@@ -36,6 +37,7 @@ const {
   runDetect,
 } = useStandards()
 const stdGuide = pageGuideOf('standard')
+const { domainOptions, ensureDomains, domainLabel } = useDomains()
 
 const tab = ref(String(route.query.tab || 'field'))
 const regOpen = ref(false)
@@ -74,12 +76,19 @@ const namePage = ref(1)
 const namePageSize = ref(10)
 
 const domains = computed(() => {
+  if (domainOptions.value.length) {
+    return domainOptions.value.map((d) => ({ value: d.value, label: d.label }))
+  }
   const fromMeta = metaOptions.value?.domains
   if (Array.isArray(fromMeta) && fromMeta.length) {
-    return fromMeta.map((d) => (typeof d === 'string' ? d : d.value || d.label)).filter(Boolean)
+    return fromMeta.map((d) =>
+      typeof d === 'string'
+        ? { value: d, label: d }
+        : { value: d.value || d.label, label: d.label || d.value },
+    ).filter((d) => d.value)
   }
-  const set = new Set(fieldList.value.map((f) => f.domain).filter(Boolean))
-  return [...set]
+  const set = new Set(fieldList.value.map((f) => f.domainCode || f.domain).filter(Boolean))
+  return [...set].map((v) => ({ value: v, label: domainLabel(v) }))
 })
 
 const nameLayers = computed(() => {
@@ -92,7 +101,7 @@ const nameLayers = computed(() => {
 const filteredFields = computed(() => {
   const q = fieldKw.value.trim().toLowerCase()
   return fieldList.value.filter((f) => {
-    if (domainFilter.value && f.domain !== domainFilter.value) return false
+    if (domainFilter.value && f.domain !== domainFilter.value && f.domainCode !== domainFilter.value) return false
     if (fieldStatus.value && f.status !== fieldStatus.value) return false
     if (!q) return true
     return `${f.name} ${f.type} ${f.unit} ${f.desc} ${f.domain}`.toLowerCase().includes(q)
@@ -236,7 +245,10 @@ watch(
 
 onMounted(async () => {
   try {
-    await loadAll({ ws: currentWs.value || 'default' })
+    await Promise.all([
+      loadAll({ ws: currentWs.value || 'default' }),
+      ensureDomains().catch(() => {}),
+    ])
   } catch (e) {
     showToast(`加载数据标准失败：${e.message || e}`, 'error')
   }
@@ -468,6 +480,7 @@ async function reload() {
 <template>
   <div>
     <PageHeader
+      page-id="standard"
       title="📐 数据标准"
       subtitle="标准字段库 · 标准码值 · 命名规范 · 源到标准映射 · 落地检测"
       :guide-title="stdGuide.title"
@@ -536,7 +549,7 @@ async function reload() {
             />
             <select v-model="domainFilter" class="select input-sm">
               <option value="">全部域</option>
-              <option v-for="d in domains" :key="d" :value="d">{{ d }}</option>
+              <option v-for="d in domains" :key="d.value || d" :value="d.value || d">{{ d.label || d }}</option>
             </select>
             <select v-model="fieldStatus" class="select input-sm">
               <option value="">全部状态</option>

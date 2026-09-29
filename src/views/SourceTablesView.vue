@@ -287,6 +287,7 @@ function fmtRows(n) {
 
   <div v-else>
     <PageHeader
+      page-id="source-tables"
       :title="`📋 表清单 · ${source.name}`"
       :subtitle="`${source.id} · ${source.type} · ${endpointOf(source)} · ${statusMeta(source.status).label}`"
       :guide-title="tablesGuide.title"

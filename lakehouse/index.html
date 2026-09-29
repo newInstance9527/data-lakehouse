@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="default">
   <head>
     <script>self["MonacoEnvironment"] = (function (paths) {
           return {
@@ -26,9 +26,24 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>DataLakeHub · 全栈湖仓一体数据治理平台</title>
-    <script type="module" crossorigin src="/assets/index-UqjxzPiH.js"></script>
+    <script>
+      (function () {
+        try {
+          var theme = localStorage.getItem('lh_theme')
+          if (theme === 'light' || theme === 'dark' || theme === 'default') {
+            document.documentElement.setAttribute('data-theme', theme)
+          }
+          var locale = localStorage.getItem('lh_locale')
+          if (locale === 'en' || locale === 'zh') {
+            document.documentElement.lang = locale === 'en' ? 'en' : 'zh-CN'
+          }
+        } catch (e) {}
+      })()
+    </script>
+    <script type="module" crossorigin src="/assets/index-Bz6uU_Qj.js"></script>
     <link rel="modulepreload" crossorigin href="/assets/rolldown-runtime-hePW80VL.js">
-    <link rel="stylesheet" crossorigin href="/assets/index-Cs5soTae.css">
+    <link rel="modulepreload" crossorigin href="/assets/_plugin-vue_export-helper-C0r_hp4r.js">
+    <link rel="stylesheet" crossorigin href="/assets/index-co8d_cWu.css">
   </head>
   <body>
     <div id="app"></div>

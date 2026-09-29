@@ -86,6 +86,11 @@ export function createAiSession(payload = {}) {
   return http.post(`${AI}/sessions`, payload)
 }
 
+/** 软删会话（仅本人） */
+export function deleteAiSession(sessionId) {
+  return http.delete(`${AI}/sessions/${encodeURIComponent(sessionId)}`)
+}
+
 /**
  * SSE 对话。onEvent({ event, data })；返回 AbortController。
  */

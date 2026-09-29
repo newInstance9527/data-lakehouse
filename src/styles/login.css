@@ -18,6 +18,13 @@
   background: var(--lh-depth);
 }
 
+.lh-login__prefs {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: 5;
+}
+
 .lh-login__sky {
   position: absolute;
   inset: 0;

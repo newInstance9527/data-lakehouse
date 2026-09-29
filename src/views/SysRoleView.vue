@@ -160,6 +160,7 @@ const flatMenus = computed(() => {
 <template>
   <div class="sys-page">
     <PageHeader
+      page-id="sys-roles"
       title="角色管理"
       subtitle="角色 CRUD · 菜单授权 · 治理角色 dataOwner / dataSteward / dataAnalyst（Flyway V51）"
     >

@@ -11,7 +11,7 @@ export const DEV_KPIS = [
 export const DEV_ENGINES = [
   { value: 'spark', label: 'Spark SQL', role: 'main' },
   { value: 'flink', label: 'Flink SQL', role: 'main' },
-  { value: 'trino', label: 'Trino（校验）', role: 'check' },
+  { value: 'trino', label: '即席校验', role: 'check' },
 ]
 
 export const DEV_UDFS = [

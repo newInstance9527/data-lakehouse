@@ -4,20 +4,27 @@
 import { computed, ref } from 'vue'
 import {
   createQualityTicket,
+  deleteQualityGate,
+  fetchQualityGates,
   fetchQualityGold,
   fetchQualityOverview,
   fetchQualityRules,
+  fetchQualityRuns,
   fetchQualityTrend,
   fetchQualityTypeDist,
+  syncQualityOm,
+  upsertQualityGate,
   upsertQualityRule,
 } from '@/api/quality'
 import { useSession } from '@/composables/useSession'
+import { metricBindMetaOf } from '@/data/metricBindAssets'
 
 const overview = ref(null)
 const trend = ref([])
 const typeDist = ref([])
 const gold = ref([])
 const rules = ref([])
+const gates = ref([])
 const loading = ref(false)
 const loaded = ref(false)
 const lastError = ref(null)
@@ -37,6 +44,12 @@ function fmtNum(n) {
   return x.toLocaleString('en-US')
 }
 
+function isStreamJob(jobRunId, message) {
+  const j = String(jobRunId || '')
+  const m = String(message || '')
+  return /^stream:/i.test(j) || /stream\s*probe/i.test(m)
+}
+
 function normalizeRule(row) {
   if (!row) return null
   const okPct = row.okPct != null ? Number(row.okPct) : row.pass === false ? 0 : 100
@@ -44,6 +57,7 @@ function normalizeRule(row) {
     row.ruleCode && row.tableName
       ? `${String(row.tableName).split('.').pop()}.${row.fieldName ? `${row.fieldName}.` : ''}${row.ruleCode}`
       : row.id
+  const jobRunId = row.jobRunId || ''
   return {
     id: row.id,
     displayId,
@@ -64,6 +78,23 @@ function normalizeRule(row) {
     status: row.statusText || row.status || '—',
     alert: !!row.blocked,
     severity: row.severity,
+    omTestFqn: row.omTestFqn || '',
+    stdCodeSetId: row.stdCodeSetId || '',
+    jobRunId,
+    stream: isStreamJob(jobRunId, row.message),
+    raw: row,
+  }
+}
+
+function normalizeGate(row) {
+  if (!row) return null
+  return {
+    id: row.id,
+    layer: row.layer || '',
+    tableName: row.tableName || '',
+    assetId: row.assetId || '',
+    minScore: row.minScore != null ? Number(row.minScore) : 95,
+    blockOnFail: row.blockOnFail !== false && row.blockOnFail !== 0,
     raw: row,
   }
 }
@@ -155,11 +186,43 @@ function normalizeGold(rows) {
 
 export function useQuality() {
   const metrics = computed(() => buildMetrics(overview.value))
+  const omSummary = computed(() => {
+    const om = overview.value?.om
+    if (!om || typeof om !== 'object') {
+      return { available: false, hint: '暂无 OM 摘要' }
+    }
+    return {
+      available: !!om.available,
+      health: om.health || '',
+      sampledTables: Number(om.sampledTables ?? 0),
+      profileOk: Number(om.profileOk ?? 0),
+      testTotal: Number(om.testTotal ?? 0),
+      testPass: Number(om.testPass ?? 0),
+      testFail: Number(om.testFail ?? 0),
+      testPassRate: om.testPassRate != null ? Number(om.testPassRate) : null,
+      hint: om.hint || '',
+      notes: Array.isArray(om.notes) ? om.notes : [],
+    }
+  })
+  const streamSummary = computed(() => {
+    const s = overview.value?.stream
+    if (!s || typeof s !== 'object') {
+      return { runCount: 0, failCount: 0, passCount: 0, lastAt: null, hint: '暂无流式摘要' }
+    }
+    return {
+      runCount: Number(s.runCount ?? 0),
+      failCount: Number(s.failCount ?? 0),
+      passCount: Number(s.passCount ?? 0),
+      lastAt: s.lastAt || null,
+      hint: s.hint || '',
+    }
+  })
   const trendPoints = computed(() => buildTrendPoints(trend.value))
   const typeDistView = computed(() => normalizeTypeDist(typeDist.value))
   const goldTables = computed(() => normalizeGold(gold.value))
   const ruleList = computed(() => rules.value)
   const ruleTotal = computed(() => rules.value.length)
+  const gateList = computed(() => gates.value)
 
   async function loadAll(range = '30', ws) {
     loading.value = true
@@ -168,20 +231,22 @@ export function useQuality() {
       const { currentWs } = useSession()
       const workspace = ws || currentWs.value || 'default'
       const q = { ws: workspace, range }
-      const [ov, tr, td, g, page] = await Promise.all([
+      const [ov, tr, td, g, page, gt] = await Promise.all([
         fetchQualityOverview(q),
         fetchQualityTrend(q),
         fetchQualityTypeDist({ ws: workspace }),
         fetchQualityGold({ ws: workspace, limit: 5 }),
         fetchQualityRules({ ws: workspace }, { current: 1, size: 200 }),
+        fetchQualityGates({ ws: workspace }),
       ])
       overview.value = ov
       trend.value = tr || []
       typeDist.value = td || []
       gold.value = g || []
       rules.value = (page?.records || []).map(normalizeRule).filter(Boolean)
+      gates.value = (Array.isArray(gt) ? gt : []).map(normalizeGate).filter(Boolean)
       loaded.value = true
-      return { overview: ov, rules: rules.value }
+      return { overview: ov, rules: rules.value, gates: gates.value }
     } catch (e) {
       lastError.value = e
       console.error('[quality] load failed', e)
@@ -212,14 +277,22 @@ export function useQuality() {
       .toUpperCase()
     const table = form.table
     const field = form.scope === 'field' ? form.field || '' : ''
+    let stdCodeSetId = form.stdCodeSetId || ''
+    let expr = form.expr || `${form.rtype} · 待配置`
+    if (!stdCodeSetId && form.rtype === '枚举' && /^codeSet\s*=/i.test(String(expr).trim())) {
+      stdCodeSetId = String(expr).replace(/^codeSet\s*=\s*/i, '').trim()
+    }
+    const meta = metricBindMetaOf(table)
     const saved = await upsertQualityRule({
       ruleCode: name,
       ruleType: form.rtype,
       scope: form.scope || (field ? 'field' : 'table'),
       tableName: table,
       fieldName: field,
-      exprText: form.expr || `${form.rtype} · 待配置`,
+      exprText: expr,
       severity: form.sev,
+      stdCodeSetId: stdCodeSetId || undefined,
+      assetId: form.assetId || meta?.assetId || undefined,
       ws: form.ws || currentWs.value || 'default',
     })
     const row = normalizeRule(saved)
@@ -236,18 +309,74 @@ export function useQuality() {
     return row
   }
 
+  async function saveGate(form) {
+    const { currentWs } = useSession()
+    const tableName = String(form.tableName || form.table || '').trim()
+    const meta = tableName ? metricBindMetaOf(tableName) : null
+    const saved = await upsertQualityGate({
+      id: form.id,
+      ws: form.ws || currentWs.value || 'default',
+      layer: form.layer || '',
+      tableName,
+      assetId: form.assetId || meta?.assetId || '',
+      minScore: form.minScore != null && form.minScore !== '' ? Number(form.minScore) : 95,
+      blockOnFail: form.blockOnFail !== false && form.blockOnFail !== 'false',
+    })
+    const row = normalizeGate(saved)
+    const idx = gates.value.findIndex((g) => g.id === row.id)
+    if (idx >= 0) gates.value[idx] = row
+    else gates.value.unshift(row)
+    return row
+  }
+
+  async function removeGate(id) {
+    await deleteQualityGate(id)
+    gates.value = gates.value.filter((g) => g.id !== id)
+  }
+
+  async function loadRuleRuns(ruleId, { current = 1, size = 20 } = {}) {
+    if (!ruleId) return { records: [], total: 0 }
+    const { currentWs } = useSession()
+    const page = await fetchQualityRuns(ruleId, {
+      ws: currentWs.value || 'default',
+      current,
+      size,
+    })
+    return {
+      records: page?.records || [],
+      total: Number(page?.total ?? page?.records?.length ?? 0),
+    }
+  }
+
   async function openTicket(ruleId, remark) {
     return createQualityTicket({ ruleId, remark })
+  }
+
+  async function syncOm() {
+    const { currentWs } = useSession()
+    const workspace = currentWs.value || 'default'
+    const r = await syncQualityOm({ ws: workspace })
+    try {
+      overview.value = await fetchQualityOverview({ ws: workspace })
+      const page = await fetchQualityRules({ ws: workspace }, { current: 1, size: 200 })
+      rules.value = (page?.records || []).map(normalizeRule).filter(Boolean)
+    } catch {
+      /* ignore refresh */
+    }
+    return r
   }
 
   return {
     overview,
     metrics,
+    omSummary,
+    streamSummary,
     trendPoints,
     typeDistView,
     goldTables,
     ruleList,
     ruleTotal,
+    gateList,
     loading,
     loaded,
     lastError,
@@ -255,6 +384,10 @@ export function useQuality() {
     loadAll,
     reloadByRange,
     createRule,
+    saveGate,
+    removeGate,
+    loadRuleRuns,
     openTicket,
+    syncOm,
   }
 }

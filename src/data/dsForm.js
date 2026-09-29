@@ -89,12 +89,12 @@ export const DS_TYPE_FIELDS = {
       "l": "接入方式",
       "t": "select",
       "o": [
-        "CDC 实时 (Flink CDC)",
+        "CDC 实时",
         "CDC 实时 (Canal/Debezium)",
         "批抽取 (DataX)",
         "批抽取 (Spark JDBC)"
       ],
-      "def": "CDC 实时 (Flink CDC)"
+      "def": "CDC 实时"
     },
     {
       "n": "extra",
@@ -1220,57 +1220,57 @@ export const DS_TYPE_FIELD_ALIAS = {
 export const DS_TYPE_META = {
   "MySQL": {
     "bg": "#e6f7ff",
-    "color": "#08979c",
+    "color": "#1890ff",
     "port": "3306"
   },
   "PostgreSQL": {
     "bg": "#e6f7ff",
-    "color": "#08979c",
+    "color": "#1890ff",
     "port": "5432"
   },
   "Oracle": {
-    "bg": "#fff2e8",
-    "color": "#fa541c",
+    "bg": "#e6f7ff",
+    "color": "#1890ff",
     "port": "1521"
   },
   "SQL Server": {
     "bg": "#e6f7ff",
-    "color": "#096dd9",
+    "color": "#1890ff",
     "port": "1433"
   },
   "ClickHouse": {
-    "bg": "#fff2e8",
-    "color": "#fa541c",
+    "bg": "#e6f7ff",
+    "color": "#1890ff",
     "port": "9000"
   },
   "Doris": {
-    "bg": "#fff2e8",
-    "color": "#fa541c",
+    "bg": "#e6f7ff",
+    "color": "#1890ff",
     "port": "9030"
   },
   "Hive": {
-    "bg": "#f6ffed",
-    "color": "#52c41a",
+    "bg": "#e6f7ff",
+    "color": "#1890ff",
     "port": "10000"
   },
   "Iceberg": {
-    "bg": "#e6fffb",
-    "color": "#13c2c2",
+    "bg": "#e6f7ff",
+    "color": "#1890ff",
     "port": "9083"
   },
   "HBase": {
-    "bg": "#f6ffed",
-    "color": "#389e0d",
+    "bg": "#e6f7ff",
+    "color": "#1890ff",
     "port": "2181"
   },
   "Kafka": {
-    "bg": "#1a1a2e",
-    "color": "#61dafb",
+    "bg": "#e6f7ff",
+    "color": "#1890ff",
     "port": "9092"
   },
   "RabbitMQ": {
-    "bg": "#fff7e6",
-    "color": "#d48806",
+    "bg": "#e6f7ff",
+    "color": "#1890ff",
     "port": "5672"
   },
   "Pulsar": {
@@ -1279,38 +1279,38 @@ export const DS_TYPE_META = {
     "port": "6650"
   },
   "MongoDB": {
-    "bg": "#f6ffed",
-    "color": "#389e0d",
+    "bg": "#e6f7ff",
+    "color": "#1890ff",
     "port": "27017"
   },
   "Elasticsearch": {
-    "bg": "#fff1f0",
-    "color": "#f5222d",
+    "bg": "#e6f7ff",
+    "color": "#1890ff",
     "port": "9200"
   },
   "Redis": {
-    "bg": "#fff1f0",
-    "color": "#f5222d",
+    "bg": "#e6f7ff",
+    "color": "#1890ff",
     "port": "6379"
   },
   "HDFS": {
-    "bg": "#fafafa",
-    "color": "#595959",
+    "bg": "#e6f7ff",
+    "color": "#1890ff",
     "port": "8020"
   },
   "S3 / MinIO": {
-    "bg": "#e6fffb",
-    "color": "#13c2c2",
+    "bg": "#e6f7ff",
+    "color": "#1890ff",
     "port": "443"
   },
   "FTP/SFTP": {
-    "bg": "#fafafa",
-    "color": "#595959",
+    "bg": "#e6f7ff",
+    "color": "#1890ff",
     "port": "22"
   },
   "HTTP API": {
-    "bg": "#f9f0ff",
-    "color": "#722ed1",
+    "bg": "#e6f7ff",
+    "color": "#1890ff",
     "port": "443"
   }
 }

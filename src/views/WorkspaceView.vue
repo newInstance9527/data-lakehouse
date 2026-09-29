@@ -386,6 +386,7 @@ async function memberAction(row) {
 <template>
   <div class="ws-page">
     <PageHeader
+      page-id="workspace"
       title="🗂️ 工作空间"
       subtitle="组织归属 · 成本配额 · 协作上下文 · 共享资源池（非 Catalog 隔离）"
       :guide="guide"
@@ -410,7 +411,7 @@ async function memberAction(row) {
 
     <p class="tip ws-soft-banner">
       当前工作边界 <code>{{ currentWs || 'default' }}</code>
-      · 列表默认跟随本空间；跨团队发现走企业共享；授权仍走申请中心
+      · 列表默认跟随本空间；授权仍走申请中心
       · 软过滤偏好（目录/指标/ETL/查询/AI），
       <b>不是</b> Grav ACL 旁路；读数/出湖仍走申请中心。空列表合法，无演示回落。
     </p>
@@ -495,7 +496,7 @@ async function memberAction(row) {
           <div class="card-body ws-detail">
             <div class="ws-detail-grid">
               <div><span class="muted">成本中心：</span><code>{{ active.costCenter }}</code></div>
-              <div><span class="muted">Trino 资源组：</span><code>{{ active.rg }}</code></div>
+              <div><span class="muted">查询资源组：</span><code>{{ active.rg }}</code></div>
               <div><span class="muted">共享 Catalog：</span><code>{{ active.gravitino }}</code></div>
               <div><span class="muted">常用 schema：</span><code>{{ active.preferredSchemas }}</code></div>
               <div><span class="muted">Owner：</span>{{ active.owners }}</div>
@@ -729,7 +730,7 @@ async function memberAction(row) {
             </div>
 
             <div class="wqf-meta">
-              <div>Trino 并发 {{ activeQuota.trino }}</div>
+              <div>查询并发 {{ activeQuota.trino }}</div>
               <div>API QPS {{ activeQuota.api }}</div>
               <span class="tag" :class="wsQuotaStatusMeta(activeQuota.status).tag">
                 {{ wsQuotaStatusMeta(activeQuota.status).label }}

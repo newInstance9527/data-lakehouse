@@ -215,6 +215,7 @@ async function remove(row) {
 <template>
   <div class="sys-page pos-page">
     <PageHeader
+      page-id="sys-position"
       title="职位管理"
       subtitle="选父部门可汇总本级及下级职位 · /sys/position · 用户挂职见 positionSelector"
     >

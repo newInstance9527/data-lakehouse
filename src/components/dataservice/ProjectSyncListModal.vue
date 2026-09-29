@@ -27,8 +27,8 @@ const title = computed(() =>
 
 const subtitle = computed(() =>
   isFailed.value
-    ? '以下数据源投影到 SQLREST 失败，可单条或全部重试；按最近同步时间倒序'
-    : '以下可投影数据源尚未同步到 SQLREST，可单条或全部投影；按最近同步时间倒序',
+    ? '以下数据源投影到接口服务失败，可单条或全部重试；按最近同步时间倒序'
+    : '以下可投影数据源尚未同步到接口服务，可单条或全部投影；按最近同步时间倒序',
 )
 
 const primaryLabel = computed(() =>

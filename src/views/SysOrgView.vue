@@ -405,7 +405,8 @@ async function removePerson(row) {
 
 <template>
   <div class="sys-page org-page">
-    <PageHeader title="部门管理" subtitle="组织树 · 挂系统用户主部门 · 非系统人员档案 · /sys/org + /lh/org/person">
+    <PageHeader
+      page-id="sys-org" title="部门管理" subtitle="组织树 · 挂系统用户主部门 · 非系统人员档案">
       <button type="button" class="btn btn-sm" :disabled="treeLoading" @click="loadTree">↻ 刷新树</button>
       <button type="button" class="btn btn-sm" @click="openAddRoot">＋ 根组织</button>
       <button type="button" class="btn btn-sm btn-primary" @click="openAddChild">＋ 子部门</button>

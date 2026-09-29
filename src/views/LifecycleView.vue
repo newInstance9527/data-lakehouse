@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { nextTick, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
 import { useToast } from '@/composables/useToast'
@@ -22,6 +22,8 @@ const {
   snapshotPolicies,
   compactionRows,
   stages,
+  reclaimAxes,
+  archiveCandidates,
   compliancePreview,
   orphanRows,
   jobsLatest,
@@ -34,6 +36,8 @@ const {
   syncRun,
   lcJobStatusMeta,
 } = useLifecycle()
+
+const archiveSectionEl = ref(null)
 
 const policyFormOpen = ref(false)
 const policyForm = ref({
@@ -64,7 +68,25 @@ onMounted(async () => {
       adviceId: q.adviceId ? String(q.adviceId) : '',
     }
   }
+  if (q.focus === 'archive' || q.action === 'archive') {
+    await nextTick()
+    archiveSectionEl.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
 })
+
+function goExportExpire() {
+  router.push({ path: '/export', query: { focus: 'expire' } })
+}
+
+function onKpiClick(k) {
+  if (!k?.clickable) return
+  if (k.focus === 'archive') {
+    archiveSectionEl.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    router.replace({ path: '/lifecycle', query: { ...route.query, focus: 'archive' } })
+  } else if (k.focus === 'compliance') {
+    goCompliance()
+  }
+}
 
 async function confirmDeepLink() {
   const p = pendingDeepLink.value
@@ -85,7 +107,7 @@ async function runLifecycleNow() {
     const run = await runNow()
     const mid = run.dsTaskId || run.runId || ''
     showToast(
-      `▶ 日作业已提交 DS · status=${run.status} · ${mid}${run.errorMsg ? ' · ' + run.errorMsg : ''}`,
+      `▶ 日作业已提交 · ${run.status}${mid ? ' · ' + mid : ''}${run.errorMsg ? ' · ' + run.errorMsg : ''}`,
       run.status === 'failed' ? 'warning' : 'success',
     )
     if (run.runId && run.status === 'running') {
@@ -112,15 +134,18 @@ function openComplianceDelete() {
   router.push({ path: '/compliance', query: { create: '1' } })
 }
 
-function goCompliance() {
-  router.push('/compliance')
+function goCompliance(ticket) {
+  const q = {}
+  if (ticket?.reqNo || ticket?.id) q.reqNo = ticket.reqNo || ticket.id
+  if (ticket?.reqId) q.reqId = ticket.reqId
+  router.push({ path: '/compliance', query: q })
 }
 
 async function onExpireSnapshot(table, adviceId) {
   try {
     const run = await expireTable(table, undefined, adviceId || undefined)
     showToast(
-      `快照过期已提交 DS · ${table} · ${run.status} · ${run.dsTaskId || run.runId}`,
+      `快照过期已提交 · ${table} · ${run.status} · ${run.dsTaskId || run.runId}`,
       run.status === 'failed' ? 'warning' : 'success',
     )
     if (run.runId && run.status === 'running') {
@@ -141,7 +166,7 @@ async function onRunCompaction(table, adviceId) {
   try {
     const run = await compactTable(table, undefined, adviceId || undefined)
     showToast(
-      `⚡ 合并已提交 DS · ${table} · ${run.status} · ${run.dsTaskId || run.runId}`,
+      `⚡ 合并已提交 · ${table} · ${run.status} · ${run.dsTaskId || run.runId}`,
       run.status === 'failed' ? 'warning' : 'success',
     )
     if (run.runId && run.status === 'running') {
@@ -162,7 +187,7 @@ async function onScanOrphans() {
   try {
     const res = await orphanScan()
     showToast(
-      `🔍 孤儿 dry-run 已提交 DS · ${res.processInstanceId || res.dsTaskId || res.runId}${res.degraded ? '（降级）' : ''}`,
+      `🔍 孤儿扫描（预演）已提交 · ${res.processInstanceId || res.dsTaskId || res.runId}${res.degraded ? '（降级）' : ''}`,
       res.degraded ? 'warning' : 'info',
     )
   } catch (e) {
@@ -207,6 +232,7 @@ async function submitPolicy() {
 <template>
   <div class="lc-page">
     <PageHeader
+      page-id="lifecycle"
       title="生命周期与小文件治理"
       subtitle="冷热分层 · 快照过期 · 小文件合并 · 孤儿清理 · 分区过期 · 归档恢复 · 合规删除"
       :guide="guide"
@@ -222,7 +248,7 @@ async function submitPolicy() {
       <code>{{ pendingDeepLink.table }}</code>
       执行
       <b>{{ pendingDeepLink.action === 'compact' ? '小文件合并' : '快照过期' }}</b>
-      ？将提交 DS 工单并留痕。
+      ？将提交调度工单并留痕。
       <button type="button" class="btn btn-sm btn-primary" :disabled="actionBusy" @click="confirmDeepLink">
         确认执行
       </button>
@@ -234,7 +260,13 @@ async function submitPolicy() {
     </p>
 
     <div class="kpi-grid lc-kpi">
-      <div v-for="(k, i) in liveKpis" :key="i" class="kpi-card" :class="k.color">
+      <div
+        v-for="(k, i) in liveKpis"
+        :key="i"
+        class="kpi-card"
+        :class="[k.color, k.clickable ? 'clickable' : '']"
+        @click="onKpiClick(k)"
+      >
         <div class="kpi-icon" :class="k.color">{{ k.icon }}</div>
         <div class="kpi-value">
           {{ k.value }}<span class="kpi-unit">{{ k.unit }}</span>
@@ -265,7 +297,7 @@ async function submitPolicy() {
     <div class="grid grid-2 lc-grid-top">
       <div class="card">
         <div class="card-header">
-          <div class="card-title">⚙️ 生命周期日作业 <span class="tip">· 每日 02:00 · DS 编排</span></div>
+          <div class="card-title">⚙️ 生命周期日作业 <span class="tip">· 每日 02:00 · 调度编排</span></div>
           <span class="tag" :class="jobsLatest?.status === 'success' ? 'tag-green' : 'tag-blue'">
             {{ jobsLatest?.status === 'success' ? '上次成功' : jobsLatest?.status || '—' }}
           </span>
@@ -324,6 +356,58 @@ async function submitPolicy() {
       </div>
     </div>
 
+    <div ref="archiveSectionEl" class="card lc-archive">
+      <div class="card-header">
+        <div class="card-title">
+          🗄️ 湖内分区归档候选
+          <span class="tip">· 湖表分区过期 → 冷存储；≠ 出湖授权到期</span>
+        </div>
+        <div class="lc-comp-acts">
+          <button type="button" class="btn btn-sm" @click="goExportExpire">
+            出湖到期回收
+            <template v-if="reclaimAxes?.exportExpireReclaim?.expiringSoon != null">
+              （{{ reclaimAxes.exportExpireReclaim.expiringSoon }}）
+            </template>
+            →
+          </button>
+        </div>
+      </div>
+      <div class="card-body" style="padding: 0">
+        <p class="tip lc-reclaim-note">
+          {{ reclaimAxes?.lakePartitionArchive?.note || '分区过期候选 SoT 在本页；出湖到期停作业走 /export，不双写 gov_lc_*。' }}
+        </p>
+        <table class="table">
+          <thead>
+            <tr>
+              <th>表</th>
+              <th>层</th>
+              <th>过期天数</th>
+              <th>状态</th>
+              <th>冷桶前缀</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-if="!archiveCandidates.length">
+              <td colspan="5" class="tip" style="text-align:center;padding:16px">
+                暂无分区过期策略（空列表合法）
+              </td>
+            </tr>
+            <tr v-for="r in archiveCandidates" :key="r.table">
+              <td>
+                <button type="button" class="btn-link" @click="goCatalog(r.table)">
+                  <code>{{ r.table }}</code>
+                </button>
+              </td>
+              <td><span class="tag tag-blue" style="font-size: 10px">{{ r.layer }}</span></td>
+              <td>{{ r.days }}</td>
+              <td><span class="tag tag-gray" style="font-size: 10px">{{ r.status }}</span></td>
+              <td style="font-size: 11px">{{ r.coldBucket || '—' }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
     <div class="card lc-compliance">
       <div class="card-header">
         <div class="card-title">🗑️ 合规删除工单 <span class="tip">· 被遗忘权 / 错误数据擦除 · 不可逆</span></div>
@@ -346,10 +430,15 @@ async function submitPolicy() {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="t in compliancePreview" :key="t.id">
+            <tr v-if="!compliancePreview.length">
+              <td colspan="6" class="tip" style="text-align:center;padding:16px">
+                暂无待办合规工单（空列表合法）
+              </td>
+            </tr>
+            <tr v-for="t in compliancePreview" :key="t.reqId || t.id">
               <td>
-                <button type="button" class="btn-link" @click="goCompliance">
-                  <code>{{ t.id }}</code>
+                <button type="button" class="btn-link" @click="goCompliance(t)">
+                  <code>{{ t.id || t.reqNo }}</code>
                 </button>
               </td>
               <td>{{ t.subject }}</td>
@@ -414,7 +503,7 @@ async function submitPolicy() {
     <div class="grid grid-2">
       <div class="card">
         <div class="card-header">
-          <div class="card-title">📸 快照过期策略 · §32.1 <span class="tip">· 每表可配</span></div>
+          <div class="card-title">📸 快照过期策略 <span class="tip">· 每表可配</span></div>
           <button type="button" class="btn btn-sm" @click="openPolicyForm">＋ 新建策略</button>
         </div>
         <div class="card-body" style="padding: 0">
@@ -456,7 +545,7 @@ async function submitPolicy() {
 
       <div class="card">
         <div class="card-header">
-          <div class="card-title">🧹 小文件合并 · §32.2 <span class="tip">· compaction SLA</span></div>
+          <div class="card-title">🧹 小文件合并 <span class="tip">· 合并 SLA</span></div>
           <span class="tag tag-orange">{{ compactionRows.filter((c) => !c.ok).length }} 表超阈值</span>
         </div>
         <div class="card-body" style="padding: 0">
@@ -502,7 +591,7 @@ async function submitPolicy() {
 
     <div class="card">
       <div class="card-header">
-        <div class="card-title">🗑️ 孤儿文件清理 · §32.3 <span class="tip">· 快照过期 +72h 后物理删</span></div>
+        <div class="card-title">🗑️ 孤儿文件清理 <span class="tip">· 快照过期 +72h 后物理删</span></div>
         <button type="button" class="btn btn-sm" :disabled="actionBusy" @click="onScanOrphans">
           🔍 扫描孤儿
         </button>
@@ -634,6 +723,13 @@ async function submitPolicy() {
 .lj-duration { font-size: 11px; color: var(--text-3); text-align: right; }
 
 .lc-compliance { border-color: var(--danger); }
+.lc-kpi .kpi-card.clickable {
+  cursor: pointer;
+}
+.lc-kpi .kpi-card.clickable:hover {
+  outline: 1px solid var(--primary, #1e6fff);
+}
+.lc-reclaim-note { margin: 0; padding: 10px 14px; border-bottom: 1px solid var(--border); }
 .lc-comp-acts {
   display: flex;
   align-items: center;

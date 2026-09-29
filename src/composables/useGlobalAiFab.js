@@ -7,6 +7,7 @@
 import { computed, ref } from 'vue'
 import { createAiSession, fetchAiModels, runAiSql, streamAiChat } from '@/api/ai'
 import { chatModelOptionLabel, filterChatPickerModels } from '@/data/ai'
+import { formatAiMarkdown } from '@/utils/aiMarkdown'
 
 const LS_POS = 'lh_ai_fab_pos'
 const LS_SIZE = 'lh_ai_fab_size'
@@ -224,7 +225,7 @@ export function useGlobalAiFab() {
       text: trimmed || '（附件）',
       previews,
     })
-    const assistantMsg = { role: 'assistant', html: '', citations: [], actions: [] }
+    const assistantMsg = { role: 'assistant', text: '', html: '', citations: [], actions: [] }
     messages.value.push(assistantMsg)
     const idx = messages.value.length - 1
     sending.value = true
@@ -233,7 +234,8 @@ export function useGlobalAiFab() {
       await ensureSession(ws)
     } catch (e) {
       lastError.value = e
-      assistantMsg.html = `<span style="color:#cf1322">${escapeHtml(e?.message || '创建会话失败')}</span>`
+      assistantMsg.text = `⚠️ ${e?.message || '创建会话失败'}`
+      assistantMsg.html = formatAiMarkdown(assistantMsg.text)
       messages.value[idx] = { ...assistantMsg }
       sending.value = false
       return { error: e }
@@ -258,8 +260,8 @@ export function useGlobalAiFab() {
           }
           if (event === 'token') {
             const t = typeof data === 'string' ? data : data?.text || data?.token || ''
-            const chunk = String(t).replace(/\n/g, '<br/>')
-            msg.html = (msg.html || '') + chunk
+            msg.text = (msg.text || '') + String(t)
+            msg.html = formatAiMarkdown(msg.text)
             messages.value[idx] = { ...msg }
           }
           if (event === 'citation') {
@@ -273,15 +275,16 @@ export function useGlobalAiFab() {
             messages.value[idx] = { ...msg }
           }
           if (event === 'done') {
-            if (data?.content && !msg.html) {
-              msg.html = String(data.content).replace(/\n/g, '<br/>')
+            if (data?.content) {
+              msg.text = String(data.content)
             }
+            msg.html = formatAiMarkdown(msg.text || '')
             if (data?.citations) msg.citations = data.citations
             if (data?.actions) msg.actions = data.actions
             if (data?.error) {
               lastError.value = new Error(data.error)
-              const errHtml = `<span style="color:#cf1322">⚠️ ${escapeHtml(data.error)}</span>`
-              msg.html = msg.html ? `${msg.html}<br>${errHtml}` : errHtml
+              msg.text = `${msg.text || ''}\n\n⚠️ ${data.error}`
+              msg.html = formatAiMarkdown(msg.text)
             }
             messages.value[idx] = { ...msg }
           }
@@ -290,8 +293,8 @@ export function useGlobalAiFab() {
           lastError.value = e
           const msg = messages.value[idx]
           if (msg) {
-            const errHtml = `<span style="color:#cf1322">⚠️ ${escapeHtml(e?.message || '请求失败')}</span>`
-            msg.html = msg.html ? `${msg.html}<br>${errHtml}` : errHtml
+            msg.text = `${msg.text || ''}\n\n⚠️ ${e?.message || '请求失败'}`
+            msg.html = formatAiMarkdown(msg.text)
             messages.value[idx] = { ...msg }
           }
           sending.value = false
@@ -342,12 +345,4 @@ export function useGlobalAiFab() {
       pos.value = clampPos(p)
     },
   }
-}
-
-function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
 }

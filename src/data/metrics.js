@@ -1,6 +1,6 @@
 /** 指标中心 · 口径与目录 · 生命周期状态机 */
 
-import { SCHEMA_COLS } from '@/data/assets'
+import { metricBindFieldOptions } from '@/data/metricBindAssets'
 
 /** 表单选项默认读此提供者（useMetrics 接入后指向远端目录） */
 let metricCatalogProvider = null
@@ -11,57 +11,11 @@ export function setMetricCatalogProvider(fn) {
 
 export function getMetricCatalogForForms() {
   const live = metricCatalogProvider?.()
-  if (Array.isArray(live) && live.length) return live
-  return METRIC_CATALOG
+  return Array.isArray(live) ? live : []
 }
 
-export const METRIC_KPIS = [
-  {
-    icon: '📊',
-    color: 'blue',
-    value: '342',
-    unit: '个',
-    label: '总指标数',
-    trend: '28 本月新增',
-    trendUp: true,
-  },
-  {
-    icon: '⚛️',
-    color: 'green',
-    value: '86',
-    unit: '个',
-    label: '原子指标',
-    trend: '',
-    trendUp: true,
-  },
-  {
-    icon: '🎯',
-    color: 'purple',
-    value: '198',
-    unit: '个',
-    label: '衍生指标',
-    trend: '23 新业务口径',
-    trendUp: true,
-  },
-  {
-    icon: '🧩',
-    color: 'cyan',
-    value: '58',
-    unit: '个',
-    label: '复合指标',
-    trend: '比率 / AOV 等',
-    trendUp: true,
-  },
-  {
-    icon: '✅',
-    color: 'green',
-    value: '0',
-    unit: '个',
-    label: '已启用',
-    trend: '可被报表 / API 引用',
-    trendUp: true,
-  },
-]
+/** @deprecated KPI 走 useMetrics.liveKpis（/lh/metric/overview）；保留空骨架防旧引用 */
+export const METRIC_KPIS = []
 
 /**
  * 状态机（与数据服务 API 发布同口径）：
@@ -116,6 +70,8 @@ export const METRIC_DOMAIN_TABS = [
   { id: 'trade', label: '交易域' },
   { id: 'user', label: '用户域' },
   { id: 'goods', label: '商品域' },
+  { id: 'marketing', label: '营销域' },
+  { id: 'finance', label: '财务域' },
 ]
 
 function withStatus(row, status, extras = {}) {
@@ -134,226 +90,28 @@ function withStatus(row, status, extras = {}) {
   }
 }
 
-export const METRIC_CATALOG = [
-  withStatus(
-    {
-      id: 'M-0001',
-      name: '日GMV',
-      type: '衍生',
-      typeCls: 'tag-purple',
-      domain: 'trade',
-      caliber: '订单支付成功金额合计，不含退款',
-      bind: '原子·支付金额',
-      formula: '',
-      qualifier: '无限定',
-      qualifierKeys: [],
-      dim: 'dt',
-      dimKeys: ['dt'],
-      time: '近1天',
-      unit: '元',
-      latest: '¥3,284.6万',
-      vol: '↓ 12.4%',
-      volCls: 'down',
-      owner: '李明',
-      ver: 'v3',
-      kind: '衍生',
-    },
-    'active',
-    {
-      history: [
-        { status: 'draft', label: '草稿', time: '2026-07-01', note: '初建' },
-        { status: 'review', label: '评审中', time: '2026-07-02', note: '口径评审' },
-        { status: 'active', label: '已启用', time: '2026-07-05', note: 'v1 发布' },
-        { status: 'version_review', label: '新版本评审', time: '2026-08-20', note: '剔除退款' },
-        { status: 'active', label: '已启用', time: '2026-08-22', note: 'v3 启用' },
-      ],
-    },
-  ),
-  withStatus(
-    {
-      id: 'A-0012',
-      name: '支付成功订单数',
-      type: '原子',
-      typeCls: 'tag-blue',
-      domain: 'trade',
-      caliber: 'pay_status=SUCCESS 去重计数',
-      bind: 'dwd_order_detail.order_id',
-      table: 'dwd_trade.dwd_order_detail',
-      field: 'order_id',
-      agg: 'COUNT DISTINCT',
-      unit: '个',
-      latest: '182,473 单',
-      vol: '↑ 4.8%',
-      volCls: 'up',
-      owner: '李明',
-      ver: 'v1',
-      kind: '原子',
-    },
-    'active',
-  ),
-  withStatus(
-    {
-      id: 'M-0024',
-      name: '支付转化率',
-      type: '复合',
-      typeCls: 'tag-cyan',
-      domain: 'trade',
-      caliber: '下单支付成功用户 / 浏览商品用户',
-      bind: 'A-0012 / A-0201',
-      formula: 'A-0012 / A-0201',
-      dim: '',
-      dimKeys: [],
-      time: '',
-      unit: '%',
-      latest: '3.82%',
-      vol: '↑ 0.3pp',
-      volCls: 'up',
-      owner: '周健',
-      ver: 'v2',
-      kind: '复合',
-    },
-    'active',
-  ),
-  withStatus(
-    {
-      id: 'C-0035',
-      name: '客单价 AOV',
-      type: '复合',
-      typeCls: 'tag-cyan',
-      domain: 'trade',
-      caliber: '客单价 = 日GMV / 支付成功订单数',
-      bind: 'M-0001 / A-0012',
-      formula: 'M-0001 / A-0012',
-      dim: '',
-      dimKeys: [],
-      time: '',
-      unit: '元/单',
-      latest: '¥ 179.9',
-      vol: '↓ 3.1%',
-      volCls: 'down',
-      owner: '李明',
-      ver: 'v1',
-      kind: '复合',
-    },
-    'active',
-  ),
-  withStatus(
-    {
-      id: 'M-0102',
-      name: '7日活跃用户',
-      type: '衍生',
-      typeCls: 'tag-purple',
-      domain: 'user',
-      caliber: '近7天有行为事件用户去重',
-      bind: 'A-0201',
-      atomRef: 'A-0201',
-      formula: '',
-      qualifier: '无限定',
-      qualifierKeys: [],
-      dim: 'dt',
-      dimKeys: ['dt'],
-      time: '近7天',
-      unit: '人',
-      latest: '428,193',
-      vol: '↑ 2.2%',
-      volCls: 'up',
-      owner: '王欢',
-      ver: 'v2',
-      kind: '衍生',
-    },
-    'version_review',
-    {
-      pendingCaliber: '近7天有行为事件用户去重 · 排除爬虫 UA',
-      history: [
-        { status: 'active', label: '已启用', time: '2026-08-01', note: 'v2' },
-        { status: 'version_review', label: '新版本评审', time: '2026-09-10', note: '排除爬虫' },
-      ],
-    },
-  ),
-  withStatus(
-    {
-      id: 'M-0178',
-      name: '退货率',
-      type: '衍生',
-      typeCls: 'tag-purple',
-      domain: 'trade',
-      caliber: '⚠️ 口径争议：财务 vs 运营不一致',
-      bind: '待确认',
-      formula: '',
-      qualifier: '无限定',
-      dim: 'dt',
-      dimKeys: ['dt'],
-      time: '近1天',
-      unit: '%',
-      latest: '2.34%',
-      vol: '待对齐',
-      volCls: 'warn',
-      owner: '孙悦',
-      ver: 'v1',
-      kind: '衍生',
-      rowWarn: true,
-    },
-    'review',
-  ),
-  withStatus(
-    {
-      id: 'A-0201',
-      name: '浏览商品 UV',
-      type: '原子',
-      typeCls: 'tag-blue',
-      domain: 'trade',
-      caliber: '商品详情页曝光 UV',
-      bind: 'dwd_log_action.user_id',
-      table: 'dwd_log.dwd_log_action',
-      field: 'user_id',
-      agg: 'COUNT DISTINCT',
-      unit: '人',
-      latest: '待计算',
-      vol: '—',
-      volCls: 'warn',
-      owner: '周健',
-      ver: 'v1',
-      kind: '原子',
-    },
-    'draft',
-  ),
-  withStatus(
-    {
-      id: 'M-0090',
-      name: '旧版 GMV（含退款）',
-      type: '衍生',
-      typeCls: 'tag-purple',
-      domain: 'trade',
-      caliber: '已废弃 · 被 M-0001 替代',
-      bind: 'ads_gmv_board.gmv_raw',
-      unit: '元',
-      latest: '—',
-      vol: '—',
-      volCls: 'warn',
-      owner: '李明',
-      ver: 'v2',
-      kind: '衍生',
-    },
-    'deprecated',
-    {
-      history: [
-        { status: 'active', label: '已启用', time: '2025-12-01', note: 'v2' },
-        { status: 'deprecated', label: '已废弃', time: '2026-08-22', note: '迁移至 M-0001' },
-      ],
-    },
-  ),
-]
+export const METRIC_CATALOG = []
 
 const DOMAIN_MAP = {
   交易: 'trade',
+  交易域: 'trade',
   用户: 'user',
+  用户域: 'user',
   商品: 'goods',
+  商品域: 'goods',
+  product: 'goods',
   流量: 'user',
-  财务: 'trade',
+  财务: 'finance',
+  财务域: 'finance',
+  营销: 'marketing',
+  营销域: 'marketing',
+  通用: 'common',
 }
 
 export function metricDomainKey(label) {
-  return DOMAIN_MAP[label] || 'trade'
+  if (!label) return 'common'
+  const d = String(label).trim()
+  return DOMAIN_MAP[d] || d.toLowerCase()
 }
 
 /** 供表单下拉：已启用的原子指标 */
@@ -400,70 +158,8 @@ export function refsToString(val) {
   return refsToArray(val).join(',')
 }
 
-/** 表 → 字段清单（供衍生统计粒度从原子绑定表派生） */
-const METRIC_TABLE_FIELDS = {
-  'dwd_trade.dwd_order_detail': SCHEMA_COLS,
-  dwd_order_detail: SCHEMA_COLS,
-  'ods_trade.s_order': SCHEMA_COLS,
-  'dws_trade.dws_order_1d': [
-    { name: 'dt', type: 'DATE', desc: '统计日' },
-    { name: 'user_id', type: 'BIGINT', desc: '用户' },
-    { name: 'order_cnt', type: 'BIGINT', desc: '订单数' },
-    { name: 'pay_amt', type: 'DECIMAL', desc: '支付金额' },
-  ],
-  'ads.ads_gmv_board': [
-    { name: 'dt', type: 'DATE', desc: '统计日' },
-    { name: 'channel', type: 'VARCHAR', desc: '渠道' },
-    { name: 'total_gmv', type: 'DECIMAL', desc: 'GMV' },
-    { name: 'order_cnt', type: 'BIGINT', desc: '订单数' },
-  ],
-  ads_gmv_board: [
-    { name: 'dt', type: 'DATE', desc: '统计日' },
-    { name: 'channel', type: 'VARCHAR', desc: '渠道' },
-    { name: 'total_gmv', type: 'DECIMAL', desc: 'GMV' },
-    { name: 'order_cnt', type: 'BIGINT', desc: '订单数' },
-  ],
-  'dws_user.dws_user_profile_1d': [
-    { name: 'dt', type: 'DATE', desc: '统计日' },
-    { name: 'user_id', type: 'BIGINT', desc: '用户' },
-    { name: 'register_time', type: 'DATETIME', desc: '注册时间' },
-  ],
-  'dwd_user.dwd_user_info': [
-    { name: 'user_id', type: 'BIGINT', desc: '用户' },
-    { name: 'gender', type: 'VARCHAR', desc: '性别' },
-    { name: 'register_time', type: 'DATETIME', desc: '注册时间' },
-    { name: 'dt', type: 'DATE', desc: '统计日' },
-  ],
-  'dim.dim_sku': [
-    { name: 'sku_id', type: 'BIGINT', desc: 'SKU' },
-    { name: 'sku_name', type: 'VARCHAR', desc: '商品名' },
-    { name: 'category_id', type: 'INT', desc: '类目' },
-    { name: 'dt', type: 'DATE', desc: '统计日' },
-  ],
-  'ads.ads_user_tags': [
-    { name: 'user_id', type: 'BIGINT', desc: '用户' },
-    { name: 'tag_code', type: 'VARCHAR', desc: '标签码' },
-    { name: 'tag_value', type: 'VARCHAR', desc: '标签值' },
-    { name: 'dt', type: 'DATE', desc: '统计日' },
-  ],
-  'dwd_log.dwd_log_action': [
-    { name: 'dt', type: 'DATE', desc: '统计日' },
-    { name: 'user_id', type: 'BIGINT', desc: '用户' },
-    { name: 'sku_id', type: 'BIGINT', desc: '商品' },
-    { name: 'channel', type: 'VARCHAR', desc: '渠道' },
-    { name: 'platform', type: 'VARCHAR', desc: '终端' },
-    { name: 'event_type', type: 'VARCHAR', desc: '事件类型' },
-    { name: 'page_id', type: 'VARCHAR', desc: '页面' },
-  ],
-  dwd_log_action: [
-    { name: 'dt', type: 'DATE', desc: '统计日' },
-    { name: 'user_id', type: 'BIGINT', desc: '用户' },
-    { name: 'sku_id', type: 'BIGINT', desc: '商品' },
-    { name: 'channel', type: 'VARCHAR', desc: '渠道' },
-    { name: 'platform', type: 'VARCHAR', desc: '终端' },
-    { name: 'event_type', type: 'VARCHAR', desc: '事件类型' },
-  ],
-}
+/** 表字段：优先 metricBindAssets 缓存（gov_asset schema）；禁止演示 SCHEMA_COLS 回落 */
+const METRIC_TABLE_FIELDS = {}
 
 const TABLE_KEY_ALIASES = {
   dwd_order_detail: 'dwd_trade.dwd_order_detail',
@@ -540,8 +236,17 @@ export function resolveMetricTableKey(row) {
 
 export function dimOptionsFromTable(tableKey) {
   const key = TABLE_KEY_ALIASES[tableKey] || tableKey
-  const fields = METRIC_TABLE_FIELDS[key] || METRIC_TABLE_FIELDS[tableKey] || []
-  return dimOptionsFromFields(fields)
+  const live = metricBindFieldOptions({ table: key }) || metricBindFieldOptions({ table: tableKey }) || []
+  if (live.length) {
+    return dimOptionsFromFields(
+      live.map((o) => ({
+        name: o.value || o.name,
+        type: o.type || '',
+        desc: o.comment || o.label || '',
+      })),
+    )
+  }
+  return []
 }
 
 /** 衍生：依赖原子指标 → 其绑定表可作统计粒度的字段 */
@@ -552,37 +257,15 @@ export function metricDimOptionsForAtom(atomId, list = getMetricCatalogForForms(
   return dimOptionsFromTable(resolveMetricTableKey(row))
 }
 
-/** 表字段常见业务限定预设（非时间 WHERE） */
-const QUALIFIER_PRESETS_BY_TABLE = {
-  'dwd_trade.dwd_order_detail': [
-    { value: 'pay_status=SUCCESS', label: 'pay_status=SUCCESS · 支付成功', sub: '业务限定', name: 'pay_status', group: '交易' },
-    { value: 'order_channel=App', label: 'order_channel=App · App 渠道', sub: '业务限定', name: 'order_channel', group: '渠道' },
-    { value: 'order_channel=H5', label: 'order_channel=H5 · H5 渠道', sub: '业务限定', name: 'order_channel', group: '渠道' },
-    { value: 'pay_type=1', label: 'pay_type=1 · 微信', sub: '业务限定', name: 'pay_type', group: '支付' },
-    { value: 'order_status=3', label: 'order_status=3 · 支付成功态', sub: '业务限定', name: 'order_status', group: '交易' },
-  ],
-  'ads.ads_gmv_board': [
-    { value: 'channel=App', label: 'channel=App · App', sub: '业务限定', name: 'channel', group: '渠道' },
-    { value: 'channel=H5', label: 'channel=H5 · H5', sub: '业务限定', name: 'channel', group: '渠道' },
-  ],
-  'dwd_log.dwd_log_action': [
-    { value: "event_type='page_view'", label: "event_type=page_view · 浏览", sub: '业务限定', name: 'event_type', group: '行为' },
-    { value: 'channel=App', label: 'channel=App · App', sub: '业务限定', name: 'channel', group: '渠道' },
-    { value: 'platform=iOS', label: 'platform=iOS', sub: '业务限定', name: 'platform', group: '终端' },
-  ],
-}
+/** 表字段常见业务限定预设（空：禁止演示 WHERE；用户可手写或后续按码值集扩展） */
+const QUALIFIER_PRESETS_BY_TABLE = {}
 
 /** 衍生：业务限定选项（随原子绑定表） */
 export function metricQualifierOptionsForAtom(atomId, list = getMetricCatalogForForms()) {
   const row = list.find((r) => r.id === atomId) || null
   const tableKey = resolveMetricTableKey(row)
   const key = TABLE_KEY_ALIASES[tableKey] || tableKey
-  return (
-    QUALIFIER_PRESETS_BY_TABLE[key] ||
-    QUALIFIER_PRESETS_BY_TABLE[tableKey] ||
-    QUALIFIER_PRESETS_BY_TABLE['dwd_trade.dwd_order_detail'] ||
-    []
-  )
+  return QUALIFIER_PRESETS_BY_TABLE[key] || QUALIFIER_PRESETS_BY_TABLE[tableKey] || []
 }
 
 export function formatMetricQualifier(keys) {
@@ -618,27 +301,16 @@ export function defaultMetricDimKeys(options = []) {
   return options[0] ? [options[0].value] : []
 }
 
-/** @deprecated 全局预设已改为按原子表字段派生；保留兼容旧数据校验 */
-export const METRIC_DIM_OPTIONS = dimOptionsFromTable('dwd_trade.dwd_order_detail')
+/** @deprecated 空列表；粒度校验改为字段名启发式，不绑演示表 */
+export const METRIC_DIM_OPTIONS = []
 
 export function isStandardMetricDim(dim) {
   const keys = refsToArray(typeof dim === 'string' && dim.includes('+') ? dim.split('+') : dim)
   if (!keys.length || keys[0] === '全表' || keys[0] === '无（全站汇总）') return true
-  const allow = new Set(METRIC_DIM_OPTIONS.map((o) => o.value))
-  // 旧文案兼容
-  const legacy = {
-    'dt 按天': 'dt',
-    'dt 按周': 'dt',
-    'dt 按月': 'dt',
-    channel: 'channel',
-    region: 'region',
-    sku_id: 'sku_id',
-    user_id: 'user_id',
-    category_id: 'category_id',
-  }
+  // 无演示白名单：允许常见字段名 / 时间列；自定义走 isValidCustomMetricDim
   return keys.every((k) => {
     const t = String(k).trim()
-    return allow.has(t) || allow.has(legacy[t]) || TIME_NAME_RE.test(t)
+    return TIME_NAME_RE.test(t) || /^[a-zA-Z_][\w]*$/.test(t)
   })
 }
 

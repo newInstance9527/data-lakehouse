@@ -24,9 +24,6 @@ import {
 } from '@/data/etl'
 import { formatNow } from '@/utils/etlRuns'
 import { useSession } from '@/composables/useSession'
-import { ensureOnce } from '@/composables/useEnsureSamples'
-import { SAMPLE_ETL_DAG } from '@/data/sampleSeeds'
-
 const tasks = ref([])
 const currentId = ref('')
 const selNodeId = ref(null)
@@ -205,21 +202,6 @@ export function useEtl() {
         }
       })
       loaded.value = true
-      await ensureOnce(
-        'etl_dags',
-        () => tasks.value.length === 0,
-        () =>
-          createEtlDag({
-            name: SAMPLE_ETL_DAG.name,
-            dagCode: SAMPLE_ETL_DAG.code,
-            engine: SAMPLE_ETL_DAG.engine,
-            desc: SAMPLE_ETL_DAG.desc,
-          }),
-        async () => {
-          const page2 = await fetchEtlDags(filters, { current: 1, size: 100 })
-          tasks.value = (page2?.records || []).map(normalizeDag).filter(Boolean)
-        },
-      )
       const prefer = tasks.value.find((t) => t.id === prevId) || tasks.value[0]
       if (prefer) {
         await selectTask(prefer.id, { force: !prefer.nodes?.length })

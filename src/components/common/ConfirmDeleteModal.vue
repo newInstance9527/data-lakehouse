@@ -6,13 +6,28 @@ import {
   settleConfirmDelete,
   useConfirmDeleteState,
 } from '@/composables/useConfirmDelete'
+import { t, tt, useLocale } from '@/composables/useLocale'
 
 const state = useConfirmDeleteState()
 const inputRef = ref(null)
+const { locale } = useLocale()
 
 const canConfirm = computed(
   () => isConfirmPhraseMatch(state.input) && !state.busy,
 )
+
+const titleText = computed(() => {
+  void locale.value
+  return tt(state.title || '')
+})
+const messageText = computed(() => {
+  void locale.value
+  return state.message ? tt(state.message) : ''
+})
+const confirmLabelText = computed(() => {
+  void locale.value
+  return state.busy ? t('common.busy') : tt(state.confirmLabel || '确认')
+})
 
 watch(
   () => state.open,
@@ -55,25 +70,23 @@ function onMaskClick() {
       >
         <div class="modal-header">
           <div>
-            <div id="confirm-delete-title" class="modal-title">{{ state.title }}</div>
-            <div v-if="state.message" class="modal-sub">{{ state.message }}</div>
+            <div id="confirm-delete-title" class="modal-title">{{ titleText }}</div>
+            <div v-if="messageText" class="modal-sub">{{ messageText }}</div>
           </div>
           <button
             type="button"
             class="btn btn-sm"
             :disabled="state.busy"
-            title="关闭"
+            :title="t('common.close')"
             @click="onCancel"
           >✕</button>
         </div>
         <div class="modal-body">
           <p class="confirm-delete-hint">
-            此操作不可轻易撤销。请输入
-            <code>{{ CONFIRM_PHRASE }}</code>
-            （全小写）以确认删除。
+            {{ t('common.confirm.hint', { phrase: CONFIRM_PHRASE }) }}
           </p>
           <label class="form-field">
-            <span class="form-label">确认文本</span>
+            <span class="form-label">{{ t('common.confirm.label') }}</span>
             <input
               ref="inputRef"
               v-model="state.input"
@@ -89,7 +102,7 @@ function onMaskClick() {
         </div>
         <div class="modal-footer">
           <button type="button" class="btn btn-sm" :disabled="state.busy" @click="onCancel">
-            取消
+            {{ t('common.cancel') }}
           </button>
           <button
             type="button"
@@ -97,7 +110,7 @@ function onMaskClick() {
             :disabled="!canConfirm"
             @click="onConfirm"
           >
-            {{ state.busy ? '处理中…' : state.confirmLabel }}
+            {{ confirmLabelText }}
           </button>
         </div>
       </div>

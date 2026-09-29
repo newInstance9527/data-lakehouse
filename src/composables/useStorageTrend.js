@@ -4,14 +4,24 @@
  */
 import { computed, ref } from 'vue'
 import {
+  exportLcStorageReport,
+  fetchLcRuns,
   fetchLcStorageAdvice,
   fetchLcStorageBuckets,
   fetchLcStorageShowback,
   fetchLcStorageSummary,
+  fetchLcStorageTableDetail,
   fetchLcStorageTables,
   fetchLcStorageTrend,
 } from '@/api/lifecycle'
-import { stBarHeight, stGrowthCls } from '@/data/storageTrend'
+import {
+  buildDetailCurveChart,
+  buildDualLineChart,
+  stBarHeight,
+  stGrowthCls,
+  triggerBase64Download,
+  triggerBlobDownload,
+} from '@/data/storageTrend'
 
 const LAYER_COLOR = {
   ODS: '#4d8dff',
@@ -101,8 +111,14 @@ export function useStorageTrend() {
   const trend = ref(null)
   const tablesPage = ref(null)
   const buckets = ref([])
+  const bucketsMeta = ref(null)
   const advice = ref([])
   const showback = ref(null)
+
+  const detailOpen = ref(false)
+  const detailLoading = ref(false)
+  const detailData = ref(null)
+  const detailError = ref(null)
 
   const kpis = computed(() => {
     const s = summary.value
@@ -291,26 +307,71 @@ export function useStorageTrend() {
   const collectBanner = computed(() => {
     const s = summary.value
     if (!s) return null
+    const bucketSrc = bucketsMeta.value?.source
+    const src = bucketSrc && String(bucketSrc).startsWith('vm:')
+      ? `${s.source || 'profile'} · buckets ${bucketSrc}`
+      : s.source
     return {
       status: s.collectStatus || 'STALE',
       collectedAt: s.collectedAt,
-      source: s.source,
+      source: src,
       caliberNote: s.caliberNote,
+      bucketsSource: bucketSrc || null,
     }
   })
 
+  const forecastMeta = computed(() => {
+    const f = trend.value?.forecast
+    if (!f) return null
+    const tight = summary.value?.tightestBucket
+    let capacityBytes = f.capacityBytes ?? f.capacity_bytes ?? null
+    if (capacityBytes == null && tight?.capacityBytes != null) {
+      capacityBytes = tight.capacityBytes
+    }
+    if (capacityBytes == null && buckets.value.length) {
+      const sum = buckets.value.reduce((acc, b) => acc + n(b.capacityBytes), 0)
+      if (sum > 0) capacityBytes = sum
+    }
+    return {
+      available: !!f.available,
+      p50DaysToFull: f.p50DaysToFull,
+      p95DaysToFull: f.p95DaysToFull,
+      reason: f.reason,
+      note: f.note,
+      capacityBytes,
+      capacityTb: capacityBytes != null ? n(capacityBytes) / 1024 ** 4 : null,
+    }
+  })
+
+  const dualChart = computed(() => buildDualLineChart(daily.value, forecastMeta.value))
+
   const chartFoot = computed(() => {
     const list = daily.value
-    if (!list.length) return { start: '—', end: '—', delta: '—' }
+    if (!list.length) return { start: '—', end: '—', delta: '—', gap: '—' }
     const first = list[0]
     const last = list[list.length - 1]
     const deltaTb = n(last.total) - n(first.total)
+    const gapTb = Math.max(0, n(last.total) - n(last.active))
     const sign = deltaTb >= 0 ? '+' : ''
+    const fc = forecastMeta.value
+    let delta = `Δ ${sign}${(deltaTb * 1024).toFixed(0)} GB / ${range.value}`
+    if (fc?.available) {
+      delta += ` · TTF p95 ${fc.p95DaysToFull ?? '—'}d`
+    } else if (fc?.note) {
+      delta += ` · ${String(fc.note).slice(0, 24)}`
+    }
     return {
       start: `${first.total} TB`,
       end: `${last.total} TB`,
-      delta: `Δ ${sign}${(deltaTb * 1024).toFixed(0)} GB / ${range.value}`,
+      gap: `缺口 ${gapTb.toFixed(2)} TB`,
+      delta,
     }
+  })
+
+  const detailCurve = computed(() => {
+    const curve = detailData.value?.curve
+    if (!curve?.length) return null
+    return buildDetailCurveChart(curve)
   })
 
   async function loadAll(ws) {
@@ -337,7 +398,14 @@ export function useStorageTrend() {
       summary.value = sum
       trend.value = tr
       tablesPage.value = tables
-      buckets.value = bucks || []
+      buckets.value = Array.isArray(bucks)
+        ? bucks
+        : bucks?.list || []
+      bucketsMeta.value = Array.isArray(bucks)
+        ? { source: bucks.length ? String(bucks[0]?.source || '') : 'legacy-list', list: bucks }
+        : bucks && typeof bucks === 'object'
+          ? bucks
+          : { source: 'empty', list: [] }
       advice.value = adv || []
       showback.value = sb
       loaded.value = true
@@ -349,6 +417,7 @@ export function useStorageTrend() {
       trend.value = null
       tablesPage.value = null
       buckets.value = []
+      bucketsMeta.value = null
       advice.value = []
       showback.value = null
       loaded.value = true
@@ -390,6 +459,165 @@ export function useStorageTrend() {
     return q
   }
 
+  function closeDetail() {
+    detailOpen.value = false
+    detailData.value = null
+    detailError.value = null
+  }
+
+  async function openDetail(fqtn, ws) {
+    if (!fqtn) return
+    detailOpen.value = true
+    detailLoading.value = true
+    detailError.value = null
+    detailData.value = null
+    try {
+      const detail = await fetchLcStorageTableDetail(fqtn, ws, '90d')
+      let recentRuns = []
+      try {
+        const page = await fetchLcRuns({
+          ws: ws || detail?.ws,
+          tableFqn: fqtn,
+          current: 1,
+          size: 3,
+        })
+        const list = page?.records || page?.list || page?.rows || (Array.isArray(page) ? page : [])
+        recentRuns = (list || []).slice(0, 3).map((r) => ({
+          id: r.id || r.runId,
+          runId: r.runId || r.id,
+          kind: r.kind || r.action || r.jobKind || '—',
+          status: r.status || '—',
+          startedAt: r.startedAt || r.createTime || r.createdAt || '—',
+          finishedAt: r.finishedAt || r.endTime || null,
+        }))
+      } catch {
+        recentRuns = []
+      }
+      const row = detail?.row || {}
+      detailData.value = {
+        ...detail,
+        fqtn: detail?.fqtn || fqtn,
+        row,
+        snapshotCount: row.snapshotCount ?? detail?.snapshotCount,
+        oldestSnapshotAgeDays:
+          row.oldestSnapshotAgeDays ?? detail?.oldestSnapshotAgeDays ?? null,
+        partitionHint: detail?.partitionHint || {
+          partitionCount: row.partitionCount,
+          note: '分区数来自表画像',
+        },
+        recentRuns,
+      }
+    } catch (e) {
+      detailError.value = e
+      console.error('[storage-trend] table detail failed', e)
+    } finally {
+      detailLoading.value = false
+    }
+  }
+
+  function buildClientReportCsv() {
+    const lines = []
+    const s = summary.value
+    lines.push('section,key,value')
+    lines.push(`meta,range,${range.value}`)
+    lines.push(`meta,exportedAt,${new Date().toISOString()}`)
+    if (s) {
+      lines.push(`kpi,physicalBytes,${s.physicalBytes ?? ''}`)
+      lines.push(`kpi,activeBytes,${s.activeBytes ?? ''}`)
+      lines.push(`kpi,reclaimableBytes,${s.reclaimableBytes ?? ''}`)
+      lines.push(`kpi,reclaimablePct,${s.reclaimablePct ?? ''}`)
+      lines.push(`kpi,netGrowthBytes,${s.netGrowthBytes ?? ''}`)
+      lines.push(`kpi,tightestBucket,${s.tightestBucket?.bucket ?? ''}`)
+      lines.push(`kpi,daysToFullP95,${s.tightestBucket?.daysToFullP95 ?? ''}`)
+    }
+    for (const l of layers.value) {
+      lines.push(`layer,${l.layer},${l.size} / ${l.growth}`)
+    }
+    for (const b of capacityRows.value) {
+      lines.push(`bucket,${b.label},${b.pct}% / ${b.cap}`)
+    }
+    for (const a of adviceCards.value) {
+      lines.push(`advice,${a.pri},${JSON.stringify(a.title)}`)
+    }
+    lines.push('table,fqtn,ws,layer,active,total,reclaimable,growth,reason')
+    for (const r of tableRows.value) {
+      lines.push(
+        [
+          'table',
+          r.table,
+          r.ws,
+          r.layer,
+          r.active,
+          r.total,
+          r.reclaimable,
+          r.growth,
+          r.reason,
+        ]
+          .map((c) => `"${String(c ?? '').replace(/"/g, '""')}"`)
+          .join(','),
+      )
+    }
+    return `\ufeff${lines.join('\n')}`
+  }
+
+  async function downloadReport(ws) {
+    const filename = `storage-report-${range.value}-${Date.now()}.csv`
+    try {
+      const res = await exportLcStorageReport({
+        ws,
+        range: range.value,
+        format: 'csv',
+      })
+      if (typeof res === 'string') {
+        triggerBlobDownload(new Blob(['\ufeff' + res], { type: 'text/csv;charset=utf-8' }), filename)
+        return { source: 'api-text' }
+      }
+      if (res?.downloadUrl) {
+        const a = document.createElement('a')
+        a.href = res.downloadUrl
+        a.download = res.fileName || filename
+        a.target = '_blank'
+        a.rel = 'noopener'
+        a.click()
+        return { source: 'api-url' }
+      }
+      if (res?.contentBase64 || res?.content) {
+        if (res.contentBase64) {
+          triggerBase64Download(
+            res.contentBase64,
+            res.fileName || filename,
+            res.contentType || 'text/csv;charset=utf-8',
+          )
+        } else {
+          triggerBlobDownload(
+            new Blob(['\ufeff' + String(res.content)], { type: 'text/csv;charset=utf-8' }),
+            res.fileName || filename,
+          )
+        }
+        return { source: 'api-content' }
+      }
+      if (res?.csv) {
+        triggerBlobDownload(
+          new Blob(['\ufeff' + String(res.csv)], { type: 'text/csv;charset=utf-8' }),
+          res.fileName || filename,
+        )
+        return { source: 'api-csv' }
+      }
+      // 未知 JSON 形状：落本地拼装
+      triggerBlobDownload(
+        new Blob([buildClientReportCsv()], { type: 'text/csv;charset=utf-8' }),
+        filename,
+      )
+      return { source: 'client-fallback', note: 'API 未返回可下载字段' }
+    } catch (e) {
+      triggerBlobDownload(
+        new Blob([buildClientReportCsv()], { type: 'text/csv;charset=utf-8' }),
+        filename,
+      )
+      return { source: 'client-fallback', error: e }
+    }
+  }
+
   return {
     loading,
     loaded,
@@ -400,6 +628,7 @@ export function useStorageTrend() {
     trend,
     tablesPage,
     buckets,
+    bucketsMeta,
     advice,
     kpis,
     daily,
@@ -412,9 +641,19 @@ export function useStorageTrend() {
     showbackCostNote,
     collectBanner,
     chartFoot,
+    forecastMeta,
+    dualChart,
+    detailOpen,
+    detailLoading,
+    detailData,
+    detailError,
+    detailCurve,
     loadAll,
     setRange,
     setTableFilter,
+    openDetail,
+    closeDetail,
+    downloadReport,
     lifecycleQuery,
     humanBytes,
     stBarHeight,

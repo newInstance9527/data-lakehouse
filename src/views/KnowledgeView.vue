@@ -246,6 +246,7 @@ function goLink(to, e) {
 <template>
   <div class="kb-page">
     <PageHeader
+      page-id="knowledge"
       title="知识库"
       subtitle="全局知识条目 · 向量检索 · AI 助手引用源"
       :guide="guide"

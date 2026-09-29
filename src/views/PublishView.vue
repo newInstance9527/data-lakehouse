@@ -105,6 +105,7 @@ watch(
 <template>
   <div class="pub-page">
     <PageHeader
+      page-id="publish"
       title="环境与发布管理"
       subtitle="dev / stg / prod 三环境隔离 · Git 为源 · 发布门禁 · 回滚 · 禁止裸改生产 SQL"
       :guide-title="guide.title"
@@ -245,8 +246,8 @@ watch(
       </div>
       <div class="card-body pub-rollback-body">
         <div><b>回滚 = 指向上一 Git tag</b>，禁止在调度器里热改 SQL。</div>
-        <div><b>dev 环境禁止连生产 MinIO 桶</b>；抽样脱敏用静态脱敏作业从 prod 拉（需申请单）。</div>
-        <div><b>统一门户（SSO）聚合</b>：目录（OM）、申请、Superset、Trino、DS、Flink、夜莺。不做第二个调度器。</div>
+        <div><b>dev 环境禁止连生产对象存储桶</b>；抽样脱敏用静态脱敏作业从 prod 拉（需申请单）。</div>
+        <div><b>统一门户（SSO）聚合</b>：资产目录、申请、自助分析、即席查询、调度、流作业、告警。不做第二个调度器。</div>
       </div>
     </div>
   </div>

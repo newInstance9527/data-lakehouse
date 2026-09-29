@@ -315,6 +315,7 @@ function onPageSize() {
 <template>
   <div class="sys-page">
     <PageHeader
+      page-id="sys-users"
       title="用户管理"
       subtitle="账号 · 主部门 · 职位 · 角色授权（/sys/user）；演示账号见部门管理文档"
     >

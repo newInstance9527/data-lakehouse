@@ -6,12 +6,13 @@
 .sidebar {
   width: var(--sidebar-w);
   min-width: var(--sidebar-w);
-  background: linear-gradient(180deg, #0f1a2e 0%, #162240 100%);
-  color: #cfd6e4;
+  background: var(--sidebar-bg);
+  color: var(--sidebar-text);
   display: flex;
   flex-direction: column;
   position: relative;
   z-index: 20;
+  border-right: 1px solid var(--sidebar-border);
 }
 
 .logo {
@@ -19,7 +20,7 @@
   display: flex;
   align-items: center;
   padding: 0 20px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid var(--sidebar-border);
   gap: 10px;
   cursor: pointer;
 }
@@ -39,11 +40,11 @@
 .logo-text {
   font-size: 15px;
   font-weight: 600;
-  color: #fff;
+  color: var(--sidebar-logo);
 }
 .logo-sub {
   font-size: 10px;
-  color: #6b7a99;
+  color: var(--sidebar-muted);
   display: block;
   margin-top: 1px;
 }
@@ -58,7 +59,7 @@
 }
 .nav-group-title {
   font-size: 11px;
-  color: #4a5a7a;
+  color: var(--sidebar-group);
   text-transform: uppercase;
   letter-spacing: 0.8px;
   padding: 8px 8px 6px;
@@ -73,17 +74,17 @@
   cursor: pointer;
   transition: all 0.15s ease;
   font-size: 13px;
-  color: #98a5be;
+  color: var(--sidebar-item);
   position: relative;
   margin-bottom: 1px;
 }
 .nav-item:hover {
-  background: rgba(255, 255, 255, 0.05);
-  color: #fff;
+  background: var(--sidebar-hover);
+  color: var(--sidebar-logo);
 }
 .nav-item.active {
-  background: linear-gradient(90deg, rgba(30, 111, 255, 0.25) 0%, rgba(30, 111, 255, 0.08) 100%);
-  color: #fff;
+  background: var(--sidebar-active);
+  color: var(--sidebar-logo);
   font-weight: 500;
 }
 .nav-item.active::before {
@@ -116,9 +117,9 @@
 
 .side-footer {
   padding: 14px 16px;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  border-top: 1px solid var(--sidebar-border);
   font-size: 11px;
-  color: #4a5a7a;
+  color: var(--sidebar-group);
 }
 .side-footer-row {
   display: flex;
@@ -293,13 +294,14 @@
   background: var(--success-light);
   color: var(--success);
   font-weight: 600;
-  border: 1px solid #b7ebd4;
+  border: 1px solid color-mix(in srgb, var(--success) 35%, transparent);
 }
 
 .content {
   flex: 1;
   overflow-y: auto;
   padding: 20px 24px 40px;
+  background: var(--bg-0);
 }
 
 .page-title-row {

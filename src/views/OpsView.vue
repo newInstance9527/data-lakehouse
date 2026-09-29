@@ -5,16 +5,18 @@ import PageHeader from '@/components/common/PageHeader.vue'
 import { useToast } from '@/composables/useToast'
 import { pageGuideOf } from '@/data/pageGuides'
 import { opsStatusIconClass } from '@/data/ops'
-import { ensureOnce } from '@/composables/useEnsureSamples'
-import { SAMPLE_ETL_DAG } from '@/data/sampleSeeds'
 import {
   backfillEtlDag,
-  createEtlDag,
   fetchEtlDags,
   fetchEtlRunDetail,
   fetchEtlRuns,
 } from '@/api/etl'
 import { fetchReconPartition } from '@/api/metric'
+import {
+  fetchObsSlaSummary,
+  fetchObsTasks,
+  postObsTaskAction,
+} from '@/api/observability'
 import { useSession } from '@/composables/useSession'
 
 const route = useRoute()
@@ -35,6 +37,9 @@ const loadError = ref('')
 const dags = ref([])
 const runs = ref([])
 const reconRows = ref([])
+const facadeTasks = ref([])
+const slaSummary = ref(null)
+const useFacade = ref(true)
 
 function mapRunStatus(st) {
   const s = String(st || '').toLowerCase()
@@ -136,7 +141,7 @@ const kpis = computed(() => {
       color: 'blue',
       value: String(flinkN || '—'),
       unit: '个',
-      label: '流作业 Flink',
+      label: '流作业',
       trend: flinkN ? `${flinkRun} 运行 · ${flinkFail} 异常` : '暂无',
       trendDanger: flinkFail > 0,
     },
@@ -145,7 +150,7 @@ const kpis = computed(() => {
       color: 'green',
       value: String(dagN || '—'),
       unit: '个',
-      label: '批任务 DS',
+      label: '批任务',
       trend: runs.value.length ? `✓ ${runOk} · ✕ ${runFail}` : '暂无运行',
       trendUp: runFail === 0,
     },
@@ -154,7 +159,7 @@ const kpis = computed(() => {
       color: 'orange',
       value: String(reconRows.value.length || '—'),
       unit: '条',
-      label: '湖/CK 对账',
+      label: '湖仓对账',
       trend: reconRows.value.length ? `${reconPass} 通过 · ${reconFail} 失败` : '暂无',
       trendDanger: reconFail > 0,
     },
@@ -164,7 +169,7 @@ const kpis = computed(() => {
       value: String(runs.value.length || '—'),
       unit: '次',
       label: '近期运行',
-      trend: loadError.value || '来自 /lh/etl/runs',
+      trend: loadError.value || '来自近期运行记录',
       trendUp: true,
     },
   ]
@@ -210,6 +215,43 @@ async function loadOpsBoard() {
   loadError.value = ''
   const ws = currentWs.value || 'default'
   try {
+    if (useFacade.value) {
+      try {
+        const [tasksPage, sla, recon] = await Promise.all([
+          fetchObsTasks({ group: 'all', ws }),
+          fetchObsSlaSummary({ ws }).catch(() => null),
+          fetchReconPartition({ limit: 20 }).catch(() => null),
+        ])
+        facadeTasks.value = tasksPage?.records || []
+        slaSummary.value = sla
+        reconRows.value = recon?.records || []
+        const etlTasks = facadeTasks.value.filter((t) => t.kind === 'etl_dag')
+        dags.value = etlTasks.map((t) => ({
+          id: t.id,
+          name: t.name,
+          dagCode: t.dagCode,
+          status: t.status,
+          lastStatus: t.lastStatus,
+          cron: t.cron,
+          owner: t.owner,
+          sla: t.sla,
+          env: t.env,
+          defaultEngine: t.engine,
+          description: t.group,
+        }))
+        runs.value = etlTasks.flatMap((t) =>
+          (t.recentRuns || []).map((r) => ({
+            ...r,
+            dagId: t.id,
+            dagCode: t.dagCode,
+          })),
+        )
+        return
+      } catch (fe) {
+        useFacade.value = false
+        showToast('tasks 门面不可用，回落 ETL 旁路', 'warning')
+      }
+    }
     const [dagPage, runPage, recon] = await Promise.all([
       fetchEtlDags({ ws }, { current: 1, size: 100 }),
       fetchEtlRuns({ ws, current: 1, size: 50 }),
@@ -218,23 +260,7 @@ async function loadOpsBoard() {
     dags.value = dagPage?.records || []
     runs.value = runPage?.records || []
     reconRows.value = recon?.records || []
-
-    await ensureOnce(
-      'ops_sample_etl_dag',
-      () => dags.value.length === 0,
-      () =>
-        createEtlDag({
-          name: SAMPLE_ETL_DAG.name,
-          dagCode: SAMPLE_ETL_DAG.code,
-          engine: SAMPLE_ETL_DAG.engine,
-          desc: SAMPLE_ETL_DAG.desc,
-          ws,
-        }),
-      async () => {
-        const page = await fetchEtlDags({ ws }, { current: 1, size: 100 })
-        dags.value = page?.records || []
-      },
-    )
+    facadeTasks.value = []
   } catch (e) {
     dags.value = []
     runs.value = []
@@ -303,6 +329,16 @@ async function startSupplement() {
 
 async function runOpsBackfill(dagId, markKey, markValue, confirmReqNo) {
   try {
+    if (useFacade.value) {
+      const resp = await postObsTaskAction(dagId, {
+        action: 'backfill',
+        markKey,
+        markValue,
+        env: env.value,
+        confirmReqNo,
+      })
+      return resp?.result || resp
+    }
     return await backfillEtlDag(dagId, {
       markKey,
       markValue,
@@ -317,6 +353,16 @@ async function runOpsBackfill(dagId, markKey, markValue, confirmReqNo) {
       m ? m[1] : '',
     )
     if (!typed?.trim()) throw e
+    if (useFacade.value) {
+      const resp = await postObsTaskAction(dagId, {
+        action: 'backfill',
+        markKey,
+        markValue,
+        env: env.value,
+        confirmReqNo: typed.trim(),
+      })
+      return resp?.result || resp
+    }
     return backfillEtlDag(dagId, {
       markKey,
       markValue,
@@ -327,7 +373,7 @@ async function runOpsBackfill(dagId, markKey, markValue, confirmReqNo) {
 }
 
 function reimportDiff() {
-  showToast('🔧 重导差异分区 · 以 Iceberg 为准校正 CK', 'info')
+  showToast('🔧 重导差异分区 · 以湖表为准校正加速层', 'info')
 }
 
 function onTaskClick(task) {
@@ -353,8 +399,9 @@ function metaToneStyle(tone) {
 <template>
   <div class="ops-page">
     <PageHeader
+      page-id="ops"
       title="任务运维中心"
-      subtitle="Flink 流作业 · DolphinScheduler 批 DAG · 湖仓对账 · 补数工单"
+      subtitle="流作业 · 批任务 · 湖仓对账 · 补数工单"
       :guide="guide"
     >
       <select v-model="env" class="select input-sm">
@@ -367,6 +414,7 @@ function metaToneStyle(tone) {
       <button type="button" class="btn btn-sm btn-primary" @click="startSupplement">🔧 发起补数</button>
     </PageHeader>
 
+    <p class="tip ops-banner">作业列表接 ETL/对账真 API；无作业为空态，不回落演示 DAG。</p>
     <div v-if="loadError" class="banner-soft">{{ loadError }}</div>
 
     <div v-if="focusRunId" class="ops-focus card">
@@ -421,7 +469,7 @@ function metaToneStyle(tone) {
     <div class="grid grid-2 ops-tasks">
       <div class="card">
         <div class="card-header">
-          <div class="card-title">🌊 Flink 流作业</div>
+          <div class="card-title">🌊 流作业</div>
           <div class="ops-header-tags">
             <span v-if="flinkJobs.length" class="tag tag-green">{{ flinkTagSummary.run }} RUNNING</span>
             <span v-if="flinkTagSummary.fail" class="tag tag-red">{{ flinkTagSummary.fail }} FAIL</span>
@@ -465,7 +513,7 @@ function metaToneStyle(tone) {
 
       <div class="card">
         <div class="card-header">
-          <div class="card-title">🐬 DS 批 DAG 今日运行</div>
+          <div class="card-title">🐬 批任务今日运行</div>
           <div class="ops-ds-rate">
             <template v-if="dsSuccessRate != null">成功率 <b>{{ dsSuccessRate }}%</b></template>
             <template v-else>暂无</template>
@@ -510,7 +558,7 @@ function metaToneStyle(tone) {
     <div class="card ops-reconcile">
       <div class="card-header">
         <div class="card-title">
-          🔁 湖/CK 对账 · 链路 I（v1.1 审查补丁）
+          🔁 湖仓对账
           <span class="tip">· 未通过自动摘牌黄金数据集</span>
         </div>
         <div class="flex gap-8 ops-reconcile-actions">
@@ -531,7 +579,7 @@ function metaToneStyle(tone) {
           <div class="reconcile-table-name">{{ r.table }}</div>
           <div class="reconcile-card" :class="{ 'is-fail': !r.pass }">
             <div class="rc-side">
-              <div class="rc-side-label">🧊 Iceberg 事实源 · dt={{ r.dt }}</div>
+              <div class="rc-side-label">🧊 湖表事实源 · dt={{ r.dt }}</div>
               <div class="rc-side-value ice">{{ r.ice.rows }}</div>
               <div class="rc-side-sub">{{ r.ice.amt }}</div>
             </div>
@@ -541,7 +589,7 @@ function metaToneStyle(tone) {
               <div v-if="r.note" class="rc-compare-note">{{ r.note }}</div>
             </div>
             <div class="rc-side">
-              <div class="rc-side-label">⚡ ClickHouse 热查询 · dt={{ r.dt }}</div>
+              <div class="rc-side-label">⚡ 加速查询层 · dt={{ r.dt }}</div>
               <div class="rc-side-value" :class="r.pass ? 'ok' : 'bad'">{{ r.ck.rows }}</div>
               <div class="rc-side-sub">{{ r.ck.amt }}</div>
             </div>
@@ -550,7 +598,7 @@ function metaToneStyle(tone) {
             ⚠ 差异：行 <b>{{ r.diff.rows }}</b> · 金额 <b>{{ r.diff.amt }}</b><br />
             🔍 原因：{{ r.reason || '—' }} ·
             <button type="button" class="btn-link" @click="goRootcause">根因分析台 →</button>
-            （默认以 Iceberg 为准重导 CK）
+            （默认以湖表为准重导加速层）
           </div>
         </div>
       </div>
@@ -804,5 +852,14 @@ function metaToneStyle(tone) {
   border-radius: 6px;
   font-size: 12px;
   color: var(--text-2);
+}
+.ops-banner {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: var(--bg-2);
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.5;
 }
 </style>

@@ -1,6 +1,5 @@
-/** 演示页「新建」表单字段 · 对齐 DLH.create schema */
+/** 门户「新建」表单字段 · 对齐 DLH.create schema */
 
-import { ASSET_DATA, SCHEMA_COLS } from '@/data/assets'
 import {
   ensureMetricBindFields,
   ensureMetricBindTables,
@@ -19,72 +18,47 @@ import {
   ensureWorkspaceUserOptions,
   workspaceUserOptions,
 } from '@/data/workspaceUsers'
+import { fetchStdCodes } from '@/api/standard'
+import {
+  domainSelectOptionsSync,
+  ensureDomainSelectOptions,
+} from '@/composables/useDomains'
 
-/** 质量规则 · 绑定表（资产目录核心表） */
-export const QUALITY_BIND_TABLES = ASSET_DATA.map((a) => ({
-  value: a.key,
-  label: `${a.key} · ${a.layerLabel}/${a.domainLabel}`,
-}))
+let _stdCodeOpts = []
+let _stdCodeLoaded = false
 
-/** 出湖申请 · 可选源表（ADS / DWD / DWS） */
-export const EXPORT_TABLE_OPTIONS = ASSET_DATA.filter((a) =>
-  ['ads', 'dwd', 'dws'].includes(a.layer),
-).map((a) => ({
-  value: a.key,
-  label: `${a.key} · ${a.name}`,
-  sub: `${a.layerLabel} · ${a.domainLabel} · ${a.owner}`,
-  name: a.name,
-  layer: a.layerLabel,
-  domain: a.domainLabel,
-}))
+export function qualityStdCodeOptions() {
+  return _stdCodeOpts
+}
 
-const ORDER_FIELDS = SCHEMA_COLS.map((c) => ({
-  value: c.name,
-  label: `${c.name} · ${c.type}${c.pk ? ' · PK' : ''}${c.sensitive ? ' · PII' : ''} — ${c.desc}`,
-}))
+export async function ensureQualityStdCodeOptions() {
+  if (_stdCodeLoaded && _stdCodeOpts.length) return _stdCodeOpts
+  try {
+    const page = await fetchStdCodes({}, { current: 1, size: 200 })
+    const rows = page?.records || []
+    _stdCodeOpts = rows
+      .map((r) => {
+        const id = r.codeSetId || r.id
+        if (!id) return null
+        return {
+          value: id,
+          label: `${id}${r.name ? ` · ${r.name}` : ''}${r.fieldName ? ` (${r.fieldName})` : ''}`,
+        }
+      })
+      .filter(Boolean)
+    _stdCodeLoaded = true
+  } catch (e) {
+    console.warn('[quality] load std codes failed', e)
+    _stdCodeOpts = _stdCodeOpts.length ? _stdCodeOpts : []
+  }
+  return _stdCodeOpts
+}
 
-const USER_FIELDS = [
-  { value: 'user_id', label: 'user_id · BIGINT · PK — 用户ID' },
-  { value: 'buyer_mobile', label: 'buyer_mobile · VARCHAR · PII — 手机号' },
-  { value: 'buyer_real_name', label: 'buyer_real_name · VARCHAR · PII — 姓名' },
-  { value: 'register_time', label: 'register_time · DATETIME — 注册时间' },
-  { value: 'dt', label: 'dt · DATE · 分区 — 统计日' },
-]
-
-const DIM_FIELDS = [
-  { value: 'sku_id', label: 'sku_id · BIGINT · PK — SKU' },
-  { value: 'sku_name', label: 'sku_name · VARCHAR — 商品名' },
-  { value: 'category_id', label: 'category_id · INT — 类目' },
-  { value: 'dt', label: 'dt · DATE · 分区 — 统计日' },
-]
-
-const ADS_FIELDS = [
-  { value: 'dt', label: 'dt · DATE · 分区 — 统计日' },
-  { value: 'channel', label: 'channel · VARCHAR — 渠道' },
-  { value: 'total_gmv', label: 'total_gmv · DECIMAL — GMV' },
-  { value: 'order_cnt', label: 'order_cnt · BIGINT — 订单数' },
-]
-
-/** 表 → 可选字段（含「整表」占位由表单空选项提供） */
-export const QUALITY_BIND_FIELDS = {
-  'ods_trade.s_order': ORDER_FIELDS,
-  'dwd_trade.dwd_order_detail': ORDER_FIELDS,
-  'dws_trade.dws_order_1d': [
-    { value: 'dt', label: 'dt · DATE · 分区' },
-    { value: 'order_cnt', label: 'order_cnt · BIGINT' },
-    { value: 'pay_amt', label: 'pay_amt · DECIMAL' },
-    { value: 'user_id', label: 'user_id · BIGINT' },
-  ],
-  'ads.ads_gmv_board': ADS_FIELDS,
-  'dws_user.dws_user_profile_1d': USER_FIELDS,
-  'dim.dim_sku': DIM_FIELDS,
-  'dwd_user.dwd_user_info': USER_FIELDS,
-  'ads.ads_user_tags': [
-    { value: 'user_id', label: 'user_id · BIGINT · PK' },
-    { value: 'tag_code', label: 'tag_code · VARCHAR' },
-    { value: 'tag_value', label: 'tag_value · VARCHAR' },
-    { value: 'dt', label: 'dt · DATE · 分区' },
-  ],
+/** 出湖申请 · 源表选项（gov_asset；优先 ADS/DWD/DWS，无分层则全部） */
+export function exportBindTableOptions() {
+  const all = metricBindTableOptions()
+  const layered = all.filter((o) => ['ads', 'dwd', 'dws'].includes(String(o.layer || '').toLowerCase()))
+  return layered.length ? layered : all
 }
 
 /** 按规则类型的表达式预设；`{field}` 会替换为所选字段名；scope=field|table */
@@ -151,8 +125,8 @@ export const QUALITY_EXPR_PRESETS = {
     {
       key: 'f_enum_std',
       scope: 'field',
-      label: '字段级 · ∈ 标准码值 STD-C0021',
-      value: '{field} IN (SELECT code FROM STD-C0021)',
+      label: '字段级 · 绑标准码值集（填下方 stdCodeSetId）',
+      value: 'codeSet=STD-C0021',
     },
     {
       key: 'f_enum_in',
@@ -161,22 +135,22 @@ export const QUALITY_EXPR_PRESETS = {
       value: "{field} IN ('App','H5','小程序','POS')",
     },
     {
-      key: 'f_enum_rate',
+      key: 'f_enum_status_bind',
       scope: 'field',
-      label: '字段级 · 码值不合规率 < 0.5%',
-      value: 'SUM(CASE WHEN {field} NOT IN (SELECT code FROM STD-C0021) THEN 1 ELSE 0 END) * 1.0 / COUNT(1) < 0.005',
+      label: '字段级 · 订单状态码值集',
+      value: 'codeSet=ORDER_STATUS',
     },
     {
       key: 't_enum_status',
       scope: 'table',
-      label: '表级 · order_status 全量映射 STD-C0021',
-      value: 'order_status IN (SELECT code FROM STD-C0021)',
+      label: '表级 · order_status 绑 ORDER_STATUS',
+      value: 'codeSet=ORDER_STATUS',
     },
     {
       key: 't_enum_channel',
       scope: 'table',
-      label: '表级 · order_channel 映射 STD-C0034',
-      value: 'order_channel IN (SELECT code FROM STD-C0034)',
+      label: '表级 · channel 绑 CHANNEL_CODE',
+      value: 'codeSet=CHANNEL_CODE',
     },
   ],
   范围: [
@@ -308,13 +282,13 @@ export const QUALITY_EXPR_PRESETS = {
 }
 
 export function fillExprTemplate(tpl, field) {
-  const col = field && field !== '__table__' ? field : 'order_id'
+  const col = field && field !== '__table__' ? field : 'col'
   return String(tpl || '').replaceAll('{field}', col)
 }
 
 export const QUALITY_RULE_FORM = {
   title: '＋ 新建质量规则',
-  intro: '选类型 → 绑表 / 字段（表级或字段级）→ 选/自定义表达式 → 严重度',
+  intro: '选类型 → 绑资产目录表/字段 → 枚举填码值集 → 表达式 → 严重度（无演示表回落）',
   submitLabel: '创建规则',
   width: '640px',
   fields: [
@@ -339,23 +313,42 @@ export const QUALITY_RULE_FORM = {
     {
       key: 'table',
       label: '绑定表',
-      type: 'select',
+      type: 'search-select',
       required: true,
-      options: QUALITY_BIND_TABLES,
-      default: 'dwd_trade.dwd_order_detail',
+      optionsResolver: () => metricBindTableOptions(),
+      optionsLoad: () => ensureMetricBindTables(),
+      placeholder: '搜索资产目录中的表…',
+      searchKeys: ['label', 'sub', 'name', 'assetCode', 'search'],
+      subKey: 'sub',
+      hint: '选项来自已登记资产（gov_asset）；无列表请先在资产目录注册湖表',
       wide: true,
     },
     {
       key: 'field',
       label: '绑定字段',
-      type: 'select',
+      type: 'search-select',
       requiredWhen: { key: 'scope', value: 'field' },
       optionsByKey: 'table',
-      optionsBy: QUALITY_BIND_FIELDS,
+      optionsResolver: (form) => metricBindFieldOptions(form),
+      optionsLoad: (form) => ensureMetricBindFields(form?.table),
       hideWhen: { key: 'scope', value: 'table' },
-      default: 'order_id',
+      placeholder: '搜索列名…',
+      searchKeys: ['label', 'name', 'type', 'comment'],
+      hint: '列来自资产 schema（元数据优先，目录回退）',
       wide: true,
-      placeholder: '选择列',
+    },
+    {
+      key: 'stdCodeSetId',
+      label: '标准码值集',
+      type: 'search-select',
+      showWhen: { key: 'rtype', value: '枚举' },
+      requiredWhen: { key: 'rtype', value: '枚举' },
+      optionsResolver: () => qualityStdCodeOptions(),
+      optionsLoad: () => ensureQualityStdCodeOptions(),
+      placeholder: '搜索 gov_std_code.code_set_id…',
+      searchKeys: ['label', 'value'],
+      hint: '选项来自数据标准码值；亦可手填 codeSetId',
+      wide: true,
     },
     {
       key: 'expr',
@@ -366,7 +359,7 @@ export const QUALITY_RULE_FORM = {
       presetsBy: QUALITY_EXPR_PRESETS,
       filterByScope: true,
       interpolateKeys: ['field'],
-      placeholder: '按表级/字段级筛选预设，或切到「自定义…」手写',
+      placeholder: '枚举可选 codeSet=XXX；或手写 IN (…) SQL',
     },
     { key: 'sev', label: '严重度', type: 'select', options: ['阻断', '告警'], default: '阻断' },
   ],
@@ -411,18 +404,19 @@ export const EXPORT_APPLY_FORM = {
   fields: [
     {
       key: 'table',
-      label: '目标表',
+      label: '源表',
       type: 'search-select',
       required: true,
-      options: EXPORT_TABLE_OPTIONS,
-      placeholder: '搜索并选择出湖表（ADS / DWD / DWS）',
-      searchKeys: ['name', 'layer', 'domain', 'value'],
+      optionsResolver: () => exportBindTableOptions(),
+      optionsLoad: () => ensureMetricBindTables(),
+      placeholder: '搜索资产目录中的表（优先 ADS / DWD / DWS）',
+      searchKeys: ['label', 'sub', 'name', 'assetCode', 'layer', 'domain', 'search', 'value'],
       subKey: 'sub',
-      default: EXPORT_TABLE_OPTIONS[0]?.value || 'ads.ads_gmv_board',
+      hint: '选项来自已登记资产（gov_asset）；无列表请先在资产目录注册；不回落演示表',
       wide: true,
     },
     { key: 'purpose', label: '用途', type: 'textarea', required: true, placeholder: '业务用途与下游系统说明' },
-    { key: 'target', label: '目标系统', type: 'text', default: 'BI 报表', wide: true },
+    { key: 'target', label: '目标系统', type: 'text', required: true, placeholder: '如 BI 报表 / 业务 MySQL / ES', wide: true },
     {
       key: 'expire',
       label: '有效期',
@@ -730,7 +724,7 @@ export const WORKSPACE_FORM = {
     },
     {
       key: 'rg',
-      label: 'Trino 资源组',
+      label: '查询资源组',
       type: 'text',
       placeholder: '如 rg_team（可选，用于限流/记账）',
       wide: true,
@@ -885,7 +879,7 @@ export const SUBJECT_MAP_FORM = {
       label: '载体',
       type: 'select',
       options: [
-        { value: 'iceberg', label: '湖表 Iceberg' },
+        { value: 'iceberg', label: '湖表' },
         { value: 'ck', label: 'ClickHouse' },
         { value: 'source', label: '源库' },
         { value: 'sink', label: '回流副本' },
@@ -958,7 +952,7 @@ export const SUBJECT_MAP_FORM = {
   ],
 }
 
-const METRIC_DOMAINS = ['交易', '用户', '商品', '流量', '财务']
+const METRIC_DOMAINS = [] // 运行时由 domain options 填充
 
 /** 新建指标 · 原子 / 衍生 / 复合（按类型切换字段） */
 export const METRIC_CREATE_FORM = {
@@ -984,8 +978,9 @@ export const METRIC_CREATE_FORM = {
       key: 'domain',
       label: '业务域',
       type: 'select',
-      options: METRIC_DOMAINS,
-      default: '交易',
+      optionsResolver: () => domainSelectOptionsSync(),
+      optionsLoad: () => ensureDomainSelectOptions(),
+      default: 'trade',
     },
     {
       key: 'unit',
@@ -1020,7 +1015,7 @@ export const METRIC_CREATE_FORM = {
       optionsLoad: (form) => ensureMetricBindFields(form?.table),
       placeholder: '搜索列名…',
       searchKeys: ['label', 'name', 'type', 'comment'],
-      hint: '列来自资产 schema（Gravitino 优先，OM 回退）',
+      hint: '列来自资产 schema（元数据优先，目录回退）',
       wide: true,
     },
     {
@@ -1040,10 +1035,10 @@ export const METRIC_CREATE_FORM = {
       requiredWhen: { key: 'kind', value: '衍生' },
       showWhen: { key: 'kind', value: '衍生' },
       optionsResolver: () => metricAtomOptions(),
-      placeholder: '搜索并选择原子指标',
+      placeholder: '搜索并选择原子指标（空目录请先建原子）',
       searchKeys: ['name', 'caliber', 'value'],
       subKey: 'sub',
-      default: 'A-0012',
+      default: '',
       wide: true,
     },
     // —— 复合 ——
@@ -1057,7 +1052,7 @@ export const METRIC_CREATE_FORM = {
       placeholder: '搜索并多选衍生 / 原子指标',
       searchKeys: ['name', 'caliber', 'type', 'value'],
       subKey: 'sub',
-      default: ['M-0001', 'A-0012'],
+      default: [],
       wide: true,
     },
     // —— 复合 · 仅公式 ——
@@ -1089,7 +1084,7 @@ export const METRIC_CREATE_FORM = {
           value: '{ref0} * {ref1}',
         },
       ],
-      placeholder: '仅写指标 ID 与运算，如 M-0001 / A-0012',
+      placeholder: '仅写指标 ID 与运算，如 {ref0} / {ref1}',
       presetHint: '改依赖后会自动刷新 ID；切「自定义…」可手写',
       validate: (v) => {
         const parsed = parseMetricFormula(v)
@@ -1121,7 +1116,7 @@ export const METRIC_CREATE_FORM = {
       placeholder: '从依赖原子指标绑定表字段中多选（不选=全表）',
       searchKeys: ['name', 'group', 'type', 'value'],
       subKey: 'sub',
-      default: ['dt'],
+      default: [],
       wide: true,
       validate: (v, form) => {
         const keys = refsToArray(v)

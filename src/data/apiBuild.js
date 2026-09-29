@@ -1,7 +1,7 @@
 /** 数据服务 · 分步构建 API（选源 → 配参 → 鉴权 → 限流 → 测试 → 发布） */
 
 import { ASSET_DATA } from '@/data/assets'
-import { METRIC_CATALOG } from '@/data/metrics'
+import { getMetricCatalogForForms } from '@/data/metrics'
 import { DATA_SOURCES, endpointOf } from '@/data/datasources'
 
 export const API_BUILD_STEPS = [
@@ -9,8 +9,8 @@ export const API_BUILD_STEPS = [
   { id: 'params', title: '配参', desc: '入参、出参与响应转换' },
   { id: 'auth', title: '鉴权', desc: 'Token / OAuth2 / 免鉴权' },
   { id: 'limit', title: '全局限流', desc: '接口总 QPS / 熔断' },
-  { id: 'test', title: '测试', desc: '调用 SQLREST debug API' },
-  { id: 'publish', title: '发布', desc: 'SQLREST publish/deploy' },
+  { id: 'test', title: '测试', desc: '调用接口调试' },
+  { id: 'publish', title: '发布', desc: '发布部署到接口服务' },
 ]
 
 /** 自定义 SQL 可选数据源（在线 · 可查询类） */
@@ -43,16 +43,31 @@ export function apiDatasourceLabel(dsId) {
   return d ? d.label : dsId || '—'
 }
 
-export const API_METRIC_OPTIONS = METRIC_CATALOG.filter(
-  (m) => m.status === 'active' || m.status === 'version_review',
-).map((m) => ({
-  value: m.id,
-  label: `${m.id} · ${m.name}`,
-  sub: `${m.type} · ${m.caliber || ''}`,
-  name: m.name,
-  type: m.type,
-  domain: m.domainLabel || m.domain,
-}))
+/** 已启用指标选项（读 useMetrics 注入的真目录；空列表合法） */
+export function apiMetricOptions() {
+  return getMetricCatalogForForms()
+    .filter((m) => m.status === 'active' || m.status === 'version_review')
+    .map((m) => ({
+      value: m.id,
+      label: `${m.id} · ${m.name}`,
+      sub: `${m.type} · ${m.caliber || ''}`,
+      name: m.name,
+      type: m.type,
+      domain: m.domainLabel || m.domain,
+    }))
+}
+
+/** @deprecated 使用 apiMetricOptions()；保留 getter 兼容旧模板 */
+export const API_METRIC_OPTIONS = new Proxy([], {
+  get(_t, prop) {
+    const live = apiMetricOptions()
+    if (prop === 'length') return live.length
+    if (prop === Symbol.iterator) return live[Symbol.iterator].bind(live)
+    if (typeof prop === 'string' && /^\d+$/.test(prop)) return live[Number(prop)]
+    const v = live[prop]
+    return typeof v === 'function' ? v.bind(live) : v
+  },
+})
 
 export const API_TABLE_OPTIONS = ASSET_DATA.filter((a) =>
   ['ads', 'dwd', 'dws', 'dim'].includes(a.layer),
@@ -66,7 +81,7 @@ export const API_TABLE_OPTIONS = ASSET_DATA.filter((a) =>
 }))
 
 export const RESPONSE_FORMAT_OPTIONS = [
-  { value: 'wrapped', label: '统一封装', tip: '{ code, message, data }（SQLREST 默认）' },
+  { value: 'wrapped', label: '统一封装', tip: '{ code, message, data }（接口服务默认）' },
   { value: 'origin', label: '原样返回', tip: 'format=origin，直接返回查询结果' },
   { value: 'nil', label: '仅状态头', tip: 'format=nil，只返回 code/message' },
 ]
@@ -202,33 +217,17 @@ export function defaultApiBuildForm() {
     ''
   return {
     srcType: '指标',
-    metricId: API_METRIC_OPTIONS[0]?.value || 'M-0001',
-    tableKey: API_TABLE_OPTIONS[0]?.value || 'ads.ads_gmv_board',
+    metricId: apiMetricOptions()[0]?.value || '',
+    tableKey: '',
     datasourceId: defaultDs,
     engine: 'SQL',
-    sql: 'SELECT dt, channel, total_gmv\nFROM ads.ads_gmv_board\nWHERE dt = {{dt}}\nLIMIT {{limit}}',
-    path: '/api/gmv/daily',
-    name: '日 GMV 查询',
+    sql: '',
+    path: '',
+    name: '',
     method: 'GET',
-    params: [
-      { name: 'dt', type: 'date', required: true, example: '2026-09-16', desc: '统计日' },
-      { name: 'channel', type: 'string', required: false, example: 'App', desc: '渠道，可空' },
-      { name: 'limit', type: 'int', required: false, example: '100', desc: '返回行数' },
-    ],
+    params: [],
     /** SQLREST 出参：列映射 + 转换 + 封装形态 */
-    responses: [
-      { source: 'dt', name: 'dt', type: 'date', nullable: false, transform: 'none', example: '2026-09-16', desc: '统计日' },
-      { source: 'channel', name: 'channel', type: 'string', nullable: true, transform: 'none', example: 'App', desc: '渠道' },
-      {
-        source: 'total_gmv',
-        name: 'totalGmv',
-        type: 'number',
-        nullable: false,
-        transform: 'cents_to_yuan',
-        example: '32846000',
-        desc: 'GMV（分→元）',
-      },
-    ],
+    responses: [],
     responseFormat: 'wrapped', // wrapped | origin | nil
     responseShape: 'list', // list | object | page
     pageTotalExample: 24,
@@ -260,11 +259,11 @@ export function apiSourceLabel(form) {
 
 export function syncSqlTemplate(form) {
   if (form.srcType === '指标') {
-    const id = form.metricId || 'M-0001'
+    const id = form.metricId || '<metric_code>'
     return `SELECT *\nFROM metric_query('${id}')\nWHERE dt = {{dt}}\nLIMIT {{limit}}`
   }
   if (form.srcType === '表') {
-    const table = form.tableKey || 'ads.ads_gmv_board'
+    const table = form.tableKey || '<schema.table>'
     return `SELECT *\nFROM ${table}\nWHERE dt = {{dt}}\nLIMIT {{limit}}`
   }
   return form.sql || 'SELECT 1'
@@ -272,34 +271,26 @@ export function syncSqlTemplate(form) {
 
 export function runApiBuildTest(form) {
   const src = apiSourceLabel(form)
-  const dsLabel = form.srcType === 'SQL' ? apiDatasourceLabel(form.datasourceId) : 'SQLREST → Trino（默认湖仓）'
-  const dt = form.params?.find((p) => p.name === 'dt')?.example || '2026-09-16'
-  const rawRows =
-    form.srcType === '指标'
-      ? [
-          { dt, metric: form.metricId, value: 32846000, channel: 'App', total_gmv: 32846000 },
-          { dt, metric: form.metricId, value: 12048000, channel: 'H5', total_gmv: 12048000 },
-        ]
-      : [
-          { dt: '2026-09-16', channel: 'App', total_gmv: 32846000 },
-          { dt: '2026-09-16', channel: 'H5', total_gmv: 12048000 },
-        ]
-
+  const dsLabel = form.srcType === 'SQL' ? apiDatasourceLabel(form.datasourceId) : '接口服务 → 查询引擎（默认湖仓）'
+  // 静态结构校验；禁止注入演示行，正式试跑走已发布 SQLREST
   const fields = form.responses || []
-  const mapped = rawRows.map((row) => mapResponseRow(row, fields))
+  const mapped = []
   const shape = form.responseShape || form.responseWrap || 'list'
   const body = wrapSqlrestResponse(form, mapped)
 
   return {
     ok: true,
-    latencyMs: 42 + Math.floor(Math.random() * 30),
-    engine: form.srcType === 'SQL' ? `SQLREST → ${dsLabel}` : 'SQLREST → Trino',
+    latencyMs: 0,
+    engine: form.srcType === 'SQL' ? `接口服务 → ${dsLabel}` : '接口服务 → 查询引擎',
     source: src,
     datasource: form.srcType === 'SQL' ? form.datasourceId : '',
-    rowCount: shape === 'object' ? Math.min(1, mapped.length) : mapped.length,
+    rowCount: 0,
     format: form.responseFormat || 'wrapped',
     shape,
     sample: body,
+    note: fields.length
+      ? `已配置 ${fields.length} 个出参映射；未注入演示行`
+      : '未配置出参映射；未注入演示行',
     checkedAt: new Date().toLocaleString('zh-CN', { hour12: false }),
   }
 }

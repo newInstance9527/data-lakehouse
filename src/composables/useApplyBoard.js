@@ -620,6 +620,7 @@ export async function pushExportApply({
   target,
   expire,
   applicant = '我',
+  assetId,
 } = {}) {
   const tableLabel = String(table || '').trim() || '（未选表）'
   const targetLabel = String(target || '').trim() || '（未填目标）'
@@ -634,6 +635,7 @@ export async function pushExportApply({
       exportTable: tableLabel,
       exportTarget: targetLabel,
       expireLabel,
+      ...(assetId ? { assetId } : {}),
     })
     const card = mapServerTicket(server, 'pending')
     if (card) {

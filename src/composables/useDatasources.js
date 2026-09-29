@@ -17,8 +17,6 @@ import {
 } from '@/api/datasource'
 import { tablesToSchema } from '@/utils/schemaList'
 import { dsTypeMeta } from '@/data/dsForm'
-import { ensureOnce } from '@/composables/useEnsureSamples'
-import { SAMPLE_DATASOURCE } from '@/data/sampleSeeds'
 
 const sources = ref([])
 /** ETL 编排可用源（usable_in_dag），与全量 sources 分轨，避免冲掉数据源中心列表 */
@@ -37,15 +35,6 @@ export function useDatasources() {
       const page = await fetchDatasourcePage(filters, { current: 1, size: 500 })
       sources.value = (page?.records || []).map(normalizeSource)
       loaded.value = true
-      await ensureOnce(
-        'datasource_list',
-        () => sources.value.length === 0,
-        () => addDatasource({ ...SAMPLE_DATASOURCE }),
-        async () => {
-          const page2 = await fetchDatasourcePage(filters, { current: 1, size: 500 })
-          sources.value = (page2?.records || []).map(normalizeSource)
-        },
-      )
       return sources.value
     } catch (e) {
       loadError = e
@@ -255,8 +244,8 @@ function normalizeSource(row) {
     port: row.port || conn.port || '',
     database: row.database || conn.database || '',
     user: row.user || conn.user || conn.username || '',
-    bg: row.bg || meta.bg,
-    color: row.color || meta.color,
+    bg: '#e6f7ff',
+    color: '#1890ff',
     tables: Array.isArray(row.tables) ? row.tables.map(normalizeTable) : row.tables,
     conn,
     sqlrestProjectable: row.sqlrestProjectable ?? false,

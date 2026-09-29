@@ -46,10 +46,24 @@ export function standardMapping(q) {
   return `/standard${query({ tab: 'mapping', q })}`
 }
 
+export function standardDetect(q) {
+  return `/standard${query({ tab: 'detect', q })}`
+}
+
+export function standardCode(q) {
+  return `/standard${query({ tab: 'code', q })}`
+}
+
 /** 生命周期主台；可选 table 预填 */
 export function lifecyclePath(tableFqn) {
   if (!tableFqn) return '/lifecycle'
   return `/lifecycle?table=${enc(tableFqn)}`
+}
+
+/** 指标中心；可选 q=metricCode 打开详情 */
+export function metricsPath(metricCode) {
+  if (!metricCode) return '/metrics'
+  return `/metrics?q=${enc(metricCode)}`
 }
 
 /** 从 route.query 归一化血缘 focus（别名：node / omFqn / q） */

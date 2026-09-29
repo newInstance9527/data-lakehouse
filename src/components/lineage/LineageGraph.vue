@@ -165,8 +165,9 @@ function onPopoverAction() {
     emit('open-asset', n.assetId)
     return
   }
-  if (n.type === 'metric') {
-    emit('go', '/metrics')
+  if (n.type === 'metric' || n.layer === 'metric' || n.metricCode) {
+    const code = n.metricCode || n.id || n.name
+    emit('go', code ? `/metrics?q=${encodeURIComponent(code)}` : '/metrics')
     return
   }
   if (n.type === 'report') {

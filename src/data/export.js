@@ -3,10 +3,10 @@
 export const EXPORT_FLOW = [
   { icon: '📝', title: '申请单', sub: '用途=回流/库表/时效' },
   { icon: '🔐', title: '审批', sub: '安全+域负责人' },
-  { icon: '🛡️', title: 'DS 脱敏', sub: '出域→静态脱敏' },
+  { icon: '🛡️', title: '调度脱敏', sub: '出域→静态脱敏' },
   { icon: '📤', title: '出湖', sub: 'ADS → MySQL/Redis/ES' },
-  { icon: '📋', title: '审计', sub: 'Gravitino 记录' },
-  { icon: '⏰', title: '到期回收', sub: '停作业+通知删副本' },
+  { icon: '📋', title: '审计', sub: '元数据记录' },
+  { icon: '⏰', title: '到期回收', sub: '停作业+通知删副本', focus: 'expire' },
 ]
 
 const EXPORT_STATUS = {

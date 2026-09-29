@@ -13,6 +13,8 @@ import {
   useGlobalAiFab,
 } from '@/composables/useGlobalAiFab'
 import { handleAiSqlAction, openQueryWithSql } from '@/composables/useAiSqlActions'
+import AiMarkdownBody from '@/components/ai/AiMarkdownBody.vue'
+import AiIcon from '@/components/ai/AiIcon.vue'
 
 const router = useRouter()
 const { showToast } = useToast()
@@ -47,6 +49,20 @@ const panelEl = ref(null)
 const fileInput = ref(null)
 
 const ws = computed(() => currentWs.value || 'default')
+
+const streamStatusLabel = computed(() => {
+  if (!sending.value) return ''
+  const last = messages.value[messages.value.length - 1]
+  if (!last || last.role !== 'assistant') return '思考中…'
+  const tools = (last.citations || []).filter((c) => c.type === 'tool' || c.tool)
+  if (last.text) return ''
+  if (tools.length) {
+    const name = tools[tools.length - 1].title || tools[tools.length - 1].tool || '工具'
+    return `已调用 ${tools.length} 个工具 · 最近 ${name}`
+  }
+  return '思考中…'
+})
+const showThinkingBubble = computed(() => sending.value && !!streamStatusLabel.value)
 
 function syncImageInputFlag() {
   const hasImg = pendingFiles.value.some(
@@ -99,6 +115,17 @@ watch(open, async (v) => {
 watch(
   () => messages.value.length,
   () => scrollBottom(),
+)
+
+watch(
+  () => {
+    const last = messages.value[messages.value.length - 1]
+    if (!last || last.role !== 'assistant') return ''
+    return `${last.text?.length || 0}:${last.citations?.length || 0}`
+  },
+  () => {
+    if (sending.value) scrollBottom()
+  },
 )
 
 function onWinResize() {
@@ -314,9 +341,15 @@ function onBubbleClick(e, msg) {
             <option v-for="m in visibleModelOptions" :key="m.id" :value="m.id">{{ m.label }}</option>
           </select>
           <span v-if="hasImageInput" class="gai-vision-tag" title="检测到图片，已筛选视觉能力模型">视觉</span>
-          <button type="button" class="gai-icon-btn" title="完整助手页" @click="goFullPage">↗</button>
-          <button type="button" class="gai-icon-btn" title="清空" @click="onClear">🧹</button>
-          <button type="button" class="gai-icon-btn" title="关闭" @click="closePanel">✕</button>
+          <button type="button" class="gai-icon-btn" title="完整助手页" @click="goFullPage">
+            <AiIcon name="expand" :size="14" />
+          </button>
+          <button type="button" class="gai-icon-btn" title="清空" @click="onClear">
+            <AiIcon name="clear" :size="14" />
+          </button>
+          <button type="button" class="gai-icon-btn" title="关闭" @click="closePanel">
+            <AiIcon name="close" :size="14" />
+          </button>
         </header>
 
         <div ref="chatBody" class="gai-body">
@@ -330,8 +363,22 @@ function onBubbleClick(e, msg) {
             :class="msg.role"
           >
             <div class="gai-bubble" @click="onBubbleClick($event, msg)">
-              <div v-if="msg.html" v-html="msg.html" />
-              <template v-else>{{ msg.text }}</template>
+              <details
+                v-if="msg.role === 'assistant' && msg.citations?.some((x) => x.type === 'tool')"
+                class="gai-tool-steps"
+              >
+                <summary class="gai-tool-steps-label">
+                  工具 · {{ msg.citations.filter((x) => x.type === 'tool').length }}
+                </summary>
+                <div
+                  v-for="(c, ti) in msg.citations.filter((x) => x.type === 'tool').slice(0, 6)"
+                  :key="'t' + ti"
+                  class="gai-tool-step"
+                >
+                  <span class="gai-tool-name">{{ c.tool || c.title || 'tool' }}</span>
+                </div>
+              </details>
+              <AiMarkdownBody :role="msg.role" :text="msg.text" :html="msg.html" />
               <div
                 v-if="msg.role === 'assistant' && msg.citations?.length"
                 class="gai-cite-footer"
@@ -367,8 +414,8 @@ function onBubbleClick(e, msg) {
               </div>
             </div>
           </div>
-          <div v-if="sending" class="gai-msg assistant">
-            <div class="gai-bubble gai-thinking">思考中…</div>
+          <div v-if="showThinkingBubble" class="gai-msg assistant">
+            <div class="gai-bubble gai-thinking">{{ streamStatusLabel }}</div>
           </div>
         </div>
 
@@ -385,7 +432,9 @@ function onBubbleClick(e, msg) {
         </div>
 
         <div class="gai-input">
-          <button type="button" class="gai-icon-btn" title="上传文件" @click="pickFiles">📎</button>
+          <button type="button" class="gai-icon-btn" title="上传文件" @click="pickFiles">
+            <AiIcon name="attach" :size="15" />
+          </button>
           <input
             ref="fileInput"
             type="file"
@@ -401,6 +450,15 @@ function onBubbleClick(e, msg) {
             @keydown.enter.exact.prevent="onSend"
             @paste="onPaste"
           />
+          <button
+            v-if="sending"
+            type="button"
+            class="btn btn-sm"
+            title="停止生成"
+            @click="stop()"
+          >
+            停止
+          </button>
           <button
             type="button"
             class="btn btn-sm btn-primary"
@@ -421,7 +479,9 @@ function onBubbleClick(e, msg) {
         :aria-expanded="open"
         @pointerdown="onFabPointerDown"
       >
-        <span class="gai-fab-ico">{{ open ? '✕' : '🤖' }}</span>
+        <span class="gai-fab-ico" aria-hidden="true">
+          <AiIcon :name="open ? 'close' : 'spark'" :size="20" />
+        </span>
       </button>
     </div>
   </Teleport>
@@ -462,8 +522,11 @@ function onBubbleClick(e, msg) {
   cursor: grabbing;
 }
 .gai-fab-ico {
-  font-size: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   line-height: 1;
+  color: #fff;
 }
 
 .gai-panel {
@@ -532,6 +595,10 @@ function onBubbleClick(e, msg) {
   color: var(--text-2);
   cursor: pointer;
   flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
 }
 .gai-icon-btn:hover {
   border-color: var(--border);
@@ -687,6 +754,53 @@ function onBubbleClick(e, msg) {
   background: rgba(255, 255, 255, 0.2);
   border-color: rgba(255, 255, 255, 0.35);
   color: #fff;
+}
+.gai-tool-steps {
+  margin-bottom: 8px;
+  padding: 4px 8px 6px;
+  border-radius: 6px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+}
+.gai-tool-steps-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-3);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.gai-tool-steps-label::-webkit-details-marker {
+  display: none;
+}
+.gai-tool-steps-label::before {
+  content: '▸';
+  display: inline-block;
+  margin-right: 4px;
+  transition: transform 0.15s ease;
+}
+.gai-tool-steps[open] > .gai-tool-steps-label::before {
+  transform: rotate(90deg);
+}
+.gai-tool-steps[open] {
+  display: block;
+}
+.gai-tool-steps[open] .gai-tool-step {
+  display: inline-flex;
+  margin: 4px 4px 0 0;
+}
+.gai-tool-step {
+  display: none;
+}
+.gai-tool-name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  font-weight: 600;
+  color: #1d39c4;
+  background: #f0f5ff;
+  border: 1px solid #adc6ff;
+  border-radius: 4px;
+  padding: 1px 6px;
 }
 
 .gai-input {

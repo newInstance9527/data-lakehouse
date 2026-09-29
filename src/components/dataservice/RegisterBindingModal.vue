@@ -50,7 +50,7 @@ function onPick(a) {
 
 function submit() {
   if (!form.sqlrestApiId) {
-    showToast('请选择或填写 SQLREST 接口 ID', 'warning')
+    showToast('请选择或填写接口服务 ID', 'warning')
     return
   }
   emit('submit', { ...form })
@@ -64,13 +64,13 @@ function submit() {
         <div class="modal-hd">
           <div>
             <div class="modal-title">登记绑定</div>
-            <div class="tip">在 SQLREST Manager 用 SQL/Groovy 构建后，到此登记资产绑定并经 Gateway 发布</div>
+            <div class="tip">在接口工作台用 SQL/脚本构建后，到此登记资产绑定并经网关发布</div>
           </div>
           <button type="button" class="btn btn-sm" @click="emit('close')">✕</button>
         </div>
         <div class="modal-bd">
           <label class="field">
-            <span>SQLREST 接口</span>
+            <span>接口服务</span>
             <select
               class="input"
               :value="form.sqlrestApiId"
@@ -90,7 +90,7 @@ function submit() {
           </label>
           <label class="field">
             <span>或手动填 sqlrestApiId</span>
-            <input v-model="form.sqlrestApiId" class="input" placeholder="SQLREST assignment id" />
+            <input v-model="form.sqlrestApiId" class="input" placeholder="接口 assignment id" />
           </label>
           <div class="grid2">
             <label class="field">

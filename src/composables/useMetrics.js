@@ -20,8 +20,6 @@ import {
   metricTypeMeta,
   setMetricCatalogProvider,
 } from '@/data/metrics'
-import { ensureOnce } from '@/composables/useEnsureSamples'
-import { SAMPLE_METRIC } from '@/data/sampleSeeds'
 import { useSession } from '@/composables/useSession'
 
 const catalog = ref([])
@@ -33,9 +31,13 @@ const lastError = ref(null)
 let loadPromise = null
 
 const DOMAIN_LABEL = {
-  trade: '交易',
-  user: '用户',
-  goods: '商品',
+  trade: '交易域',
+  user: '用户域',
+  goods: '商品域',
+  product: '商品域',
+  marketing: '营销域',
+  finance: '财务域',
+  common: '通用',
 }
 
 function formatHistoryTime(t) {
@@ -56,7 +58,7 @@ export function normalizeMetric(row) {
   const st = metricStatusMeta(status)
   const meta = metricTypeMeta(kind)
   const code = row.metricCode || row.id
-  const domainCode = row.domainCode || row.domain || 'trade'
+  const domainCode = row.domainCode || row.domain || 'common'
   const qualifierKeys = Array.isArray(row.qualifierKeys)
     ? row.qualifierKeys
     : []
@@ -69,7 +71,7 @@ export function normalizeMetric(row) {
     type: kind,
     typeCls: meta.typeCls,
     kind,
-    domain: domainCode,
+    domain: domainCode === 'product' ? 'goods' : domainCode,
     domainLabel: DOMAIN_LABEL[domainCode] || row.domainLabel || domainCode,
     caliber: row.caliber || '',
     pendingCaliber: row.pendingCaliber || '',
@@ -178,15 +180,6 @@ export function useMetrics() {
       overview.value = ov
       loaded.value = true
       loadedWs.value = ws
-      await ensureOnce(
-        `metric_list_${ws}`,
-        () => catalog.value.length === 0,
-        () => createMetric({ ...SAMPLE_METRIC, ws }),
-        async () => {
-          const page2 = await fetchMetricList(q, { current: 1, size: 500 })
-          catalog.value = sortMetricCatalog((page2?.records || []).map(normalizeMetric).filter(Boolean))
-        },
-      )
       return { catalog: catalog.value, overview: overview.value }
     } catch (e) {
       lastError.value = e

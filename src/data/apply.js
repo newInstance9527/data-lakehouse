@@ -96,7 +96,7 @@ export const APPLY_PERM_LEVELS = [
 /** 表申请 */
 export const APPLY_TABLE_KINDS = [
   { value: 'read', label: '表只读', tip: '对已有表申请查询权限' },
-  { value: 'register', label: '登记上架', tip: '新表登记进资产目录 / Gravitino' },
+  { value: 'register', label: '登记上架', tip: '新表登记进资产目录 / 元数据' },
   { value: 'alter', label: '结构变更', tip: '加列、改分区等元数据变更' },
 ]
 

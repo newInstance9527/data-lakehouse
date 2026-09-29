@@ -2,6 +2,7 @@
 import { computed, reactive, ref, watch } from 'vue'
 import SearchSelect from '@/components/common/SearchSelect.vue'
 import { useStandards } from '@/composables/useStandards'
+import { useDomains } from '@/composables/useDomains'
 import { useToast } from '@/composables/useToast'
 import { STD_FIELD_TYPE_OPTIONS } from '@/data/standards'
 
@@ -14,13 +15,14 @@ const emit = defineEmits(['close', 'submit'])
 
 const { showToast } = useToast()
 const { fieldList } = useStandards()
+const { domainOptions, ensureDomains } = useDomains()
 
 const form = reactive({
   kind: 'field',
   name: '',
   type: '',
   unit: '—',
-  domain: '交易',
+  domain: 'trade',
   desc: '',
   id: '',
   field: '',
@@ -56,6 +58,7 @@ watch(
   () => props.open,
   (v) => {
     if (!v) return
+    ensureDomains().catch(() => {})
     const init = props.initial
     if (init && (init.kind === 'field' || init.kind === 'code' || init.name || init.id)) {
       editing.value = true
@@ -66,7 +69,7 @@ watch(
           name: init.name || '',
           type: '',
           unit: '—',
-          domain: '交易',
+          domain: 'trade',
           desc: '',
           id: init.id || init.codeSetId || '',
           field: init.field || init.fieldName || '',
@@ -86,7 +89,7 @@ watch(
           name: init.name || init.fieldName || '',
           type: init.type || init.dataType || '',
           unit: init.unit || '—',
-          domain: init.domain || init.domainCode || '交易',
+          domain: init.domainCode || init.domain || 'trade',
           desc: init.desc || init.description || '',
           id: '',
           field: '',
@@ -101,7 +104,7 @@ watch(
       name: '',
       type: '',
       unit: '—',
-      domain: '交易',
+      domain: 'trade',
       desc: '',
       id: '',
       field: '',
@@ -245,13 +248,9 @@ function submit() {
               <label class="form-field">
                 <span class="form-label">业务域</span>
                 <select v-model="form.domain" class="select" style="width: 100%">
-                  <option>交易</option>
-                  <option>用户</option>
-                  <option>商品</option>
-                  <option>通用</option>
-                  <option>营销</option>
-                  <option>财务</option>
-                  <option>门店</option>
+                  <option v-for="d in domainOptions" :key="d.value" :value="d.value">
+                    {{ d.label }}
+                  </option>
                 </select>
               </label>
               <label class="form-field wide">

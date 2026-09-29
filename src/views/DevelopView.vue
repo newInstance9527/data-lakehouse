@@ -373,8 +373,9 @@ onMounted(async () => {
 <template>
   <div class="develop-page">
     <PageHeader
+      page-id="develop"
       title="数据开发 / SQL 工作台"
-      subtitle="Spark / Flink 为主 · Trino 校验 · 任务打包 · 版本对比 · 审批上版"
+      subtitle="流 / 批开发与校验 · 任务打包 · 版本对比 · 审批上版"
       :guide-title="guide.title"
       :guide="guide"
     >
@@ -495,7 +496,7 @@ onMounted(async () => {
         </div>
 
         <div class="dev-lint">
-          <div class="dev-lint-title">✅ 代码检查结果（DolphinScheduler Linter）</div>
+          <div class="dev-lint-title">✅ 代码检查结果</div>
           <div class="dev-lint-tags">
             <span
               v-for="(c, i) in activeFile?.lint || []"
@@ -530,7 +531,7 @@ onMounted(async () => {
               >刷新</button>
             </span>
           </div>
-          <div v-if="!trialResult" class="dev-result-empty">试跑后在这里看结果表。Spark / Flink 的结果表是 Trino 抽样，调度日志在「日志」。</div>
+          <div v-if="!trialResult" class="dev-result-empty">试跑后在这里看结果表。批/流作业结果为抽样预览，调度日志在「日志」。</div>
           <template v-else>
             <div v-if="trialResult.previewNote" class="dev-result-note">{{ trialResult.previewNote }}</div>
             <div v-if="trialResult.message && trialResult.status === 'failed'" class="dev-result-note is-fail">{{ trialResult.message }}</div>

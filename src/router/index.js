@@ -10,6 +10,7 @@ const routes = [
     meta: { public: true, id: 'login' },
   },
   { path: '/', name: 'overview', component: () => import('@/views/OverviewView.vue'), meta: { id: 'overview' } },
+  { path: '/domain', name: 'domain', component: () => import('@/views/DomainView.vue'), meta: { id: 'domain' } },
   { path: '/catalog', name: 'catalog', component: () => import('@/views/CatalogView.vue'), meta: { id: 'catalog' } },
   { path: '/datasource', name: 'datasource', component: () => import('@/views/DatasourceView.vue'), meta: { id: 'datasource' } },
   {

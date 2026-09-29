@@ -88,6 +88,19 @@ export function fetchLcStorageShowback(ws, range = '30d', group = 'ws') {
   return http.get(`${L}/storage/showback`, { ws, range, group })
 }
 
+/** 存储日报导出（GET /lh/lifecycle/storage/report/export）；无表时 content 为空串 */
+export function exportLcStorageReport({ ws, range = '30d', format = 'csv' } = {}) {
+  return http.get(`${L}/storage/report/export`, { ws, range, format })
+}
+
+export function fetchLcArchiveCandidates(ws) {
+  return http.get(`${L}/archive-candidates`, { ws })
+}
+
+export function fetchLcCompliancePreview(ws, limit = 10) {
+  return http.get(`${L}/compliance/preview`, { ws, limit })
+}
+
 export function fetchLcRuns(filters = {}) {
   return http.get(`${L}/runs`, {
     ws: filters.ws,

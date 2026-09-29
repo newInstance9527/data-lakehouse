@@ -4,10 +4,13 @@ import { useRoute, useRouter } from 'vue-router'
 import { doLogin } from '@/api/auth'
 import { useSession } from '@/composables/useSession'
 import { ApiError } from '@/api/http'
+import { t, useLocale } from '@/composables/useLocale'
+import UiPrefsMenu from '@/components/common/UiPrefsMenu.vue'
 
 const route = useRoute()
 const router = useRouter()
 const { bootstrapSession } = useSession()
+useLocale()
 
 /** 与 Snowy 种子用户一致：账号 superAdmin，默认密码 SNOWY_SYS_DEFAULT_PASSWORD_FOR_B */
 const account = ref('superAdmin')
@@ -24,7 +27,7 @@ const redirectTo = computed(() => {
 async function submit() {
   errorMsg.value = ''
   if (!account.value.trim() || !password.value) {
-    errorMsg.value = '请输入账号和密码'
+    errorMsg.value = t('login.needCreds')
     return
   }
   loading.value = true
@@ -36,15 +39,20 @@ async function submit() {
     await bootstrapSession()
     await router.replace(redirectTo.value)
   } catch (e) {
-    errorMsg.value = e instanceof ApiError ? e.message : e?.message || '登录失败'
+    errorMsg.value = e instanceof ApiError ? e.message : e?.message || t('login.fail')
   } finally {
     loading.value = false
   }
 }
+
+void locale
 </script>
 
 <template>
   <div class="lh-login">
+    <div class="lh-login__prefs">
+      <UiPrefsMenu on-dark />
+    </div>
     <div class="lh-login__sky" aria-hidden="true">
       <div class="lh-login__ripple lh-login__ripple--a" />
       <div class="lh-login__ripple lh-login__ripple--b" />
@@ -81,23 +89,23 @@ async function submit() {
       <header class="lh-login__brand">
         <div class="lh-login__mark" aria-hidden="true">DL</div>
         <h1 class="lh-login__title">DataLakeHub</h1>
-        <p class="lh-login__tagline">湖仓一体 · 看见资产 · 治理可查</p>
+        <p class="lh-login__tagline">{{ t('login.tagline') }}</p>
       </header>
 
       <form class="lh-login__form" @submit.prevent="submit">
         <label class="lh-login__field">
-          <span>账号</span>
-          <input v-model="account" type="text" autocomplete="username" placeholder="如 superAdmin" />
+          <span>{{ t('login.account') }}</span>
+          <input v-model="account" type="text" autocomplete="username" :placeholder="t('login.account.ph')" />
         </label>
         <label class="lh-login__field">
-          <span>密码</span>
-          <input v-model="password" type="password" autocomplete="current-password" placeholder="请输入密码" />
+          <span>{{ t('login.password') }}</span>
+          <input v-model="password" type="password" autocomplete="current-password" :placeholder="t('login.password.ph')" />
         </label>
         <p v-if="errorMsg" class="lh-login__error" role="alert">{{ errorMsg }}</p>
         <button class="lh-login__submit" type="submit" :disabled="loading">
-          {{ loading ? '登录中…' : '进入治理门户' }}
+          {{ loading ? t('login.loading') : t('login.submit') }}
         </button>
-        <p class="lh-login__hint">组织 / 角色 / 菜单在管理端维护；本页仅消费同一套登录会话。</p>
+        <p class="lh-login__hint">{{ t('login.hint') }}</p>
       </form>
     </div>
   </div>

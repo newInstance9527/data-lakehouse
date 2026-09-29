@@ -208,8 +208,8 @@ function typeLabel(t) {
 
 function resolvedEngineHint() {
   const mode = props.conf?.mode
-  if (mode === 'cdc') return 'Flink CDC（由 mode=cdc 路由）'
-  if (mode === 'batch') return 'DataX / Spark 批抽（由路由决定）'
+  if (mode === 'cdc') return 'CDC 实时（由 mode=cdc 路由）'
+  if (mode === 'batch') return '批抽取（由路由决定）'
   if (mode === 'incremental') return '批抽 + watermark 水位'
   return '随任务默认引擎'
 }
@@ -1162,7 +1162,7 @@ function onCodeSetPick(v) {
 
   <!-- ===== sink_iceberg ===== -->
   <template v-else-if="type === 'sink_iceberg'">
-    <div class="sec-title">Iceberg 目标</div>
+    <div class="sec-title">湖表目标</div>
     <div class="form-grid-2">
       <label class="form-field"><span class="form-label">Catalog</span><input class="input" :value="conf.catalog" placeholder="iceberg" @input="set('catalog', $event.target.value)" /></label>
       <label class="form-field"><span class="form-label">Database</span><input class="input" :value="conf.database" placeholder="ods" @input="set('database', $event.target.value)" /></label>
@@ -1279,7 +1279,7 @@ function onCodeSetPick(v) {
   <!-- ===== sink_ck ===== -->
   <template v-else-if="type === 'sink_ck'">
     <div class="sec-title">ClickHouse 写出</div>
-    <div class="form-hint">人对账走 Trino；此处仅作业 SA 写入。表已存在时以目标表为准</div>
+    <div class="form-hint">人对账走统一查询；此处仅作业服务账号写入。表已存在时以目标表为准</div>
     <div class="form-grid-2">
       <label class="form-field"><span class="form-label">Database</span><input class="input" :value="conf.database" @input="set('database', $event.target.value)" /></label>
       <label class="form-field">

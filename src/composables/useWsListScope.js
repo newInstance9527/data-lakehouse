@@ -2,7 +2,7 @@
  * 列表范围（空间优先定型）：
  * - 默认跟随 currentWs（切换即刷新）
  * - 「查看全部」→ scope=all（不传 ws；特权巡检）
- * 资产目录另支持 scope=enterprise，见 CatalogView。
+ * 资产目录列表默认 scope=workspace（本空间）。
  */
 import { computed, ref, watch } from 'vue'
 import { useSession } from '@/composables/useSession'

@@ -1,5 +1,6 @@
 <script setup>
 import PageSizeSelect from '@/components/common/PageSizeSelect.vue'
+import { t, useLocale } from '@/composables/useLocale'
 
 defineProps({
   page: { type: Number, required: true },
@@ -11,6 +12,7 @@ defineProps({
 })
 
 const emit = defineEmits(['update:page', 'update:pageSize', 'go'])
+useLocale()
 
 function onSize(n) {
   emit('update:pageSize', n)
@@ -26,11 +28,20 @@ function go(p) {
 <template>
   <div v-if="total > 0" class="ds-pager">
     <div class="ds-pager-info">
-      第 {{ page }} / {{ totalPages }} 页 · 本页 {{ pageCount }} 条 · 共 {{ total }} 条
+      {{
+        t('common.pager.info', {
+          page,
+          totalPages,
+          pageCount,
+          total,
+        })
+      }}
     </div>
     <div class="ds-pager-controls">
       <PageSizeSelect :model-value="pageSize" @update:model-value="onSize" />
-      <button type="button" class="btn btn-sm" :disabled="page <= 1" @click="go(page - 1)">上一页</button>
+      <button type="button" class="btn btn-sm" :disabled="page <= 1" @click="go(page - 1)">
+        {{ t('common.prev') }}
+      </button>
       <template v-for="(n, i) in pageNums" :key="n">
         <span v-if="i > 0 && n - pageNums[i - 1] > 1" class="ds-pager-ellipsis">…</span>
         <button
@@ -40,7 +51,9 @@ function go(p) {
           @click="go(n)"
         >{{ n }}</button>
       </template>
-      <button type="button" class="btn btn-sm" :disabled="page >= totalPages" @click="go(page + 1)">下一页</button>
+      <button type="button" class="btn btn-sm" :disabled="page >= totalPages" @click="go(page + 1)">
+        {{ t('common.next') }}
+      </button>
     </div>
   </div>
 </template>

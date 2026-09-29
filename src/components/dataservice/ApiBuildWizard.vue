@@ -225,7 +225,7 @@ async function doTest() {
       form.testResult = {
         ok: true,
         latencyMs: 0,
-        engine: 'SQLREST',
+        engine: '接口服务',
         source: apiSourceLabel(form),
         rowCount: rows.length,
         format: form.responseFormat || 'wrapped',
@@ -239,7 +239,7 @@ async function doTest() {
       showToast(
         res.degraded
           ? `⚠ 试跑降级：${res.message || '后端不可达'}`
-          : `✅ SQLREST 试跑通过 · ${rows.length} 行`,
+          : `✅ 试跑通过 · ${rows.length} 行`,
         res.degraded ? 'warning' : 'success',
       )
     } else {
@@ -307,7 +307,7 @@ async function publish() {
         <div class="modal-header">
           <div>
             <div class="modal-title">构建 API</div>
-            <div class="modal-sub">门户编排 → 调用 SQLREST Manager API（create / debug / publish / deploy）· 默认边缘 Gateway</div>
+            <div class="modal-sub">门户编排 → 接口服务创建 / 调试 / 发布 / 部署 · 默认边缘统一网关</div>
           </div>
           <button type="button" class="btn btn-sm" @click="close">✕</button>
         </div>
@@ -385,7 +385,7 @@ async function publish() {
                   </select>
                 </label>
                 <label class="form-field wide">
-                  <span class="form-label"><span class="req">*</span>数据源（门户 → 投影 SQLREST）</span>
+                  <span class="form-label"><span class="req">*</span>数据源（门户 → 投影接口服务）</span>
                   <SearchSelect
                     v-model="form.datasourceId"
                     :options="datasourceOptions"
@@ -412,7 +412,7 @@ async function publish() {
             <p class="field-hint">
               当前来源：{{ apiSourceLabel(form) }}
               <template v-if="form.srcType === 'SQL'"> · 数据源 {{ apiDatasourceLabel(form.datasourceId) }}</template>
-              <template v-else> · 查询经 SQLREST → Trino（湖仓默认闸门）</template>
+              <template v-else> · 查询经接口服务 → 查询引擎（湖仓默认闸门）</template>
             </p>
           </div>
 
@@ -430,13 +430,13 @@ async function publish() {
                   :hint="
                     form.srcType === 'SQL'
                       ? `${wizardDialect.label} · ${wizardDialect.quoteHint} · 可用 {{param}}`
-                      : `Trino · ${wizardDialect.quoteHint} · 可用 {{param}}`
+                      : `查询引擎 · ${wizardDialect.quoteHint} · 可用 {{param}}`
                   "
                   placeholder="SELECT ... WHERE dt = {{dt}}"
                 />
               </div>
               <label class="form-field">
-                <span class="form-label">封装格式（SQLREST format）</span>
+                <span class="form-label">封装格式</span>
                 <select v-model="form.responseFormat" class="select" style="width: 100%">
                   <option v-for="o in RESPONSE_FORMAT_OPTIONS" :key="o.value" :value="o.value">
                     {{ o.label }} · {{ o.tip }}
@@ -502,7 +502,7 @@ async function publish() {
             </table>
 
             <div class="param-head param-head-out">
-              <span class="form-label">出参映射与转换（SQLREST 出参格式）</span>
+              <span class="form-label">出参映射与转换</span>
               <div class="param-head-actions">
                 <button type="button" class="btn btn-sm" @click="inferResponsesFromSql">从 SQL 推断</button>
                 <button type="button" class="btn btn-sm" @click="addResponse">＋ 字段</button>
@@ -555,7 +555,7 @@ async function publish() {
               </tbody>
             </table>
             <p class="field-hint">
-              对齐 SQLREST：封装（wrapped/origin/nil）+ 形态（list/object/page）+ 列→出参映射与转换（改名、分转元、类型强制等）；试跑样例会按此结构生成。
+              对齐接口服务：封装（wrapped/origin/nil）+ 形态（list/object/page）+ 列→出参映射与转换（改名、分转元、类型强制等）；试跑样例会按此结构生成。
             </p>
           </div>
 
@@ -643,8 +643,8 @@ async function publish() {
               <pre class="sample-json">{{ JSON.stringify(form.testResult.sample, null, 2) }}</pre>
             </div>
             <p v-else class="field-hint">
-              点击试跑：SQLREST 编译模板 →
-              {{ form.srcType === 'SQL' ? apiDatasourceLabel(form.datasourceId) : 'Trino' }}
+              点击试跑：接口服务编译模板 →
+              {{ form.srcType === 'SQL' ? apiDatasourceLabel(form.datasourceId) : '查询引擎' }}
               执行（演示返回样例数据）。
             </p>
           </div>

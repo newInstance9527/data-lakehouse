@@ -3,7 +3,6 @@ import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import AppDrawer from '@/components/common/AppDrawer.vue'
 import { createApplyTicket, approveTicket } from '@/api/apply'
-import { publishAssetShare, unpublishAssetShare } from '@/api/catalog'
 import { useAssets } from '@/composables/useAssets'
 import { useDatasources } from '@/composables/useDatasources'
 import { useSession, isNeedOwnerApplyError } from '@/composables/useSession'
@@ -11,7 +10,7 @@ import { useToast } from '@/composables/useToast'
 import { confirmDelete } from '@/composables/useConfirmDelete'
 import { APPLY_EXPIRE_OPTIONS } from '@/data/apply'
 import { formatDataType, yesNo } from '@/utils/fieldSchema'
-import { lineagePath, qualityPath, standardMapping, lifecyclePath } from '@/utils/moduleLinks'
+import { lineagePath, qualityPath, standardMapping, lifecyclePath, metricsPath } from '@/utils/moduleLinks'
 import { displayUser } from '@/utils/displayUser'
 
 const props = defineProps({
@@ -31,7 +30,6 @@ const schemaHint = ref('')
 const schemaSource = ref('')
 const localFields = ref(null)
 const busy = ref(false)
-const shareBusy = ref(false)
 const metaSaving = ref(false)
 const previewLoading = ref(false)
 const previewLive = ref(null)
@@ -54,6 +52,7 @@ let grantFetchedFor = null
 
 const qualityExtra = computed(() => props.asset?.extras?.quality || null)
 const lineageExtra = computed(() => props.asset?.extras?.lineage || null)
+const metricsExtra = computed(() => props.asset?.extras?.metrics || null)
 const standardExtra = computed(() => props.asset?.extras?.standard || null)
 const lifecycleExtra = computed(() => props.asset?.extras?.lifecycle || null)
 const driftExtra = computed(() => props.asset?.extras?.drift || null)
@@ -104,6 +103,10 @@ function goLineage() {
     lineageExtra.value?.path ||
     lineagePath({ focus: a?.objectName || a?.tableName || a?.name, omFqn: a?.omFqn })
   go(path)
+}
+
+function goMetrics() {
+  go(metricsExtra.value?.path || metricsPath())
 }
 
 function goQuality() {
@@ -182,9 +185,9 @@ const fields = computed(() => {
 })
 
 const PREVIEW_SOURCE_LABEL = {
-  trino: 'Trino',
-  'gravitino+trino': 'Gravitino+Trino',
-  gravitino: 'Gravitino',
+  trino: '查询引擎',
+  'gravitino+trino': '元数据+查询',
+  gravitino: '元数据',
   jdbc: 'JDBC',
   elasticsearch: 'Elasticsearch',
   s3: 'S3/MinIO',
@@ -343,36 +346,6 @@ async function ensureSchema(id) {
   }
 }
 
-async function doPublishShare() {
-  if (!props.asset?.id) return
-  shareBusy.value = true
-  try {
-    const row = await publishAssetShare(props.asset.id)
-    const detail = (await loadDetail(props.asset.id)) || row
-    emit('updated', detail)
-    showToast('已发布到企业共享层（看见≠能查）', 'success')
-  } catch (e) {
-    showToast(e?.message || '发布失败', 'error')
-  } finally {
-    shareBusy.value = false
-  }
-}
-
-async function doUnpublishShare() {
-  if (!props.asset?.id) return
-  shareBusy.value = true
-  try {
-    const row = await unpublishAssetShare(props.asset.id)
-    const detail = (await loadDetail(props.asset.id)) || row
-    emit('updated', detail)
-    showToast('已撤回企业共享', 'success')
-  } catch (e) {
-    showToast(e?.message || '撤回失败', 'error')
-  } finally {
-    shareBusy.value = false
-  }
-}
-
 async function doRefresh() {
   if (!props.asset?.id) return
   if (!canEdit.value) {
@@ -432,7 +405,7 @@ async function saveOmMeta() {
     emit('updated', detail)
     syncMetaEditFromAsset()
     const audit = res?.auditEventId ? ` · 审计 ${res.auditEventId}` : ''
-    showToast(`OM 元数据已保存${audit}`, 'success')
+    showToast(`外部元数据已保存${audit}`, 'success')
   } catch (e) {
     if (isNeedOwnerApplyError(e)) {
       showToast(`保存失败：${e.message || e}`, 'warning')
@@ -785,34 +758,6 @@ function cellAt(row, col) {
                   <div class="info-value">{{ asset.isGold ? '⭐ 已认证' : '待认证 / 已摘牌' }}</div>
                 </div>
                 <div>
-                  <div class="info-label">企业共享</div>
-                  <div class="info-value">
-                    <template v-if="asset.shareStatus === 'published' || asset.visibility === 'shared_enterprise'">
-                      已发布
-                    </template>
-                    <template v-else>未发布（仅本空间可见）</template>
-                    <div v-if="canEditAsset(asset)" style="margin-top: 6px; display: flex; gap: 6px; flex-wrap: wrap">
-                      <button
-                        v-if="asset.shareStatus !== 'published'"
-                        class="btn btn-sm"
-                        :disabled="shareBusy"
-                        @click="doPublishShare"
-                      >
-                        发布到企业共享
-                      </button>
-                      <button
-                        v-else
-                        class="btn btn-sm"
-                        :disabled="shareBusy"
-                        @click="doUnpublishShare"
-                      >
-                        撤回共享
-                      </button>
-                    </div>
-                    <div class="muted" style="font-size: 11px; margin-top: 4px">仅改门户可见性，不授予 SELECT</div>
-                  </div>
-                </div>
-                <div>
                   <div class="info-label">标准覆盖率</div>
                   <div class="info-value">
                     <template v-if="standardExtra?.available && standardExtra?.coveragePct != null">
@@ -897,6 +842,32 @@ function cellAt(row, col) {
                   <span v-else-if="d.jobName" class="muted"> · {{ d.jobName }}</span>
                 </div>
               </div>
+              <div
+                v-if="metricsExtra?.available"
+                style="margin-bottom: 10px"
+              >
+                <div class="detail-section-title">
+                  被引用指标
+                  <span class="muted" style="font-weight: 400">· {{ metricsExtra.count ?? 0 }}</span>
+                </div>
+                <p v-if="!metricsExtra.items?.length" class="muted" style="font-size: 12px; margin: 4px 0">
+                  {{ metricsExtra.hint || '无指标绑定本表' }}
+                </p>
+                <div
+                  v-for="m in metricsExtra.items || []"
+                  :key="m.metricCode"
+                  style="font-size: 12px; margin: 4px 0; color: var(--text-2); display: flex; gap: 8px; align-items: center; flex-wrap: wrap"
+                >
+                  <span class="tag tag-red">指标</span>
+                  <button type="button" class="btn-link" @click="go(m.path || metricsPath(m.metricCode))">
+                    <code>{{ m.metricCode }}</code>
+                  </button>
+                  <span>{{ m.name || '' }}</span>
+                  <span v-if="m.kind" class="muted">· {{ m.kind }}</span>
+                  <span v-if="m.status" class="muted">· {{ m.status }}</span>
+                  <span v-if="m.bindField" class="muted">· {{ m.bindField }}</span>
+                </div>
+              </div>
               <div v-if="failRules.length" style="margin-bottom: 10px">
                 <div class="detail-section-title">最近失败规则</div>
                 <div
@@ -917,6 +888,7 @@ function cellAt(row, col) {
               <div style="display: flex; gap: 8px; flex-wrap: wrap">
                 <button class="btn btn-sm" @click="goQuality">→ 数据质量</button>
                 <button class="btn btn-sm" @click="goLineage">→ 字段血缘</button>
+                <button class="btn btn-sm" @click="goMetrics">→ 指标中心</button>
                 <button class="btn btn-sm" @click="goStandard">→ 数据标准</button>
                 <button class="btn btn-sm" @click="goLifecycle">→ 生命周期</button>
               </div>
@@ -948,8 +920,8 @@ function cellAt(row, col) {
                 · 按源类型探查（{{ previewSourceLabel }}）
                 <code v-if="previewLive?.qualifiedName" style="margin-left: 6px">{{ previewLive.qualifiedName }}</code>
               </template>
-              <template v-else-if="previewLoading">· 正在请求 <code>/lh/catalog/assets/preview</code>…</template>
-              <template v-else>· 等待探查结果（S3/ES/Kafka 等走原生 API，仅湖表/Trino 联邦才用 Trino）</template>
+              <template v-else-if="previewLoading">· 正在请求样例预览…</template>
+              <template v-else>· 等待探查结果（对象/搜索/消息等走原生协议，仅湖表联邦走统一查询）</template>
             </div>
             <div v-if="previewHint" style="font-size: 12px; color: var(--text-3); margin: 6px 0">
               {{ previewHint }}
@@ -963,7 +935,7 @@ function cellAt(row, col) {
                 previewLive?.source === 'denied'
                   ? '无权限，未查询数据。'
                   : isNonTableAsset
-                    ? '暂无样例行。请确认数据源凭证与对象名；预览走 S3/ES 等原生 API，不经过 Trino。'
+                    ? '暂无样例行。请确认数据源凭证与对象名；预览走源协议原生 API，不经过统一查询。'
                     : '暂无预览行。请确认资产已 refresh、源可达，或点击重新预览。'
               }}
             </div>
@@ -987,7 +959,7 @@ function cellAt(row, col) {
               <button class="btn btn-sm" :disabled="previewLoading" @click="ensurePreview(asset.id, true)">
                 ↻ 重新预览
               </button>
-              <button v-if="!isNonTableAsset" class="btn btn-sm" @click="goQuery">→ 即席查询（Trino）</button>
+              <button v-if="!isNonTableAsset" class="btn btn-sm" @click="goQuery">→ 即席查询</button>
             </div>
           </template>
         </div>
@@ -1037,8 +1009,8 @@ function cellAt(row, col) {
               <div class="info-value">
                 {{
                   isNonTableAsset
-                    ? '目录预览走源协议（S3/ES/Kafka…）；分析联邦仅湖表走 Trino→Gravitino'
-                    : '分析查询走 Trino→Gravitino；目录预览按源类型适配'
+                    ? '目录预览走源协议（对象/搜索/消息…）；分析联邦仅湖表走统一查询与元数据'
+                    : '分析查询走统一查询与元数据；目录预览按源类型适配'
                 }}
               </div>
             </div>
@@ -1113,11 +1085,11 @@ function cellAt(row, col) {
             <span v-else class="tag tag-gray">需 omFqn</span>
           </div>
           <div v-if="!canEdit" style="font-size: 12px; color: var(--text-3); margin: 8px 0">
-            仅<strong>资产拥有者</strong>（或已授 EDIT/MANAGE）可写 OM 元数据 / 刷新对齐。
+            仅<strong>资产拥有者</strong>（或已授 EDIT/MANAGE）可写外部元数据 / 刷新对齐。
             <button type="button" class="btn-link" @click="goApplyManage">去申请操作权限</button>
           </div>
           <div v-else-if="!canEditOmMeta" style="font-size: 12px; color: var(--text-3); margin: 8px 0">
-            资产尚未对齐 OpenMetadata。请先点「刷新」完成门户清单→OM，再编辑描述与标签。
+            资产尚未对齐外部目录。请先点「刷新」完成门户清单同步，再编辑描述与标签。
           </div>
           <div v-else class="om-meta-form" style="margin-top: 10px">
             <label class="form-field">

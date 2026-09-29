@@ -170,7 +170,7 @@ onMounted(async () => {
   } catch (e) {
     assetsLive.value = false
     assetsLoadError.value = e?.message || '资产列表加载失败'
-    showToast('申请可选表加载失败：请确认已登录且 /lh/catalog 可用', 'warning')
+    showToast('申请可选表加载失败：请确认已登录且资产目录可用', 'warning')
   }
 })
 
@@ -994,12 +994,12 @@ function submitPermApply(id, now, purpose, meta = {}) {
           { label: '✓ 提交', cls: 'done' },
           { label: '● Owner 审批', cls: 'current' },
           { label: '安全加签', cls: '' },
-          { label: '写入 Gravitino', cls: '' },
+          { label: '写入元数据目录', cls: '' },
         ]
       : [
           { label: '✓ 提交', cls: 'done' },
           { label: '● Owner 审批中', cls: 'current' },
-          { label: '写入 Gravitino', cls: '' },
+          { label: '写入元数据目录', cls: '' },
         ],
   })
   pending.value.unshift({
@@ -1013,12 +1013,12 @@ function submitPermApply(id, now, purpose, meta = {}) {
           { label: '✓ 提交', cls: 'done' },
           { label: '● Owner 你', cls: 'current' },
           { label: '安全加签', cls: '' },
-          { label: '写入 Gravitino', cls: '' },
+          { label: '写入元数据目录', cls: '' },
         ]
       : [
           { label: '✓ 提交', cls: 'done' },
           { label: '● Owner 你', cls: 'current' },
-          { label: '写入 Gravitino', cls: '' },
+          { label: '写入元数据目录', cls: '' },
         ],
   })
 }
@@ -1051,7 +1051,7 @@ function submitTableApply(id, now, purpose) {
     timelinePending = [
       { label: '✓ 提交', cls: 'done' },
       { label: '● 平台 Owner', cls: 'current' },
-      { label: 'Gravitino 登记', cls: '' },
+      { label: '元数据登记', cls: '' },
       { label: '资产目录可见', cls: '' },
     ]
     timelineMine = [
@@ -1082,12 +1082,12 @@ function submitTableApply(id, now, purpose) {
     timelinePending = [
       { label: '✓ 提交', cls: 'done' },
       { label: '● Owner 你', cls: 'current' },
-      { label: '写入 Gravitino', cls: '' },
+      { label: '写入元数据目录', cls: '' },
     ]
     timelineMine = [
       { label: '✓ 提交', cls: 'done' },
       { label: '● Owner 审批中', cls: 'current' },
-      { label: '写入 Gravitino', cls: '' },
+      { label: '写入元数据目录', cls: '' },
     ]
     Object.assign(base, { asset, assetOwner: selectedAsset.value?.owner })
   }
@@ -1417,7 +1417,7 @@ async function approveTicket(id) {
       const kind = ticket.tableKind || 'read'
       if (kind === 'register') {
         title = `已登记 ${ticket.asset}`
-        desc = `已写入资产目录 / Gravitino · ${ticket.purpose || ''}`
+        desc = `已写入资产目录 / 元数据 · ${ticket.purpose || ''}`
         timeline = [
           { label: '✓ 提交', cls: 'done' },
           { label: '✓ 平台登记', cls: 'done' },
@@ -1435,11 +1435,11 @@ async function approveTicket(id) {
         toastMsg = `✅ 已通过 ${id} · 表结构变更已生效`
       } else {
         title = `${ticket.asset} · 只读`
-        desc = `已写入 Gravitino · 字段 ${ticket.columns || '全列'} · 时效 ${ticket.expire || '—'}`
+        desc = `已写入元数据目录 · 字段 ${ticket.columns || '全列'} · 时效 ${ticket.expire || '—'}`
         timeline = [
           { label: '✓ 提交', cls: 'done' },
           { label: '✓ Owner', cls: 'done' },
-          { label: '✓ Gravitino 已授权', cls: 'done' },
+          { label: '✓ 元数据已授权', cls: 'done' },
         ]
         toastMsg = `✅ 已通过 ${id} · 表只读权限已授权`
       }
@@ -1776,6 +1776,7 @@ function displayToken() {
 <template>
   <div class="apply-page">
     <PageHeader
+      page-id="apply"
       title="申请中心"
       subtitle="权限 / 出湖 / 扫描抬额 / API 发布 / API 调用 / 指标 · 统一工单"
       :guide="guide"
@@ -2066,7 +2067,7 @@ function displayToken() {
             <textarea
               v-model="form.rollbackPlan"
               class="input apply-textarea"
-              placeholder="如：回滚至上一 Git tag · DS 作业切回"
+              placeholder="如：回滚至上一 Git tag · 调度作业切回"
             />
           </label>
         </template>
@@ -2124,7 +2125,7 @@ function displayToken() {
           <button type="button" class="btn-link" @click="router.push('/query')">返回即席</button>
         </p>
         <p v-else-if="form.type === 'perm'" class="apply-api-hint">
-          表/列权限通过后写入 Gravitino；敏感列明文需安全加签，且不可选「长期」。
+          表/列权限通过后写入元数据目录；敏感列明文需安全加签，且不可选「长期」。
         </p>
         <p v-else-if="form.type === 'table'" class="apply-api-hint">
           只读走表 ACL；登记上架写入资产目录；结构变更需 Owner + 平台确认后元数据生效。
@@ -2436,7 +2437,7 @@ function displayToken() {
               <div><span>负责人</span><div>{{ apiPreview.owner }}</div></div>
               <div><span>业务域</span><div>{{ apiPreview.domain }}</div></div>
               <div v-if="apiPreview.desc" class="wide"><span>描述</span><div>{{ apiPreview.desc }}</div></div>
-              <div class="wide"><span>SQLREST id</span><div><code>{{ apiPreview.sqlrestApiId }}</code></div></div>
+              <div class="wide"><span>接口服务 id</span><div><code>{{ apiPreview.sqlrestApiId }}</code></div></div>
             </div>
             <div v-if="apiPreview.params?.length" class="api-preview-block">
               <div class="detail-sec-title">入参（{{ apiPreview.params.length }}）</div>
@@ -2474,7 +2475,7 @@ function displayToken() {
               <div class="detail-sec-title">{{ apiPreview.engine === 'GROOVY' ? 'Groovy 脚本' : 'SQL' }}</div>
               <pre class="api-sql">{{ apiPreview.script || apiPreview.sql }}</pre>
             </div>
-            <p v-else class="tip">暂无 SQL/脚本正文（可能尚未同步到 SQLREST）</p>
+            <p v-else class="tip">暂无 SQL/脚本正文（可能尚未同步到接口服务）</p>
           </div>
         </template>
 
