@@ -35,6 +35,10 @@ export function updateMetric(code, payload) {
   return http.put(`${M}/${encodeURIComponent(code)}`, toUpsertBody({ ...payload, metricCode: code }))
 }
 
+export function deleteMetric(code, ws) {
+  return http.delete(`${M}/${encodeURIComponent(code)}`, { ws: resolveWs(ws) })
+}
+
 export function transitionMetric(code, { action, note, ws } = {}) {
   return http.post(`${M}/${encodeURIComponent(code)}/transition`, {
     metricCode: code,

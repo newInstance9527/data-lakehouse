@@ -20,9 +20,9 @@ import {
   METRIC_LIFECYCLE_STAGES,
   METRIC_STATUS_TABS,
   formatMetricCalcDisplay,
-  metricActions,
   metricToFormPayload,
 } from '@/data/metrics'
+import { metricActionsFor, canApplyQueryMetric } from '@/data/metricAcl'
 import { useDomains } from '@/composables/useDomains'
 import { createApplyTicket, pageMyTickets } from '@/api/apply'
 import { fetchMetricLineage } from '@/api/metric'
@@ -37,9 +37,18 @@ import {
 const route = useRoute()
 const router = useRouter()
 const { showToast } = useToast()
-const { user, currentWs } = useSession()
+const { user, currentWs, canScopeAll, isSuperAdmin } = useSession()
 const { busy, run: runLocked } = useActionLock()
 const guide = pageGuideOf('metrics-catalog')
+
+const aclCtx = computed(() => ({
+  canScopeAll: canScopeAll.value,
+  isSuperAdmin: isSuperAdmin.value,
+}))
+
+function actionsFor(row) {
+  return metricActionsFor(row, user.value, aclCtx.value)
+}
 
 const {
   catalog,
@@ -48,6 +57,7 @@ const {
   loadAll,
   reloadDetail,
   runTransition,
+  removeMetric,
   runTrial,
   runMaterialize,
   addMetric,
@@ -65,7 +75,7 @@ const statusTab = ref(
 )
 const detailOpen = ref(false)
 const activeId = ref('')
-const saving = computed(() => busy('save') || busy('publish') || busy('transition'))
+const saving = computed(() => busy('save') || busy('publish') || busy('transition') || busy('delete'))
 const trialBusy = computed(() => busy('trial'))
 const trialResult = ref(null)
 const trialDt = ref('')
@@ -330,6 +340,25 @@ async function confirmDeprecate(row) {
   return window.confirm(`确认废弃 ${row.id}？废弃后禁止新引用。${impactHint}`)
 }
 
+async function confirmDelete(row) {
+  let impactHint = ''
+  try {
+    const lin = await fetchMetricLineage(row.id, currentWs.value || 'default')
+    const nDown = lin?.downstream?.length || lin?.downstreamCount || 0
+    const nApi = lin?.apiCount || lin?.apiBindings?.length || 0
+    if (nDown || nApi) {
+      impactHint = `\n仍有引用：下游指标 ${nDown} · API ${nApi}（有引用时后端会拒绝删除）`
+    }
+  } catch {
+    /* soft */
+  }
+  const st = row.statusLabel || row.status
+  return window.confirm(
+    `确认删除指标 ${row.id}（${st}）？\n` +
+      `本人或超管可删；已启用须先废弃。删除为软删，并同步清理物化/授权/在途工单。${impactHint}`,
+  )
+}
+
 async function doTrial() {
   const row = active.value
   if (!row) return
@@ -372,15 +401,21 @@ async function doMaterialize() {
   }
 }
 
-function openEdit(row) {
+async function openEdit(row) {
   if (row.status !== 'draft' && row.status !== 'review') {
     showToast('仅草稿/待发布可直接编辑；已启用请使用「申请变更」', 'warning')
     return
   }
   editingId.value = row.id
+  try {
+    await reloadDetail(row.id, currentWs.value || 'default')
+  } catch {
+    /* 列表行仍可预填 */
+  }
   formKey.value += 1
   createOpen.value = true
-  if (row.table) warmMetricBindAssets(row.table).catch(() => {})
+  const fresh = catalog.value.find((r) => r.id === row.id) || row
+  if (fresh.table) warmMetricBindAssets(fresh.table).catch(() => {})
 }
 
 function goApplyMetric(row, kind = 'query') {
@@ -465,6 +500,30 @@ async function runAction(row, action) {
     goApplyTicket(row)
     return
   }
+  if (action === 'delete') {
+    if (!(await confirmDelete(row))) return
+    await runLocked('delete', async () => {
+      try {
+        const out = await removeMetric(row.id, currentWs.value || 'default')
+        if (detailOpen.value && activeId.value === row.id) closeDetail()
+        if (editingId.value === row.id) {
+          editingId.value = ''
+          createOpen.value = false
+        }
+        const parts = []
+        if (out?.ticketsCancelled) parts.push(`工单 ${out.ticketsCancelled}`)
+        if (out?.grantsRevoked) parts.push(`授权 ${out.grantsRevoked}`)
+        if (out?.materializeRetired) parts.push(`物化 ${out.materializeRetired}`)
+        showToast(
+          `已删除 ${row.id}` + (parts.length ? ` · 同步清理 ${parts.join(' / ')}` : ''),
+          'warning',
+        )
+      } catch (e) {
+        showToast(e?.message || '删除失败', 'warning')
+      }
+    })
+    return
+  }
   if (action === 'deprecate') {
     if (!(await confirmDeprecate(row))) return
   }
@@ -492,12 +551,13 @@ function actionLabel(a) {
       applyQuery: '申请权限',
       applyChange: '申请变更',
       deprecate: '废弃',
+      delete: '删除',
     }[a] || a
   )
 }
 
 function actionClass(a) {
-  if (a === 'deprecate') return 'danger'
+  if (a === 'deprecate' || a === 'delete') return 'danger'
   if (a === 'applyPublish' || a === 'applyChange') return 'ok'
   return ''
 }
@@ -639,7 +699,7 @@ async function refresh() {
               <td><span class="tag tag-gray">{{ row.ver }}</span></td>
               <td class="met-acts" @click.stop>
                 <button
-                  v-for="a in metricActions(row.status)"
+                  v-for="a in actionsFor(row)"
                   :key="a"
                   type="button"
                   class="btn-link"
@@ -819,7 +879,7 @@ async function refresh() {
             <input v-model="trialDt" type="date" class="met-dt-input" />
           </label>
           <button
-            v-if="active.status === 'active'"
+            v-if="canApplyQueryMetric(active)"
             type="button"
             class="btn btn-sm"
             @click="goApplyMetric(active, 'query')"
@@ -827,7 +887,7 @@ async function refresh() {
             🔑 申请查询权限
           </button>
           <button
-            v-for="a in metricActions(active.status).filter(
+            v-for="a in actionsFor(active).filter(
               (x) => x !== 'detail' && x !== 'applyQuery',
             )"
             :key="a"

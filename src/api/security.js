@@ -65,3 +65,26 @@ export function rotateSecVault(body) {
 export function fetchSecRouteWhitelist() {
   return http.get(`${BASE}/route-whitelist`)
 }
+
+/** 当前登录用户的 Trino/Gravitino 主体映射 */
+export function fetchPrincipalMe() {
+  return http.get(`${BASE}/principals/me`)
+}
+
+/** 已映射人类主体列表（超管运维） */
+export function fetchPrincipals() {
+  return http.get(`${BASE}/principals`)
+}
+
+/**
+ * 绑定门户用户 → Trino 人类主体（仅超管；禁止填服务账号 admin）
+ * body: { portalUserId, portalAccount, trinoUser, remark? }
+ */
+export function bindPrincipal(body) {
+  return http.post(`${BASE}/principals`, body)
+}
+
+/** 下发 impersonation rules（主体变更后） */
+export function syncPrincipalImpersonation() {
+  return http.post(`${BASE}/principals/impersonation-sync`, {})
+}

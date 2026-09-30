@@ -52,15 +52,16 @@ export function metricStatusMeta(key) {
   return METRIC_STATUS[key] || METRIC_STATUS.draft
 }
 
-/** 当前状态允许的操作（启用/驳回走申请中心，不在本页直批） */
+/** 当前状态允许的操作（启用/驳回走申请中心，不在本页直批）
+ * 删除仅 draft / review / deprecated；active 须先废弃 */
 export function metricActions(status) {
   return (
     {
-      draft: ['edit', 'applyPublish', 'detail'],
-      review: ['edit', 'goTicket', 'detail'],
+      draft: ['edit', 'applyPublish', 'delete', 'detail'],
+      review: ['edit', 'goTicket', 'delete', 'detail'],
       active: ['applyQuery', 'applyChange', 'deprecate', 'detail'],
       version_review: ['goTicket', 'detail'],
-      deprecated: ['detail'],
+      deprecated: ['delete', 'detail'],
     }[status] || ['detail']
   )
 }
@@ -588,10 +589,31 @@ export function transitionMetric(row, action) {
 }
 
 export function metricToFormPayload(row) {
+  const domainCode = (() => {
+    const raw = String(row.domain || row.domainCode || '').trim()
+    if (raw && !/[\u4e00-\u9fff]/.test(raw)) {
+      return raw === 'product' ? 'goods' : raw
+    }
+    const label = String(row.domainLabel || raw).trim()
+    const byLabel = {
+      交易: 'trade',
+      交易域: 'trade',
+      用户: 'user',
+      用户域: 'user',
+      商品: 'goods',
+      商品域: 'goods',
+      营销: 'marketing',
+      营销域: 'marketing',
+      财务: 'finance',
+      财务域: 'finance',
+      通用: 'common',
+    }
+    return byLabel[label] || 'trade'
+  })()
   return {
     kind: row.kind || row.type || '原子',
     name: row.name,
-    domain: row.domainLabel || ({ trade: '交易', user: '用户', goods: '商品' }[row.domain] || '交易'),
+    domain: domainCode,
     unit: row.unit || '个',
     table: row.table || '',
     field: row.field || '',

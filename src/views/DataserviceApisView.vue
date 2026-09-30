@@ -26,6 +26,7 @@ import {
 } from '@/data/apiBuild'
 import {
   unpublishDataapi,
+  deleteDataapi,
   fetchDataapiVersions,
   rollbackDataapi,
   updateDataapiTags,
@@ -50,7 +51,7 @@ const {
   exportOpenapi,
 } = useDataservice()
 
-const { currentWs } = useSession()
+const { currentWs, user, isSuperAdmin } = useSession()
 
 onMounted(() => ensureLoaded(true))
 
@@ -241,6 +242,50 @@ async function loadVersions(bindingId) {
     versionsError.value = e?.message || String(e)
   } finally {
     versionsLoading.value = false
+  }
+}
+
+
+function canDeleteDetail(row) {
+  if (!row?.id) return false
+  if (row.canDelete === true) return true
+  if (isSuperAdmin.value) return true
+  const identities = [user.value?.id, user.value?.account, user.value?.name]
+    .map((x) => String(x || '').trim().toLowerCase())
+    .filter(Boolean)
+  const owners = [row.createUser, row.owner, row.ownerUser]
+    .map((x) => String(x || '').trim().toLowerCase())
+    .filter(Boolean)
+  return owners.some((o) => identities.includes(o) || identities.some((i) => o.startsWith(i + '(')))
+}
+
+async function doDelete() {
+  if (!detail.value?.id) return
+  if (detail.value.state === 'published') {
+    showToast('请先「取消发布」回草稿后再删除', 'warning')
+    return
+  }
+  if (!canDeleteDetail(detail.value)) {
+    showToast('仅创建人/负责人或超管可删除', 'warning')
+    return
+  }
+  const name = detail.value.name || detail.value.path || detail.value.id
+  const tip =
+    `确认删除 API「${name}」？\n` +
+    `将软删门户绑定，并同步 SQLREST 下线；关联订阅 Key 一并吊销。\n` +
+    `此操作不可从门户目录恢复。`
+  if (!confirm(tip)) return
+  versionBusy.value = true
+  try {
+    const res = await deleteDataapi(detail.value.id)
+    showToast(res?.message || '已删除', res?.ok === false ? 'warning' : 'success')
+    detailOpen.value = false
+    detail.value = null
+    await ensureLoaded(true)
+  } catch (e) {
+    showToast(`删除失败：${e?.message || e}`, 'warning')
+  } finally {
+    versionBusy.value = false
   }
 }
 
@@ -738,9 +783,22 @@ function closeApiDoc() {
           >
             查看发布申请
           </button>
+          <button
+            v-if="canDeleteDetail(detail) && detail.state !== 'published'"
+            type="button"
+            class="btn btn-sm"
+            style="color: var(--danger, #c44)"
+            :disabled="!detail.id || versionBusy"
+            @click="doDelete"
+          >
+            {{ versionBusy ? '处理中…' : '删除' }}
+          </button>
         </div>
         <p v-if="detail.state === 'published'" class="detail-note">
-          已发布接口不可直接改定义。请先「取消发布」回草稿，编辑后重新申请发布（版本号递增）；也可在下方回退历史版本。
+          已发布接口不可直接改定义或删除。请先「取消发布」回草稿，编辑后重新申请发布（版本号递增）；也可在下方回退历史版本。删除仅创建人/负责人或超管。
+        </p>
+        <p v-else-if="canDeleteDetail(detail)" class="detail-note">
+          删除将软删门户绑定并同步 SQLREST 下线、吊销订阅 Key；已发布须先取消发布。
         </p>
 
         <div class="detail-sec-title">
@@ -948,6 +1006,16 @@ function closeApiDoc() {
             @click="goApply(detail.path)"
           >
             申请调用凭证
+          </button>
+          <button
+            v-if="canDeleteDetail(detail) && detail.state !== 'published'"
+            type="button"
+            class="btn btn-sm"
+            style="color: var(--danger, #c44)"
+            :disabled="!detail.id || versionBusy"
+            @click="doDelete"
+          >
+            {{ versionBusy ? '处理中…' : '删除' }}
           </button>
           <button
             v-if="detail.asset && detail.asset !== '-'"

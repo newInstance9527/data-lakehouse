@@ -132,7 +132,7 @@ async function syncApplyBoard() {
 }
 const { catalog: metricCatalog, ensureLoaded: ensureMetricsLoaded } = useMetrics()
 const { list: assetList, ensureLoaded: ensureAssetsLoaded, loadAssets } = useAssets()
-const { currentWs } = useSession()
+const { currentWs, user, canScopeAll, isSuperAdmin } = useSession()
 const assetsLive = ref(false)
 const assetsLoadError = ref('')
 const releaseHistory = ref([])
@@ -186,7 +186,6 @@ watch(currentWs, () => {
 
 const TYPE_LABEL = Object.fromEntries(APPLY_TYPE_OPTIONS.map((o) => [o.value, o.label]))
 const SIDE_LABEL = { pending: '处理中', approved: '已通过', rejected: '已驳回' }
-const METRIC_OPTIONS = computed(() => buildApplyMetricOptions(metricCatalog.value))
 const ASSET_OPTIONS = computed(() => buildApplyAssetOptions(assetList.value))
 const RELEASE_OPTIONS = computed(() => buildApplyReleaseOptions(releaseHistory.value))
 const EXPORT_OPTIONS = computed(() => buildApplyExportOptions(assetList.value))
@@ -205,7 +204,7 @@ function emptyForm() {
     purpose: '',
     expire: '30天',
     metricKind: 'query',
-    metricId: METRIC_OPTIONS.value[0]?.value || '',
+    metricId: '',
     metricScope: 'dashboard',
     metricDomain: '交易域',
     metricNameNew: '',
@@ -234,6 +233,14 @@ const activeTab = ref('all')
 const creating = ref(false)
 const showKpis = ref(true)
 const form = ref(emptyForm())
+const METRIC_OPTIONS = computed(() =>
+  buildApplyMetricOptions(metricCatalog.value, {
+    kind: form.value?.metricKind || 'query',
+    user: user.value,
+    canScopeAll: canScopeAll.value,
+    isSuperAdmin: isSuperAdmin.value,
+  }),
+)
 const tokenModal = ref(null)
 const rejectModal = ref(null) // { ticket, remark }
 const rejectSubmitting = computed(() => busy('reject'))
@@ -678,6 +685,21 @@ watch(
   () => [form.value.type, form.value.metricKind, form.value.metricId],
   () => {
     if (form.value.type === 'metric') syncMetricVersionDefaults()
+  },
+)
+
+watch(
+  () => [form.value.metricKind, METRIC_OPTIONS.value],
+  () => {
+    if (form.value.type !== 'metric') return
+    const opts = METRIC_OPTIONS.value
+    if (!opts.length) {
+      form.value.metricId = ''
+      return
+    }
+    if (!opts.some((o) => o.value === form.value.metricId)) {
+      form.value.metricId = opts[0].value
+    }
   },
 )
 

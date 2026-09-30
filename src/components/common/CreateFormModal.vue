@@ -1,5 +1,5 @@
 <script setup>
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useToast } from '@/composables/useToast'
 import { t, tt, useLocale } from '@/composables/useLocale'
 import SearchSelect from '@/components/common/SearchSelect.vue'
@@ -22,6 +22,20 @@ const emit = defineEmits(['close', 'submit'])
 const isPageMode = computed(() => props.mode === 'page')
 const { showToast } = useToast()
 const { locale } = useLocale()
+/** 打开/预填过程中跳过 kind/table 等副作用 watch，避免冲掉编辑回填 */
+let hydrating = false
+
+function applyInitialValues() {
+  if (!props.initialValues || typeof props.initialValues !== 'object') return
+  Object.entries(props.initialValues).forEach(([k, v]) => {
+    if (v !== undefined && v !== null) form[k] = v
+  })
+  props.fields.forEach((f) => {
+    if (f.type === 'preset-text' && form[f.key]) {
+      presetPick[f.key] = '__custom__'
+    }
+  })
+}
 
 const displayTitle = computed(() => {
   void locale.value
@@ -256,42 +270,38 @@ function defaultForSelect(f) {
 }
 
 function resetForm() {
-  Object.keys(form).forEach((k) => delete form[k])
-  Object.keys(presetPick).forEach((k) => delete presetPick[k])
+  hydrating = true
+  try {
+    Object.keys(form).forEach((k) => delete form[k])
+    Object.keys(presetPick).forEach((k) => delete presetPick[k])
 
-  // 先写非依赖字段
-  props.fields.forEach((f) => {
-    if (f.type === 'preset-text') return
-    if (f.optionsByKey) return
-    form[f.key] = defaultForField(f)
-  })
-
-  // 再写级联 select（依赖已有值）
-  props.fields.forEach((f) => {
-    if ((f.type === 'select' || f.type === 'search-select') && f.optionsByKey) {
-      form[f.key] = defaultForSelect(f)
-    }
-  })
-
-  // 最后写 preset-text
-  props.fields.forEach((f) => {
-    if (f.type === 'preset-text') applyFirstPreset(f)
-  })
-
-  // 编辑预填覆盖
-  if (props.initialValues && typeof props.initialValues === 'object') {
-    Object.entries(props.initialValues).forEach(([k, v]) => {
-      if (v !== undefined && v !== null) form[k] = v
-    })
+    // 先写非依赖字段
     props.fields.forEach((f) => {
-      if (f.type === 'preset-text' && form[f.key]) {
-        presetPick[f.key] = '__custom__'
+      if (f.type === 'preset-text') return
+      if (f.optionsByKey) return
+      form[f.key] = defaultForField(f)
+    })
+
+    // 再写级联 select（依赖已有值）
+    props.fields.forEach((f) => {
+      if ((f.type === 'select' || f.type === 'search-select') && f.optionsByKey) {
+        form[f.key] = defaultForSelect(f)
       }
     })
-  }
 
-  // 按依赖指标校准统计粒度选项（仅衍生）
-  if (form.kind === '衍生') syncDimToAtomOptions()
+    // 最后写 preset-text
+    props.fields.forEach((f) => {
+      if (f.type === 'preset-text') applyFirstPreset(f)
+    })
+
+    // 编辑预填覆盖
+    applyInitialValues()
+
+    // 按依赖指标校准统计粒度选项（仅衍生）
+    if (form.kind === '衍生') syncDimToAtomOptions()
+  } finally {
+    hydrating = false
+  }
 }
 
 watch(
@@ -299,18 +309,31 @@ watch(
   async (v) => {
     if (v) {
       resetForm()
-      await refreshAsyncOptions()
-      // 异步选项到位后再校正级联默认值
-      props.fields.forEach((f) => {
-        if ((f.type === 'select' || f.type === 'search-select') && f.optionsByKey) {
-          const opts = resolveOptions(f)
-          if (!opts.some((o) => optionValue(o) === form[f.key])) {
-            form[f.key] = defaultForSelect(f)
+      hydrating = true
+      try {
+        await refreshAsyncOptions()
+        // 异步选项到位后再次套预填，避免级联默认值冲掉编辑值
+        applyInitialValues()
+        // 仅当预填值为空或不在选项中时，才回落到默认
+        props.fields.forEach((f) => {
+          if ((f.type === 'select' || f.type === 'search-select') && f.optionsByKey) {
+            const opts = resolveOptions(f)
+            const cur = form[f.key]
+            if (cur !== undefined && cur !== null && cur !== '' && opts.some((o) => optionValue(o) === cur)) {
+              return
+            }
+            if (!opts.some((o) => optionValue(o) === cur)) {
+              form[f.key] = defaultForSelect(f)
+            }
           }
-        }
-      })
+        })
+        applyInitialValues()
+      } finally {
+        hydrating = false
+      }
     }
   },
+  { immediate: true },
 )
 
 watch(
@@ -318,10 +341,23 @@ watch(
   async () => {
     if (props.open) {
       resetForm()
-      await refreshAsyncOptions()
+      hydrating = true
+      try {
+        await refreshAsyncOptions()
+        applyInitialValues()
+      } finally {
+        hydrating = false
+      }
     }
   },
 )
+
+onMounted(() => {
+  // :key 重挂载且 open 已为 true 时，immediate watch 已处理；此处兜底空表单
+  if (props.open && !Object.keys(form).length) {
+    resetForm()
+  }
+})
 
 /** 规则类型变化 → 刷新表达式预设 */
 watch(
@@ -338,7 +374,7 @@ watch(
 watch(
   () => form.table,
   async () => {
-    if (!props.open) return
+    if (!props.open || hydrating) return
     const fieldLoaders = props.fields.filter(
       (f) => f.optionsByKey === 'table' && typeof f.optionsLoad === 'function',
     )
@@ -388,8 +424,11 @@ watch(
 /** 指标类型切换 → 刷新级联默认值与单位提示 */
 watch(
   () => form.kind,
-  async (kind) => {
-    if (!props.open || !kind) return
+  async (kind, prev) => {
+    if (!props.open || !kind || hydrating) return
+    // 初次赋值（undefined → 原子）不算用户切换，避免冲掉编辑预填
+    if (prev === undefined || prev === null || prev === '') return
+    if (kind === prev) return
     if (kind === '原子') {
       await refreshAsyncOptions()
       const tableDef = props.fields.find((f) => f.key === 'table')

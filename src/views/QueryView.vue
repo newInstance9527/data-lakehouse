@@ -28,7 +28,7 @@ import { useSession } from '@/composables/useSession'
 import { RESULT_COLUMNS } from '@/data/query'
 
 const { showToast } = useToast()
-const { currentWs } = useSession()
+const { currentWs, principalMapped, isSuperAdmin } = useSession()
 const guide = pageGuideOf('query')
 const route = useRoute()
 const router = useRouter()
@@ -1027,6 +1027,14 @@ function cellClass(col, row) {
 
     <div v-if="catalogDegraded" class="banner-soft">
       Schema 树拉取失败，目录为空；请检查后端连通后刷新。限额：adhoc 默认 10GB / 硬顶 50GB。
+    </div>
+
+    <div v-if="principalMapped === false" class="banner-soft" style="border-color: var(--warning); color: var(--warning)">
+      当前账号未映射 Trino 查询主体，即席执行会被拒绝。
+      <template v-if="isSuperAdmin">
+        请到「系统用户」为该账号绑定人类主体（禁止填 admin）。
+      </template>
+      <template v-else>请联系超管在「系统用户」完成绑定。</template>
     </div>
 
     <div class="banner-soft query-elevate-bar">

@@ -19,9 +19,12 @@ import {
   userPositionSelector,
   userRoleSelector,
 } from '@/api/sys'
+import { bindPrincipal, fetchPrincipals, syncPrincipalImpersonation } from '@/api/security'
+import { useSession } from '@/composables/useSession'
 
 const { showToast } = useToast()
 const { busy, run: runLocked } = useActionLock()
+const { isSuperAdmin, refreshPrincipalMe } = useSession()
 const kw = ref('')
 const status = ref('')
 const loading = ref(false)
@@ -29,6 +32,8 @@ const rows = ref([])
 const totalRemote = ref(0)
 const page = ref(1)
 const pageSize = ref(20)
+/** portalUserId → trinoUser */
+const principalMap = ref({})
 
 const formOpen = ref(false)
 const formMode = ref('add')
@@ -73,6 +78,13 @@ const pwdForm = reactive({
   confirm: '',
 })
 
+const principalOpen = ref(false)
+const principalUser = ref(null)
+const principalForm = reactive({
+  trinoUser: '',
+  remark: '',
+})
+
 const displayRows = computed(() => rows.value)
 const totalPages = computed(() => Math.max(1, Math.ceil(totalRemote.value / pageSize.value)))
 const pageNums = computed(() => {
@@ -83,8 +95,21 @@ const pageNums = computed(() => {
 })
 
 onMounted(async () => {
-  await Promise.all([load(), loadOrgs(), loadRoles()])
+  await Promise.all([load(), loadOrgs(), loadRoles(), loadPrincipals()])
 })
+
+async function loadPrincipals() {
+  try {
+    const list = await fetchPrincipals()
+    const map = {}
+    for (const p of list || []) {
+      if (p?.portalUserId) map[p.portalUserId] = p.trinoUser || ''
+    }
+    principalMap.value = map
+  } catch {
+    principalMap.value = {}
+  }
+}
 
 async function load() {
   loading.value = true
@@ -231,6 +256,52 @@ async function resetPwd(row) {
   pwdResetOpen.value = true
 }
 
+function openPrincipalBind(row) {
+  if (!isSuperAdmin.value) {
+    showToast('仅超管可绑定 Trino 主体', 'warning')
+    return
+  }
+  principalUser.value = row
+  principalForm.trinoUser = principalMap.value[row.id] || row.account || ''
+  principalForm.remark = ''
+  principalOpen.value = true
+}
+
+async function submitPrincipalBind() {
+  const u = principalUser.value
+  if (!u?.id) return
+  const trinoUser = String(principalForm.trinoUser || '').trim()
+  if (!trinoUser) {
+    showToast('请填写 Trino 人类主体', 'warning')
+    return
+  }
+  if (/^admin$/i.test(trinoUser)) {
+    showToast('禁止绑定服务账号 admin', 'warning')
+    return
+  }
+  await runLocked('bindPrincipal', async () => {
+    try {
+      await bindPrincipal({
+        portalUserId: u.id,
+        portalAccount: u.account,
+        trinoUser,
+        remark: principalForm.remark || undefined,
+      })
+      try {
+        await syncPrincipalImpersonation()
+      } catch {
+        /* 绑定已成功；同步失败可稍后重试 */
+      }
+      await loadPrincipals()
+      await refreshPrincipalMe()
+      principalOpen.value = false
+      showToast(`已绑定 ${u.account} → ${trinoUser}`, 'success')
+    } catch (e) {
+      showToast(e.message || '绑定失败', 'error')
+    }
+  })
+}
+
 async function submitResetPwd() {
   await runLocked('resetPwd', async () => {
     const password = String(pwdForm.password || '').trim()
@@ -347,7 +418,7 @@ function onPageSize() {
       subtitle="账号 · 主部门 · 职位 · 角色授权（/sys/user）；演示账号见部门管理文档"
     >
       <button type="button" class="btn btn-sm btn-primary" @click="openAdd">＋ 新建用户</button>
-      <button type="button" class="btn btn-sm" :disabled="loading" @click="load">↻ 刷新</button>
+      <button type="button" class="btn btn-sm" :disabled="loading" @click="() => { load(); loadPrincipals() }">↻ 刷新</button>
     </PageHeader>
 
     <div class="card">
@@ -369,15 +440,16 @@ function onPageSize() {
               <th>主部门</th>
               <th>职位</th>
               <th>状态</th>
+              <th>Trino 主体</th>
               <th>操作</th>
             </tr>
           </thead>
           <tbody>
             <tr v-if="loading">
-              <td colspan="6" class="empty">加载中…</td>
+              <td colspan="7" class="empty">加载中…</td>
             </tr>
             <tr v-else-if="!displayRows.length">
-              <td colspan="6" class="empty">暂无用户</td>
+              <td colspan="7" class="empty">暂无用户</td>
             </tr>
             <tr v-for="r in displayRows" :key="r.id">
               <td><code>{{ r.account }}</code></td>
@@ -389,6 +461,10 @@ function onPageSize() {
                   {{ r.userStatus === 'ENABLE' ? '启用' : '停用' }}
                 </span>
               </td>
+              <td style="font-size: 12px">
+                <code v-if="principalMap[r.id]">{{ principalMap[r.id] }}</code>
+                <span v-else class="muted">未映射</span>
+              </td>
               <td class="ops">
                 <button type="button" class="btn-link" @click="openDetail(r)">详情</button>
                 <button type="button" class="btn-link" @click="openEdit(r)">编辑</button>
@@ -397,6 +473,14 @@ function onPageSize() {
                 </button>
                 <button type="button" class="btn-link" @click="resetPwd(r)">重置密码</button>
                 <button type="button" class="btn-link" @click="openRoleGrant(r)">授角色</button>
+                <button
+                  v-if="isSuperAdmin"
+                  type="button"
+                  class="btn-link"
+                  @click="openPrincipalBind(r)"
+                >
+                  {{ principalMap[r.id] ? '改主体' : '绑主体' }}
+                </button>
                 <button type="button" class="btn-link danger" @click="remove(r)">删除</button>
               </td>
             </tr>
@@ -554,6 +638,47 @@ function onPageSize() {
             @click="submitResetPwd"
           >
             {{ busy('resetPwd') ? '提交中…' : '确认重置' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="principalOpen" class="modal-mask" @click.self="principalOpen = false">
+      <div class="modal">
+        <div class="modal-hd">
+          绑定 Trino 主体 · {{ principalUser?.name || principalUser?.account || '' }}
+        </div>
+        <div class="modal-bd form-grid">
+          <label>
+            门户账号
+            <input class="input" :value="principalUser?.account || ''" disabled />
+          </label>
+          <label>
+            Trino 人类主体
+            <input
+              v-model="principalForm.trinoUser"
+              class="input"
+              placeholder="如 wang（禁止填 admin）"
+              @keyup.enter="submitPrincipalBind"
+            />
+          </label>
+          <label>
+            备注
+            <input v-model="principalForm.remark" class="input" placeholder="可选" />
+          </label>
+          <p class="hint">
+            仅映射查询身份（impersonation），不授予表权限。表 ACL 仍在 Grav。绑定后自动尝试同步 rules.json。
+          </p>
+        </div>
+        <div class="modal-ft">
+          <button type="button" class="btn btn-sm" @click="principalOpen = false">取消</button>
+          <button
+            type="button"
+            class="btn btn-sm btn-primary"
+            :disabled="busy('bindPrincipal')"
+            @click="submitPrincipalBind"
+          >
+            {{ busy('bindPrincipal') ? '提交中…' : '确认绑定' }}
           </button>
         </div>
       </div>

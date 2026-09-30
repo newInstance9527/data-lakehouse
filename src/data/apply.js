@@ -204,10 +204,38 @@ export const APPLY_API_OPTIONS = [
   { value: '/api/metric/biz', label: '/api/metric/biz · 业务指标批量' },
 ]
 
-/** 从指标目录生成申请可选列表 */
-export function buildApplyMetricOptions(catalog = []) {
+/**
+ * 申请中心指标下拉按场景分流
+ * - query：仅已启用
+ * - create：本人草稿/待发布（特权可见全部）
+ * - change：可变更的已启用/待发布·变更
+ */
+export function buildApplyMetricOptions(catalog = [], opts = {}) {
+  const kind = opts.kind || 'query'
+  const user = opts.user
+  const privileged = Boolean(opts.privileged || opts.canScopeAll || opts.isSuperAdmin)
+  const uid = String(user?.id || '')
+  const account = String(user?.account || '').toLowerCase()
+  const mine = (m) => {
+    if (privileged) return true
+    if (!user) return false
+    const createUser = String(m.createUser || '')
+    const owner = String(m.owner || '').toLowerCase()
+    return (
+      (uid && createUser === uid) ||
+      (account && (owner === account || String(m.owner || '') === uid))
+    )
+  }
   return catalog
-    .filter((m) => m.status === 'active' || m.status === 'version_review')
+    .filter((m) => {
+      const st = m.status
+      if (kind === 'query') return st === 'active'
+      if (kind === 'create') return (st === 'draft' || st === 'review') && mine(m)
+      if (kind === 'change') {
+        return (st === 'active' || st === 'version_review') && mine(m)
+      }
+      return st === 'active'
+    })
     .map((m) => ({
       value: m.id,
       label: `${m.id} · ${m.name}`,
@@ -217,7 +245,9 @@ export function buildApplyMetricOptions(catalog = []) {
       caliber: m.caliber,
       domain: m.domainLabel || m.domain,
       owner: m.owner,
+      createUser: m.createUser,
       ver: m.ver,
+      status: m.status,
     }))
 }
 

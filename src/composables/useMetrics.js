@@ -13,6 +13,7 @@ import {
   trialMetric,
   transitionMetric,
   updateMetric,
+  deleteMetric,
 } from '@/api/metric'
 import {
   METRIC_STATUS,
@@ -96,6 +97,7 @@ export function normalizeMetric(row) {
     vol: row.vol || '—',
     volCls: row.volCls || 'warn',
     owner: row.owner || '',
+    createUser: row.createUser || '',
     ver: row.ver || 'v1',
     status,
     statusLabel: row.statusLabel || st.label,
@@ -228,6 +230,14 @@ export function useMetrics() {
     return row
   }
 
+  async function removeMetric(code, ws) {
+    const home = resolveWs(ws)
+    const out = await deleteMetric(code, home)
+    catalog.value = catalog.value.filter((r) => r.id !== code && r.metricCode !== code)
+    await refreshOverview(home)
+    return out
+  }
+
   async function runTransition(code, action, note) {
     const ws = resolveWs()
     const saved = await transitionMetric(code, { action, note, ws })
@@ -330,6 +340,7 @@ export function useMetrics() {
     addMetric,
     saveMetric,
     runTransition,
+    removeMetric,
     runCompile,
     runQuery,
     runTrial,

@@ -7,6 +7,7 @@ import { computed, readonly, ref } from 'vue'
 import { clearToken, getLoginUser, getToken, loginMenu, doLogout as apiLogout } from '@/api/auth'
 import { http } from '@/api/http'
 import { fetchWsCurrent } from '@/api/workspace'
+import { fetchPrincipalMe } from '@/api/security'
 import { NAV_GROUPS } from '@/config/nav'
 import { collectMenuNavIds } from '@/utils/menuNav'
 
@@ -17,6 +18,9 @@ const grantCache = ref({})
 const manageCache = ref({})
 /** type:id:PRIV */
 const opsCache = ref({})
+/** Trino 主体映射：null=未探测 / true|false */
+const principalMapped = ref(null)
+const principalMe = ref(null)
 const ready = ref(false)
 const bootstrapping = ref(false)
 
@@ -96,6 +100,10 @@ export function isDatasourceOwner(ds, user) {
 
 export function isEtlOwner(task, user) {
   return isResourceOwner(task, user, ['createUser', 'owner'])
+}
+
+export function isMetricOwner(row, user) {
+  return isResourceOwner(row, user, ['createUser', 'owner'])
 }
 
 export function isNeedOwnerApplyError(err) {
@@ -340,6 +348,24 @@ export function useSession() {
     return Boolean(editOk || delOk || manageOk)
   }
 
+  async function refreshPrincipalMe() {
+    if (!getToken()) {
+      principalMapped.value = null
+      principalMe.value = null
+      return null
+    }
+    try {
+      const me = await fetchPrincipalMe()
+      principalMe.value = me || null
+      principalMapped.value = Boolean(me?.mapped)
+      return me
+    } catch {
+      principalMapped.value = false
+      principalMe.value = null
+      return null
+    }
+  }
+
   async function bootstrapSession() {
     if (bootstrapping.value) return
     bootstrapping.value = true
@@ -347,6 +373,8 @@ export function useSession() {
       if (!getToken()) {
         currentUser.value = null
         menuNavIds.value = new Set()
+        principalMapped.value = null
+        principalMe.value = null
         ready.value = true
         return
       }
@@ -366,11 +394,15 @@ export function useSession() {
       } catch {
         menuNavIds.value = isSuperAdminUser(currentUser.value) ? null : new Set()
       }
+      // 主体映射不阻塞进页
+      refreshPrincipalMe().catch(() => {})
       ready.value = true
     } catch {
       clearToken()
       currentUser.value = null
       menuNavIds.value = new Set()
+      principalMapped.value = null
+      principalMe.value = null
       ready.value = true
     } finally {
       bootstrapping.value = false
@@ -388,6 +420,8 @@ export function useSession() {
     grantCache.value = {}
     manageCache.value = {}
     opsCache.value = {}
+    principalMapped.value = null
+    principalMe.value = null
   }
 
   return {
@@ -397,6 +431,9 @@ export function useSession() {
     isLoggedIn,
     isSuperAdmin,
     canScopeAll,
+    principalMapped: readonly(principalMapped),
+    principalMe: readonly(principalMe),
+    refreshPrincipalMe,
     ready: readonly(ready),
     filteredNavGroups,
     canAccessNav,
@@ -415,6 +452,7 @@ export function useSession() {
     isAssetOwner: (asset) => isAssetOwner(asset, currentUser.value),
     isDatasourceOwner: (ds) => isDatasourceOwner(ds, currentUser.value),
     isEtlOwner: (task) => isEtlOwner(task, currentUser.value),
+    isMetricOwner: (row) => isMetricOwner(row, currentUser.value),
     hasRole,
     refreshGrant,
     refreshManageGrant,

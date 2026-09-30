@@ -47,6 +47,11 @@ export function retireDataapi(id, ws) {
   return http.post(`${BASE}/retire`, { id, ws: resolveWs(ws) })
 }
 
+/** 删除绑定（本人/超管；已发布须先取消发布；同步 SQLREST/Key） */
+export function deleteDataapi(id, ws) {
+  return http.post(`${BASE}/delete`, { id, ws: resolveWs(ws) })
+}
+
 export function fetchDataapiVersions(id) {
   return http.get(`${BASE}/versions`, { id })
 }

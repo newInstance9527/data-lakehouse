@@ -98,6 +98,9 @@ async function onLogout() {
 }
 
 function isWsMember(s) {
+  const code = String(s?.id || s?.wsCode || '').trim()
+  // 平台默认空间全员可用，不标「非成员」
+  if (code === 'default') return true
   const r = s?.role || s?.myRole
   return !!(r && r !== '—' && String(r).trim())
 }
