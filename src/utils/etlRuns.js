@@ -3,6 +3,7 @@
 export const RUN_STATUS_META = {
   SUCCESS: { label: '成功', tag: 'tag-green', color: '#52c41a' },
   ERROR: { label: '失败', tag: 'tag-red', color: '#f5222d' },
+  CANCELLED: { label: '已终止', tag: 'tag-gray', color: '#8c8c8c' },
   RUNNING: { label: '运行中', tag: 'tag-blue', color: '#1890ff' },
   PENDING: { label: '排队', tag: 'tag-gray', color: '#8c8c8c' },
 }

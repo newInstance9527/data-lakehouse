@@ -3,7 +3,7 @@ import { computed, ref, watch, onUnmounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import AppDrawer from '@/components/common/AppDrawer.vue'
 import { NODE_TYPES } from '@/data/etl'
-import { fetchEtlRunDetail, fetchEtlRunNodeLog, fetchEtlRunResultPreview } from '@/api/etl'
+import { fetchEtlRunDetail, fetchEtlRunNodeLog, fetchEtlRunResultPreview, stopEtlRun } from '@/api/etl'
 import { RUN_STATUS_META, buildRunDetail } from '@/utils/etlRuns'
 import { useToast } from '@/composables/useToast'
 
@@ -39,6 +39,7 @@ let nodeLogPollTimer = null
 let runStatusPollTimer = null
 const RUN_POLL_MS = 4000
 const LOG_POLL_MS = 3000
+const stopBusy = ref(false)
 
 function isRunStatusActive(st) {
   const s = String(st || '').toUpperCase()
@@ -53,6 +54,7 @@ function isNodeStatusActive(st) {
 function mapApiRunStatus(st) {
   const s = String(st || '').toLowerCase()
   if (s === 'success' || s === 'done') return 'SUCCESS'
+  if (s === 'cancelled' || s === 'canceled' || s === 'killed') return 'CANCELLED'
   if (s === 'failed' || s === 'error' || s === 'blocked') return 'ERROR'
   if (s === 'running' || s === 'submitted' || s === 'pending') return 'RUNNING'
   return String(st || 'PENDING').toUpperCase()
@@ -411,6 +413,7 @@ function statusMeta(st) {
 
 function nodeStatusMeta(st) {
   if (st === 'blocked') return RUN_STATUS_META.ERROR
+  if (st === 'cancelled' || st === 'canceled') return RUN_STATUS_META.CANCELLED
   if (st === 'running') return RUN_STATUS_META.RUNNING
   if (st === 'pending') return RUN_STATUS_META.PENDING
   if (st === 'warn') return { label: '告警', tag: 'tag-orange', color: '#fa8c16' }
@@ -435,6 +438,34 @@ async function copyRunId() {
     showToast('已复制 run_id', 'success')
   } catch {
     showToast(id, 'info')
+  }
+}
+
+async function onStopRun() {
+  const runId = detail.value?.run
+  if (!runId || stopBusy.value) return
+  const st = String(detail.value?.status || '').toUpperCase()
+  if (st !== 'RUNNING' && st !== 'PENDING' && st !== 'SUBMITTED') {
+    showToast('当前运行已终态', 'info')
+    return
+  }
+  stopBusy.value = true
+  try {
+    const resp = await stopEtlRun(runId)
+    applyRunDetailToCache(runId, {
+      ...(detailCache.value[runId] || {}),
+      status: resp?.status || 'cancelled',
+      message: resp?.message,
+      finishedAt: resp?.finishedAt || new Date().toISOString(),
+    })
+    const deg = resp?.dsStop?.degraded
+    showToast(deg ? '已终止（DS 调度降级，门户已收口）' : '已终止运行', deg ? 'warning' : 'success')
+    emit('refresh-runs')
+    await refreshActiveRunDetail()
+  } catch (e) {
+    showToast(e?.message || '终止失败', 'error')
+  } finally {
+    stopBusy.value = false
   }
 }
 
@@ -555,6 +586,7 @@ function cellText(row, col) {
               <option value="ERROR">失败</option>
               <option value="RUNNING">运行中</option>
               <option value="PENDING">排队</option>
+              <option value="CANCELLED">已终止</option>
             </select>
             <select v-model="triggerFilter" class="select input-sm">
               <option value="ALL">全部触发</option>
@@ -612,6 +644,14 @@ function cellText(row, col) {
             </div>
             <div class="trd-actions">
               <button type="button" class="btn btn-sm" @click="copyRunId">复制 run_id</button>
+              <button
+                v-if="detail.status === 'RUNNING' || detail.status === 'PENDING' || detail.status === 'SUBMITTED'"
+                type="button"
+                class="btn btn-sm"
+                style="color: var(--danger)"
+                :disabled="stopBusy"
+                @click="onStopRun"
+              >{{ stopBusy ? '终止中…' : '终止' }}</button>
               <button
                 v-if="detail.status === 'ERROR' || detail.opsPath"
                 type="button"

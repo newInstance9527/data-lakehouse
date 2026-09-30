@@ -1,20 +1,63 @@
 /**
- * 数据源表字段缓存（previewSchema），供 ETL 上游字段推导使用
+ * 数据源表字段缓存：按表精确拉 meta/columns，避免 previewSchema 全库并集污染映射
  */
 import { computed, ref } from 'vue'
-import { fetchPreviewSchema } from '@/api/datasource'
+import { fetchMetaColumns, fetchPreviewSchema } from '@/api/datasource'
 
 /** @type {import('vue').Ref<Record<string, { status: 'idle'|'loading'|'ok'|'err', columns: Array<{table:string,column:string,type:string}> }>>} */
 const cache = ref({})
+/** dsId::schema::table → columns */
+const tableCache = ref({})
 const rev = ref(0)
 /** @type {Record<string, Promise<any[]>>} */
 const inflight = {}
+/** @type {Record<string, Promise<any[]>>} */
+const tableInflight = {}
 
 function tableBase(name) {
   const s = String(name || '').trim()
   if (!s) return ''
   const parts = s.split('.')
   return parts[parts.length - 1].toLowerCase()
+}
+
+/**
+ * 解析 JDBC/元数据用的 schema + table。
+ * 只做「schema.table」拆分，禁止用 ods_ds_* 等门户编码猜物理表——易误伤含下划线的真表名。
+ * ETL conf.table 必须是绑定数据源清单中的物理名（ig_ds_table / Grav 表名）。
+ */
+export function resolvePhysicalTable(tableName) {
+  const raw = String(tableName || '').trim()
+  if (!raw) return { schema: '', table: '', base: '' }
+  const parts = raw.split('.').filter(Boolean)
+  const table = parts[parts.length - 1] || ''
+  const schema = parts.length >= 2 ? parts[parts.length - 2] : ''
+  const base = table.toLowerCase()
+  return { schema, table, base }
+}
+
+function tableKey(dsId, schema, table) {
+  return `${dsId}::${schema || ''}::${table || ''}`
+}
+
+function colsToFields(cols, tableHint = '') {
+  const out = []
+  const seen = new Set()
+  ;(cols || []).forEach((c) => {
+    const col = c.column || c.name
+    if (!col || col === '_preview_failed') return
+    const key = String(col).toLowerCase()
+    if (seen.has(key)) return
+    seen.add(key)
+    out.push({
+      name: col,
+      type: c.type || 'STRING',
+      cn: c.remarks || c.cn || '',
+      pk: false,
+      table: c.table || tableHint || '',
+    })
+  })
+  return out
 }
 
 export function useDsSchema() {
@@ -64,61 +107,105 @@ export function useDsSchema() {
   }
 
   /**
-   * 同步读取缓存中的表字段（未加载则返回 []）
-   * @returns {{ name: string, type: string, cn: string, pk: boolean }[]}
+   * 按选中表精确拉取列（meta/columns），写入 tableCache
    */
-  function getTableFields(dsId, tableName) {
-    if (!dsId) return []
+  async function ensureTableFields(dsId, tableName) {
+    if (!dsId || !tableName) return []
+    const { schema, table, base } = resolvePhysicalTable(tableName)
+    if (!table && !base) return []
+    const key = tableKey(dsId, schema, table || base)
+    const hit = tableCache.value[key]
+    if (hit?.status === 'ok') return hit.columns || []
+    if (tableInflight[key]) return tableInflight[key]
+
+    tableCache.value = {
+      ...tableCache.value,
+      [key]: { status: 'loading', columns: hit?.columns || [] },
+    }
+
+    tableInflight[key] = (async () => {
+      try {
+        const raw = await fetchMetaColumns(dsId, schema || undefined, table || base)
+        const list = Array.isArray(raw) ? raw : raw?.records || raw?.columns || []
+        const cols = list
+          .filter((c) => c?.name || c?.column)
+          .map((c) => ({
+            table: tableName,
+            column: c.name || c.column,
+            type: c.type || 'STRING',
+            remarks: c.remarks || '',
+          }))
+        tableCache.value = {
+          ...tableCache.value,
+          [key]: { status: 'ok', columns: cols },
+        }
+        rev.value += 1
+        return cols
+      } catch (e) {
+        console.warn('[etl] ensureTableFields failed', dsId, tableName, e)
+        // 回落：从 previewSchema 严格按表过滤（禁止全库并集）
+        await ensureSchema(dsId)
+        const filtered = filterPreviewColumns(dsId, tableName)
+        tableCache.value = {
+          ...tableCache.value,
+          [key]: { status: filtered.length ? 'ok' : 'err', columns: filtered },
+        }
+        rev.value += 1
+        return filtered
+      } finally {
+        delete tableInflight[key]
+      }
+    })()
+
+    return tableInflight[key]
+  }
+
+  function filterPreviewColumns(dsId, tableName) {
     const cols = cache.value[dsId]?.columns || []
     if (!cols.length) return []
-    const base = tableBase(tableName)
-    const out = []
+    const { base } = resolvePhysicalTable(tableName)
+    if (!base) return []
+    const matched = []
     const seen = new Set()
     cols.forEach((c) => {
       const col = c.column
       if (!col || col === '_preview_failed') return
       const tb = tableBase(c.table)
-      // 有表名过滤时：匹配则收；表名缺失（探测未带 table）也收
-      if (base && tb && tb !== base) return
+      // 仅精确匹配末段表名；禁止无 table / 别名猜测
+      if (!tb || tb !== base) return
       const key = String(col).toLowerCase()
       if (seen.has(key)) return
       seen.add(key)
-      out.push({
-        name: col,
+      matched.push({
+        table: c.table || tableName,
+        column: col,
         type: c.type || 'STRING',
-        cn: '',
-        pk: false,
       })
     })
-    // 过滤后为空但源有列：放宽为全量（避免 schema.table 与 TABLE_NAME 不一致导致映射无字段）
-    if (!out.length && base) {
-      cols.forEach((c) => {
-        const col = c.column
-        if (!col || col === '_preview_failed') return
-        const key = String(col).toLowerCase()
-        if (seen.has(key)) return
-        seen.add(key)
-        out.push({ name: col, type: c.type || 'STRING', cn: '', pk: false })
-      })
+    return matched
+  }
+
+  /**
+   * 同步读取：优先按表缓存，否则严格过滤 preview；绝不回退全库列
+   */
+  function getTableFields(dsId, tableName) {
+    if (!dsId || !tableName) return []
+    const { schema, table, base } = resolvePhysicalTable(tableName)
+    const key = tableKey(dsId, schema, table || base)
+    const precise = tableCache.value[key]
+    if (precise?.status === 'ok' && precise.columns?.length) {
+      return colsToFields(precise.columns, tableName)
     }
-    return out
+    const filtered = filterPreviewColumns(dsId, tableName)
+    if (filtered.length) return colsToFields(filtered, tableName)
+    return []
   }
 
   function getDsFields(dsId, tableNames = []) {
     const tables = (tableNames || []).filter(Boolean)
     if (!tables.length) {
-      const cols = cache.value[dsId]?.columns || []
-      const seen = new Set()
-      const out = []
-      cols.forEach((c) => {
-        const col = c.column
-        if (!col) return
-        const key = String(col).toLowerCase()
-        if (seen.has(key)) return
-        seen.add(key)
-        out.push({ name: col, type: c.type || 'STRING', cn: '', pk: false })
-      })
-      return out
+      // 未选表：不再返回全库并集，避免映射出现数百幽灵字段
+      return []
     }
     const list = []
     tables.forEach((t) => list.push(...getTableFields(dsId, t)))
@@ -136,8 +223,10 @@ export function useDsSchema() {
   return {
     schemaRev,
     ensureSchema,
+    ensureTableFields,
     getTableFields,
     getDsFields,
     schemaStatus,
+    resolvePhysicalTable,
   }
 }

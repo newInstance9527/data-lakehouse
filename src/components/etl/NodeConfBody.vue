@@ -7,10 +7,10 @@ import SqlEditor from '@/components/etl/SqlEditor.vue'
 import CleanFieldRules from '@/components/etl/CleanFieldRules.vue'
 import ConditionBranchesEditor from '@/components/etl/ConditionBranchesEditor.vue'
 import { fetchQualityRules } from '@/api/quality'
-import { fetchPreviewSchema } from '@/api/datasource'
 import { useDatasources } from '@/composables/useDatasources'
 import { useAssets } from '@/composables/useAssets'
 import { useStandards } from '@/composables/useStandards'
+import { useDsSchema } from '@/composables/useDsSchema'
 import { fieldsForTableName } from '@/utils/etlFields'
 import {
   AUTO_CREATE_MODES,
@@ -39,6 +39,7 @@ const { sources, dagSources, ensureTables, getSource, loadSources, loadDagUsable
   useDatasources()
 const { list: assetList } = useAssets()
 const { fieldList, codeList, ensureLoaded: ensureStdLoaded, loaded: stdLoaded } = useStandards()
+const { ensureTableFields, getTableFields, schemaRev } = useDsSchema()
 
 const DB_TYPES = ['MySQL', 'PostgreSQL', 'Oracle', 'SQLServer', 'MongoDB', 'TiDB', 'SQLite']
 const STARTUP_MODES = [
@@ -148,8 +149,6 @@ const apiDsOptions = computed(() =>
 )
 
 const tableOptions = ref([])
-/** 数据源预览列：[{ table, column, type }] */
-const schemaColumns = ref([])
 const schemaLoading = ref(false)
 
 watch(
@@ -157,7 +156,6 @@ watch(
   async (id) => {
     if (!id) {
       tableOptions.value = []
-      schemaColumns.value = []
       return
     }
     if (!dsLoaded.value) {
@@ -178,20 +176,26 @@ watch(
       console.warn('[etl] load tables failed', e)
       tableOptions.value = []
     }
+  },
+  { immediate: true },
+)
+
+watch(
+  () => [props.conf?.dsId, props.conf?.table, props.conf?.src, props.conf?.dst, schemaRev.value],
+  async () => {
+    const id = props.conf?.dsId
+    const table =
+      props.conf?.table ||
+      props.conf?.src ||
+      props.conf?.dst ||
+      (Array.isArray(props.conf?.tables) ? props.conf.tables.filter(Boolean)[0] : '') ||
+      ''
+    if (!id || !table) return
     schemaLoading.value = true
     try {
-      const res = await fetchPreviewSchema(id)
-      const cols = Array.isArray(res?.columns) ? res.columns : []
-      schemaColumns.value = cols
-        .filter((c) => c?.column || c?.name)
-        .map((c) => ({
-          table: c.table || '',
-          column: c.column || c.name,
-          type: c.type || '',
-        }))
+      await ensureTableFields(id, table)
     } catch (e) {
-      console.warn('[etl] previewSchema failed', e)
-      schemaColumns.value = []
+      console.warn('[etl] ensureTableFields failed', e)
     } finally {
       schemaLoading.value = false
     }
@@ -199,13 +203,60 @@ watch(
   { immediate: true },
 )
 
+/** 湖表选值：物理 objectName / omFqn，不用资产编码（含 ds 雪花 id 难认） */
+function lakeTablePickValue(a) {
+  if (!a) return ''
+  const obj = String(a.objectName || a.tableName || '').trim()
+  if (obj) return obj
+  const om = String(a.omFqn || '').trim()
+  if (om) {
+    const parts = om.split('.').filter(Boolean)
+    if (parts.length >= 2) return parts.slice(-2).join('.')
+    if (parts.length === 1) return parts[0]
+  }
+  const name = String(a.name || '').trim()
+  const code = String(a.assetCode || a.key || '').trim()
+  // 资产编码带长数字段时不作为选表值
+  if (code && !/_ds_\d{6,}_/i.test(code) && !/^\d{15,}$/.test(code)) return code
+  return name || code
+}
+
+function lakeTableOptionLabel(a, value) {
+  const cn = String(a?.cnName || '').trim()
+  const biz = String(a?.name || '').trim()
+  let title = ''
+  if (cn && cn !== value && !cn.includes(value)) title = cn
+  else if (biz && biz !== value && biz !== cn) title = biz
+  return title ? `${title}  ·  ${value}` : value
+}
+
 const lakeTableOptions = computed(() =>
-  (assetList.value || []).map((a) => ({
-    value: a.key || a.name,
-    label: a.key || a.name,
-    sub: `${a.layerLabel || a.layer || ''} · ${a.domainLabel || ''}`,
-  })),
+  (assetList.value || [])
+    .map((a) => {
+      const value = lakeTablePickValue(a)
+      if (!value) return null
+      const layer = a.layerLabel || a.layer || ''
+      const domain = a.domainLabel || a.domain || ''
+      const engine = a.engine || a.sourceType || ''
+      const sub = [engine, layer, domain, a.omFqn && a.omFqn !== value ? a.omFqn : '']
+        .filter(Boolean)
+        .join(' · ')
+      return {
+        value,
+        label: lakeTableOptionLabel(a, value),
+        sub,
+        search: [value, a.cnName, a.name, a.objectName, a.omFqn, a.assetCode, layer, domain]
+          .filter(Boolean)
+          .join(' '),
+      }
+    })
+    .filter(Boolean),
 )
+
+function setLakeTable(key, v) {
+  const table = String(v || '').trim()
+  setMany({ [key]: table, objectName: table || undefined })
+}
 
 const boundSource = computed(() => {
   const id = props.conf?.dsId
@@ -356,13 +407,6 @@ function onTableChange(v) {
   })
 }
 
-function tableBase(name) {
-  const s = String(name || '').trim()
-  if (!s) return ''
-  const parts = s.split('.')
-  return parts[parts.length - 1].toLowerCase()
-}
-
 function parseFieldList(v) {
   if (Array.isArray(v)) return v.map((x) => String(x).trim()).filter(Boolean)
   return String(v || '')
@@ -375,31 +419,28 @@ function joinFieldList(list) {
   return (list || []).filter(Boolean).join(',')
 }
 
-/** 源节点：当前已选表的字段（预览 schema 优先，否则演示字段） */
+/** 源节点：当前已选表的字段（按表精确 meta/columns，禁止全库并集） */
 const sourceFieldOptions = computed(() => {
+  // 依赖 schemaRev，表字段异步到位后重算
+  void schemaRev.value
   const tables = selectedTables.value.length
     ? selectedTables.value
     : [props.conf?.src, props.conf?.table].filter(Boolean)
-  if (!tables.length) return []
+  if (!tables.length || !props.conf?.dsId) return []
 
-  const bases = new Set(tables.map(tableBase).filter(Boolean))
   const fromApi = []
   const seen = new Set()
-  schemaColumns.value.forEach((c) => {
-    const col = c.column
-    if (!col) return
-    const tb = tableBase(c.table)
-    if (bases.size && tb && !bases.has(tb)) return
-    // 无 table 名时（非 JDBC 占位）也纳入
-    if (bases.size && c.table && !tb) return
-    const key = col.toLowerCase()
-    if (seen.has(key)) return
-    seen.add(key)
-    fromApi.push({
-      value: col,
-      label: col,
-      sub: c.type || '',
-      pk: false,
+  tables.forEach((t) => {
+    getTableFields(props.conf.dsId, t).forEach((f) => {
+      const key = String(f.name || '').toLowerCase()
+      if (!key || seen.has(key)) return
+      seen.add(key)
+      fromApi.push({
+        value: f.name,
+        label: f.name,
+        sub: f.type || '',
+        pk: !!f.pk,
+      })
     })
   })
   if (fromApi.length) return fromApi
@@ -1155,8 +1196,9 @@ function onCodeSetPick(v) {
             :options="lakeTableOptions"
             sub-key="sub"
             allow-custom
-            placeholder="下拉搜索资产表或自定义"
-            @update:model-value="(v) => set('reportTable', v)"
+            placeholder="搜索表名 / 中文名（物理表，非资产编码）"
+            :search-keys="['search', 'label', 'value']"
+            @update:model-value="(v) => setLakeTable('reportTable', v)"
           />
         </label>
       </div>
@@ -1324,8 +1366,9 @@ function onCodeSetPick(v) {
         :options="lakeTableOptions"
         sub-key="sub"
         allow-custom
-        placeholder="下拉搜索资产表或自定义"
-        @update:model-value="(v) => set('table', v)"
+        placeholder="搜索物理表名 / 中文名（不用资产编码）"
+        :search-keys="['search', 'label', 'value']"
+        @update:model-value="(v) => setLakeTable('table', v)"
       />
     </label>
     <div class="form-grid-2">
@@ -1439,8 +1482,9 @@ function onCodeSetPick(v) {
           :options="lakeTableOptions"
           sub-key="sub"
           allow-custom
-          placeholder="下拉搜索或自定义表名"
-          @update:model-value="(v) => set('table', v)"
+          placeholder="搜索物理表名 / 中文名（不用资产编码）"
+          :search-keys="['search', 'label', 'value']"
+          @update:model-value="(v) => setLakeTable('table', v)"
         />
       </label>
       <label class="form-field"><span class="form-label">批次大小</span><input class="input" type="number" :value="conf.batchSize" @input="set('batchSize', Number($event.target.value))" /></label>

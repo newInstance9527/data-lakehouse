@@ -31,7 +31,7 @@ const guide = pageGuideOf('integration')
 const canvasRef = ref(null)
 const { getSource, loadSources } = useDatasources()
 const { findAsset } = useAssets()
-const { ensureSchema, getDsFields, schemaRev } = useDsSchema()
+const { ensureSchema, ensureTableFields, getDsFields, schemaRev } = useDsSchema()
 const { canEditEtl, canDeleteEtl, refreshManageGrant, currentWs } = useSession()
 
 function toastNeedApply(e) {
@@ -175,11 +175,65 @@ function collectDsIdsForFields() {
   return [...ids]
 }
 
+function tableOf(conf = {}) {
+  return (
+    conf.table ||
+    conf.src ||
+    conf.dst ||
+    (Array.isArray(conf.tables) ? conf.tables.filter(Boolean)[0] : '') ||
+    ''
+  )
+}
+
+/** dsId + 表名对，用于按表精确拉列 */
+function collectTableTargets() {
+  const t = current.value
+  if (!t?.nodes?.length) return []
+  const out = []
+  const push = (dsId, table) => {
+    if (!dsId || !table) return
+    out.push({ dsId, table: String(table).trim() })
+  }
+  const sel = selectedNode.value
+  if (sel?.conf?.dsId) push(sel.conf.dsId, tableOf(sel.conf))
+  if (sel) {
+    ;(t.edges || [])
+      .filter((e) => String(e.to) === String(sel.id))
+      .forEach((e) => {
+        const p = t.nodes.find((n) => String(n.id) === String(e.from))
+        if (p?.conf?.dsId) push(p.conf.dsId, tableOf(p.conf))
+      })
+  }
+  t.nodes.forEach((n) => {
+    if (String(n.type || '').startsWith('source') && n.conf?.dsId) {
+      push(n.conf.dsId, tableOf(n.conf))
+    }
+    if (String(n.type || '').startsWith('sink_') && n.conf?.dsId) {
+      push(n.conf.dsId, tableOf(n.conf))
+    }
+  })
+  // 去重
+  const seen = new Set()
+  return out.filter((x) => {
+    const k = `${x.dsId}::${x.table}`
+    if (seen.has(k)) return false
+    seen.add(k)
+    return true
+  })
+}
+
 watch(
-  () => [currentId.value, selNodeId.value, current.value?.edges?.length, current.value?.nodes?.map((n) => n.conf?.dsId).join(',')],
+  () => [
+    currentId.value,
+    selNodeId.value,
+    current.value?.edges?.length,
+    current.value?.nodes?.map((n) => `${n.conf?.dsId || ''}:${tableOf(n.conf || {})}`).join('|'),
+  ],
   async () => {
     const ids = collectDsIdsForFields()
     await Promise.all(ids.map((id) => ensureSchema(id)))
+    const targets = collectTableTargets()
+    await Promise.all(targets.map((t) => ensureTableFields(t.dsId, t.table)))
   },
   { immediate: true },
 )
@@ -528,7 +582,8 @@ async function onDeleteTask() {
     return s === 'RUNNING' || s === 'SUBMITTED' || s === 'PENDING'
   })
   if (running) {
-    showToast('任务运行中，请等待完成后再删除', 'warning')
+    showToast('任务运行中，请先在执行记录中点「终止」后再删除', 'warning')
+    runsDrawerOpen.value = true
     return
   }
   const ok = await confirmDelete({

@@ -24,6 +24,8 @@ const emit = defineEmits(['update:modelValue', 'change'])
 const open = ref(false)
 const kw = ref('')
 const rootEl = ref(null)
+/** 外点收起后，吞掉同一次手势里 label 回传的 click，避免闪关又开 */
+let suppressToggleUntil = 0
 
 const selectedSet = computed(() => new Set((props.modelValue || []).map(String)))
 
@@ -75,18 +77,33 @@ watch(
   },
 )
 
-function onDocClick(e) {
-  if (!rootEl.value?.contains(e.target)) {
+function onDocPointerDown(e) {
+  if (!open.value) return
+  const el = rootEl.value
+  if (!el) return
+  const t = e.target
+  const path = typeof e.composedPath === 'function' ? e.composedPath() : []
+  const inside = (path.length ? path.includes(el) : false) || el.contains(t)
+  if (!inside) {
     open.value = false
     kw.value = ''
+    suppressToggleUntil = Date.now() + 400
   }
 }
 
-onMounted(() => document.addEventListener('mousedown', onDocClick))
-onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
+onMounted(() => {
+  document.addEventListener('pointerdown', onDocPointerDown, true)
+})
+onBeforeUnmount(() => {
+  document.removeEventListener('pointerdown', onDocPointerDown, true)
+})
 
 async function toggle() {
   if (props.disabled) return
+  if (Date.now() < suppressToggleUntil) {
+    suppressToggleUntil = 0
+    return
+  }
   open.value = !open.value
   if (open.value) {
     kw.value = ''

@@ -25,6 +25,8 @@ const emit = defineEmits(['update:modelValue', 'change'])
 const open = ref(false)
 const kw = ref('')
 const rootEl = ref(null)
+/** 外点收起后，吞掉同一次手势里 label 回传 / 穿透到 trigger 的 click，避免闪关又开 */
+let suppressToggleUntil = 0
 
 const searchKeyList = computed(() => {
   if (Array.isArray(props.searchKeys)) return props.searchKeys
@@ -81,18 +83,34 @@ watch(
   },
 )
 
-function onDocClick(e) {
-  if (!rootEl.value?.contains(e.target)) {
+function onDocPointerDown(e) {
+  if (!open.value) return
+  const el = rootEl.value
+  if (!el) return
+  const t = e.target
+  const path = typeof e.composedPath === 'function' ? e.composedPath() : []
+  const inside = (path.length ? path.includes(el) : false) || el.contains(t)
+  if (!inside) {
     open.value = false
     kw.value = ''
+    // 覆盖 label 激活控件、事件穿透等到 click 阶段
+    suppressToggleUntil = Date.now() + 400
   }
 }
 
-onMounted(() => document.addEventListener('mousedown', onDocClick))
-onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
+onMounted(() => {
+  document.addEventListener('pointerdown', onDocPointerDown, true)
+})
+onBeforeUnmount(() => {
+  document.removeEventListener('pointerdown', onDocPointerDown, true)
+})
 
 async function toggle() {
   if (props.disabled) return
+  if (Date.now() < suppressToggleUntil) {
+    suppressToggleUntil = 0
+    return
+  }
   open.value = !open.value
   if (open.value) {
     kw.value = ''

@@ -42,6 +42,7 @@ let loadPromise = null
 function mapRunStatus(st) {
   const s = String(st || '').toLowerCase()
   if (s === 'success' || s === 'done') return 'SUCCESS'
+  if (s === 'cancelled' || s === 'canceled' || s === 'killed') return 'CANCELLED'
   if (s === 'failed' || s === 'error' || s === 'blocked') return 'ERROR'
   if (s === 'running') return 'RUNNING'
   if (s === 'submitted' || s === 'pending') return 'RUNNING'
@@ -314,7 +315,7 @@ export function useEtl() {
       return s === 'RUNNING' || s === 'SUBMITTED' || s === 'PENDING'
     })
     if (running) {
-      throw new Error('任务运行中，请等待完成后再删除')
+      throw new Error('任务运行中，请先在执行记录中终止后再删除')
     }
     saving.value = true
     lastError.value = null

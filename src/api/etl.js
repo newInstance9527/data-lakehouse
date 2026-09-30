@@ -49,7 +49,7 @@ export function editEtlDag(payload) {
   })
 }
 
-/** 软删 DAG（运行中后端拦截） */
+/** 软删 DAG（运行中后端拦截；可先 stopRun） */
 export function deleteEtlDag(id) {
   return http.post(`${E}/dags/delete`, { id })
 }
@@ -102,6 +102,11 @@ export function fetchEtlRuns({ dagId, ws, current = 1, size = 50 } = {}) {
 
 export function fetchEtlRunDetail(runId) {
   return http.get(`${E}/dags/runs/detail`, { runId })
+}
+
+/** 终止运行中实例（DS STOP + 门户 cancelled） */
+export function stopEtlRun(runId) {
+  return http.post(`${E}/dags/runs/stop`, { runId })
 }
 
 /** 单节点 DS 实时日志；skipLineNum 续拉，limit 默认 1000 */
