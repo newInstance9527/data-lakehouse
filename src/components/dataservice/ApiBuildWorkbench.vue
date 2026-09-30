@@ -22,6 +22,7 @@ import { compileMetric, fetchMetricList } from '@/api/metric.js'
 import { fetchAssetPage, fetchAssetSchema, fetchAssetSources } from '@/api/catalog.js'
 import { streamAiChat, createAiSession, fetchAiModels } from '@/api/ai.js'
 import { useSession } from '@/composables/useSession'
+import { resolveWs } from '@/utils/ws'
 import { useActionLock } from '@/composables/useActionLock'
 import { chatModelOptionLabel, filterChatPickerModels } from '@/data/ai.js'
 import { bindTableKeyOf } from '@/data/metricBindAssets.js'
@@ -43,8 +44,12 @@ const props = defineProps({
   editId: { type: String, default: '' },
   /** 详情抽屉已拉到的绑定，打开时同步预填，避免二次请求前空白 */
   seed: { type: Object, default: null },
+  /** page：嵌入路由页；modal：遮罩全屏（历史） */
+  mode: { type: String, default: 'page' },
 })
 const emit = defineEmits(['close', 'publish'])
+
+const isPageMode = computed(() => props.mode === 'page')
 
 const { showToast } = useToast()
 const { currentWs } = useSession()
@@ -324,6 +329,7 @@ watch(
       await loadEdit(targetId, seq)
     }
   },
+  { immediate: true },
 )
 
 function onDocClickMore(e) {
@@ -997,7 +1003,7 @@ async function ensureAiSession() {
   if (aiSessionId.value) return aiSessionId.value
   try {
     const s = await createAiSession({
-      ws: currentWs.value || 'default',
+      ws: resolveWs(),
       title: `构建API · ${(selectedDs.value?.name || form.datasourceId || '').slice(0, 24)}`,
     })
     aiSessionId.value = s?.id || s?.sessionId || ''
@@ -1067,7 +1073,7 @@ async function sendAiChat(quickText) {
     await ensureAiSession()
     const chatBody = {
       sessionId: aiSessionId.value || undefined,
-      ws: currentWs.value || 'default',
+      ws: resolveWs(),
       text,
       scene: 'api_script',
       scriptType: form.engine === 'GROOVY' ? 'GROOVY' : 'SQL',
@@ -2001,6 +2007,7 @@ function buildPayload() {
     burstLimit: Number(form.burst) || 200,
     ownerUser: form.owner,
     domainCode: form.domain,
+    ws: resolveWs(),
   }
 }
 
@@ -2051,6 +2058,37 @@ async function save() {
       return null
     }
   })
+}
+
+function prettyJson(v) {
+  if (v == null) return ''
+  if (typeof v === 'string') {
+    try {
+      return JSON.stringify(JSON.parse(v), null, 2)
+    } catch {
+      return v
+    }
+  }
+  try {
+    return JSON.stringify(v, null, 2)
+  } catch {
+    return String(v)
+  }
+}
+
+async function copyDebugResult() {
+  const payload = form.probeResult || form.testResult
+  const text = prettyJson(payload)
+  if (!text) {
+    showToast('无可复制内容', 'warning')
+    return
+  }
+  try {
+    await navigator.clipboard.writeText(text)
+    showToast('已复制调试结果', 'success')
+  } catch {
+    showToast('复制失败', 'warning')
+  }
 }
 
 async function doDebug() {
@@ -2230,7 +2268,7 @@ async function saveAndPublish() {
         showToast('上一张发布单已驳回，请修改后重新「申请发布」', 'warning')
         return
       }
-      const pub = await publishDataapi(binding.id, undefined, form.publishTicketNo || undefined)
+      const pub = await publishDataapi(binding.id, resolveWs(), form.publishTicketNo || undefined)
       showToast(pub?.degraded ? `已发布（部分降级）` : '已发布', pub?.degraded ? 'warning' : 'success')
       emit('publish', pub?.binding || binding)
       close()
@@ -2481,9 +2519,9 @@ async function applyTpl() {
 </script>
 
 <template>
-  <Teleport to="body">
-    <div v-if="open" class="wb-mask">
-      <div class="wb">
+  <Teleport to="body" :disabled="isPageMode">
+    <div v-if="open" :class="isPageMode ? 'wb-page-root' : 'wb-mask'">
+      <div class="wb" :class="{ 'wb-page': isPageMode }">
         <header class="wb-header">
           <div>
             <div class="wb-title">
@@ -2540,6 +2578,7 @@ async function applyTpl() {
             <button type="button" class="btn btn-sm" @click="close">返回</button>
           </div>
         </header>
+
 
         <div
           ref="wbBodyRef"
@@ -3079,9 +3118,19 @@ async function applyTpl() {
             />
             <div class="debug-head">
               <strong>调试</strong>
-              <button type="button" class="btn btn-sm" @click="doDebug" :disabled="testing">
-                {{ testing ? '执行中…' : '▶ 执行' }}
-              </button>
+              <div class="debug-head-actions">
+                <button
+                  v-if="form.testResult || form.probeResult"
+                  type="button"
+                  class="btn btn-sm"
+                  @click="copyDebugResult"
+                >
+                  复制结果
+                </button>
+                <button type="button" class="btn btn-sm" @click="doDebug" :disabled="testing">
+                  {{ testing ? '执行中…' : '▶ 执行' }}
+                </button>
+              </div>
             </div>
             <p class="tip">{{ form.method }} {{ form.path }}</p>
             <div v-for="p in form.params" :key="'d-' + p.name" class="debug-param">
@@ -3091,7 +3140,7 @@ async function applyTpl() {
             <p v-if="form.testResult?.mappingPreview" class="tip probe-hint">
               以下 sample 已按出参映射表投影/转换（仅调试预览；Gateway 需「应用到 SQL」或命名策略）
             </p>
-            <pre v-if="form.testResult" class="sample-json">{{ JSON.stringify(form.testResult, null, 2) }}</pre>
+            <pre v-if="form.testResult" class="sample-json">{{ prettyJson(form.testResult) }}</pre>
             <p v-if="form.testResult?.hint" class="tip probe-hint">{{ form.testResult.hint }}</p>
             <pre v-if="form.testResult?.sqlPreview" class="sample-json sql-preview">{{ form.testResult.sqlPreview }}</pre>
             <div v-if="form.probeResult" class="probe-panel">
@@ -3115,7 +3164,7 @@ async function applyTpl() {
                   · HTTP {{ form.probeResult.httpStatus }} · {{ form.probeResult.latencyMs }}ms
                 </template>
               </p>
-              <pre class="sample-json">{{ JSON.stringify(form.probeResult, null, 2) }}</pre>
+              <pre class="sample-json">{{ prettyJson(form.probeResult) }}</pre>
             </div>
           </aside>
         </div>
@@ -3144,7 +3193,7 @@ async function applyTpl() {
               <button type="button" class="btn btn-sm" :disabled="aiGenerating" @click="clearAiConversation">
                 清空
               </button>
-              <button type="button" class="btn btn-sm" @click="closeAiChat">关闭</button>
+              <button type="button" class="btn btn-sm btn-danger" @click="closeAiChat">关闭</button>
             </div>
           </div>
           <div class="ai-drawer-meta tip">
@@ -3293,6 +3342,14 @@ async function applyTpl() {
   display: flex;
   padding: 12px;
 }
+.wb-page-root {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  background: transparent;
+}
 .wb {
   flex: 1;
   min-height: 0;
@@ -3303,6 +3360,14 @@ async function applyTpl() {
   flex-direction: column;
   overflow: hidden;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
+}
+.wb.wb-page {
+  border-radius: 8px;
+  box-shadow: none;
+  border: 1px solid var(--border, #e5e7eb);
+  flex: 1;
+  min-height: 0;
+  max-height: 100%;
 }
 .wb-header {
   display: flex;
@@ -3443,7 +3508,8 @@ async function applyTpl() {
   min-height: 0;
   display: grid;
   grid-template-columns: 260px 1fr;
-  grid-template-rows: 1fr;
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
 }
 .wb-body:has(.wb-debug) {
   grid-template-columns: 260px 1fr var(--wb-debug-w, 320px);
@@ -3454,6 +3520,7 @@ async function applyTpl() {
 }
 .wb-meta {
   border-right: 1px solid var(--border, #e5e7eb);
+  min-height: 0;
   overflow: auto;
   padding: 10px;
   background: var(--bg-2, #f8fafc);
@@ -3552,10 +3619,11 @@ async function applyTpl() {
 }
 .ai-drawer {
   position: absolute;
-  top: 56px;
   right: 12px;
   bottom: 12px;
-  width: min(400px, 92%);
+  width: min(380px, 92%);
+  height: min(420px, calc(100% - 68px));
+  max-height: min(420px, calc(100% - 68px));
   z-index: 40;
   display: flex;
   flex-direction: column;
@@ -3570,8 +3638,9 @@ async function applyTpl() {
   justify-content: space-between;
   gap: 8px;
   align-items: flex-start;
-  padding: 10px 12px;
+  padding: 8px 10px;
   border-bottom: 1px solid var(--border, #e5e7eb);
+  flex-shrink: 0;
 }
 .ai-drawer-title {
   font-size: 14px;
@@ -3581,7 +3650,12 @@ async function applyTpl() {
   font-size: 11px;
   color: var(--text-3, #94a3b8);
   margin-top: 2px;
-  line-height: 1.4;
+  line-height: 1.35;
+  max-width: 200px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 .ai-drawer-hd-actions {
   display: flex;
@@ -3591,19 +3665,23 @@ async function applyTpl() {
   justify-content: flex-end;
 }
 .ai-model-select {
-  max-width: 160px;
+  max-width: 140px;
   font-size: 12px;
 }
 .ai-drawer-meta {
-  padding: 6px 12px;
+  padding: 4px 10px;
   border-bottom: 1px solid var(--border, #e5e7eb);
-  font-size: 12px;
+  font-size: 11px;
+  flex-shrink: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .ai-drawer-body {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 10px 12px;
+  padding: 8px 10px;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -3639,8 +3717,9 @@ async function applyTpl() {
 }
 .ai-pending {
   border-top: 1px solid var(--border, #e5e7eb);
-  padding: 8px 12px;
+  padding: 6px 10px;
   background: color-mix(in srgb, var(--primary, #2563eb) 6%, transparent);
+  flex-shrink: 0;
 }
 .ai-pending-hd {
   display: flex;
@@ -3648,35 +3727,39 @@ async function applyTpl() {
   align-items: center;
   gap: 8px;
   font-size: 12px;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 .ai-pending-pre {
   margin: 0;
-  max-height: 140px;
+  max-height: 72px;
   overflow: auto;
   font-size: 11px;
   white-space: pre-wrap;
   background: var(--bg, #fff);
   border: 1px solid var(--border, #e5e7eb);
   border-radius: 6px;
-  padding: 8px;
+  padding: 6px 8px;
 }
 .ai-drawer-chips {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
-  padding: 6px 12px 0;
+  padding: 4px 10px 0;
+  flex-shrink: 0;
 }
 .ai-drawer-input {
   display: flex;
   gap: 8px;
   align-items: flex-end;
-  padding: 8px 12px 12px;
+  padding: 6px 10px 10px;
   border-top: 1px solid var(--border, #e5e7eb);
+  flex-shrink: 0;
 }
 .ai-drawer-input .ai-prompt {
   flex: 1;
-  min-height: 48px;
+  min-height: 40px;
+  max-height: 72px;
+  resize: none;
 }
 .ai-err {
   color: #cf1322;
@@ -3686,6 +3769,7 @@ async function applyTpl() {
 }
 .wb-main {
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -4020,6 +4104,7 @@ async function applyTpl() {
   overflow: auto;
   background: var(--bg-2, #f8fafc);
   min-width: 0;
+  min-height: 0;
 }
 .wb-debug-resizer {
   position: absolute;
@@ -4052,6 +4137,13 @@ async function applyTpl() {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 8px;
+  gap: 8px;
+}
+.debug-head-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
 }
 .debug-param {
   display: grid;

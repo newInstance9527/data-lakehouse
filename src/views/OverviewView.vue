@@ -1,5 +1,5 @@
-<script setup>
-import { computed, onMounted } from 'vue'
+﻿<script setup>
+import { computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
 import NavIcon from '@/components/common/NavIcon.vue'
@@ -7,8 +7,10 @@ import { useToast } from '@/composables/useToast'
 import { useOverview } from '@/composables/useOverview'
 import { OVERVIEW_MODULES, OV_PALETTE as P, OV_PIPELINE } from '@/data/overview'
 import { pageGuideOf } from '@/data/pageGuides'
+import { useSession } from '@/composables/useSession'
 
 const router = useRouter()
+const { currentWs } = useSession()
 const { showToast } = useToast()
 const guide = pageGuideOf('overview')
 
@@ -31,12 +33,20 @@ const {
   refresh: reloadOverview,
 } = useOverview()
 
-onMounted(async () => {
+async function mountReload() {
   try {
     await reloadOverview()
   } catch (e) {
     showToast(`总览加载失败：${e?.message || e}`, 'error')
   }
+}
+
+onMounted(() => {
+  mountReload()
+})
+
+watch(currentWs, () => {
+  mountReload()
 })
 
 function sparkPath(values = [], w = 120, h = 36) {
@@ -222,7 +232,7 @@ const qualityDist = computed(() => {
   const max = Math.max(q.high, q.mid, q.low, 1)
   return [
     { label: '≥95', value: q.high, color: P.success, h: Math.round((q.high / max) * 100) },
-    { label: '80–94', value: q.mid, color: P.primary, h: Math.round((q.mid / max) * 100) },
+    { label: '80-94', value: q.mid, color: P.primary, h: Math.round((q.mid / max) * 100) },
     { label: '<80', value: q.low, color: P.warning, h: Math.round((q.low / max) * 100) },
   ]
 })
@@ -263,6 +273,52 @@ const rangeLabel = computed(() => {
   if (range.value === 'q') return '近 30 天（季度暂按月窗）'
   return '近 30 天'
 })
+
+/** 有趋势的 KPI 作为主格，其余侧栏 - 打破四等分卡片 */
+const featuredKpi = computed(() => {
+  const list = kpiCards.value
+  return list.find((k) => k.hasSpark) || list[0] || null
+})
+const sideKpis = computed(() => {
+  const f = featuredKpi.value
+  if (!f) return []
+  return kpiCards.value.filter((k) => k.id !== f.id)
+})
+
+const attentionItems = computed(() => {
+  const items = []
+  if (dsStats.value.warn) {
+    items.push({ id: 'ds-warn', label: '数据源告警', value: dsStats.value.warn, to: '/datasource', tone: 'warn' })
+  }
+  if (etlStats.value.runFailed || etlStats.value.runBlocked) {
+    items.push({
+      id: 'etl-fail',
+      label: 'ETL 失败 / 阻断',
+      value: `${etlStats.value.runFailed} / ${etlStats.value.runBlocked}`,
+      to: '/integration',
+      tone: 'danger',
+    })
+  }
+  if (qualityStats.value.blocked) {
+    items.push({
+      id: 'q-block',
+      label: '质量门禁阻断',
+      value: qualityStats.value.blocked,
+      to: '/quality',
+      tone: 'warn',
+    })
+  }
+  if (applyStats.value.pending) {
+    items.push({
+      id: 'apply',
+      label: '待审批申请',
+      value: applyStats.value.pending,
+      to: '/apply',
+      tone: 'warn',
+    })
+  }
+  return items
+})
 </script>
 
 <template>
@@ -270,7 +326,7 @@ const rangeLabel = computed(() => {
     <PageHeader
       page-id="overview"
       title="总览仪表盘"
-      subtitle="平台健康度一览 · 接入 → 入湖 → 治理 → 服务"
+      subtitle="接入 → 入湖 → 治理 → 服务 · 平台运行态势"
       :guide-title="guide.title"
       :guide="guide"
     >
@@ -291,31 +347,85 @@ const rangeLabel = computed(() => {
     </p>
     <p v-else-if="loading && !loaded" class="ov-banner">正在拉取各模块统计…</p>
 
-    <!-- 主链路 -->
+    <!-- 主链路：横向时间轴，非等分编号胶囊 -->
     <nav class="ov-pipe" aria-label="数据主链路">
+      <div class="ov-pipe-track" aria-hidden="true" />
       <button
         v-for="(p, i) in OV_PIPELINE"
         :key="p.id"
         type="button"
         class="ov-pipe-step"
+        :style="{ '--i': i }"
         @click="go(p.to)"
       >
-        <span class="ov-pipe-idx">{{ i + 1 }}</span>
+        <span class="ov-pipe-dot" />
         <span class="ov-pipe-txt">
           <b>{{ p.label }}</b>
           <small>{{ p.sub }}</small>
         </span>
-        <span v-if="i < OV_PIPELINE.length - 1" class="ov-pipe-arrow" aria-hidden="true">→</span>
       </button>
     </nav>
 
-    <!-- 核心 KPI -->
-    <div class="ov-kpis">
+    <!-- KPI 非对称 bento：质量趋势主格 + 三侧栏 -->
+    <div class="ov-bento" v-if="featuredKpi">
       <button
-        v-for="k in kpiCards"
+        type="button"
+        class="ov-kpi ov-kpi-feature"
+        :style="{ '--accent': featuredKpi.color }"
+        @click="go(featuredKpi.to)"
+      >
+        <div class="ov-kpi-top">
+          <span class="ov-kpi-lab">
+            <NavIcon :name="featuredKpi.icon" :size="15" />
+            {{ featuredKpi.title }}
+          </span>
+          <span class="ov-kpi-meter-lab">{{ featuredKpi.meterLabel }} {{ Math.round(featuredKpi.meter) }}%</span>
+        </div>
+        <div class="ov-kpi-feature-body">
+          <div>
+            <div class="ov-kpi-num lg">
+              {{ featuredKpi.value }}<small>{{ featuredKpi.unit }}</small>
+            </div>
+            <div class="ov-kpi-sub">{{ featuredKpi.sub }}</div>
+          </div>
+          <svg
+            v-if="featuredKpi.hasSpark"
+            class="ov-spark lg"
+            viewBox="0 0 140 32"
+            preserveAspectRatio="none"
+            aria-hidden="true"
+          >
+            <defs>
+              <linearGradient :id="'ovsg-' + featuredKpi.id" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" :stop-color="featuredKpi.color" stop-opacity="0.28" />
+                <stop offset="100%" :stop-color="featuredKpi.color" stop-opacity="0" />
+              </linearGradient>
+            </defs>
+            <path :d="featuredKpi.sparkArea" :fill="`url(#ovsg-${featuredKpi.id})`" />
+            <path
+              :d="featuredKpi.sparkLine"
+              fill="none"
+              :stroke="featuredKpi.color"
+              stroke-width="2.2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+        </div>
+        <div class="ov-kpi-track">
+          <div
+            class="ov-kpi-fill"
+            :style="{ width: Math.min(100, featuredKpi.meter) + '%', background: featuredKpi.color }"
+          />
+        </div>
+      </button>
+
+      <button
+        v-for="(k, i) in sideKpis"
         :key="k.id"
         type="button"
-        class="ov-kpi"
+        class="ov-kpi ov-kpi-side"
+        :style="{ '--accent': k.color, '--i': i + 1 }"
         @click="go(k.to)"
       >
         <div class="ov-kpi-top">
@@ -323,48 +433,21 @@ const rangeLabel = computed(() => {
             <NavIcon :name="k.icon" :size="14" />
             {{ k.title }}
           </span>
-          <span class="ov-kpi-meter-lab">{{ k.meterLabel }} {{ Math.round(k.meter) }}%</span>
+          <span class="ov-kpi-meter-lab">{{ Math.round(k.meter) }}%</span>
         </div>
-        <div class="ov-kpi-mid">
-          <div>
-            <div class="ov-kpi-num">
-              {{ k.value }}<small>{{ k.unit }}</small>
-            </div>
-            <div class="ov-kpi-sub">{{ k.sub }}</div>
-          </div>
-          <svg
-            v-if="k.hasSpark"
-            class="ov-spark"
-            viewBox="0 0 140 32"
-            preserveAspectRatio="none"
-            aria-hidden="true"
-          >
-            <defs>
-              <linearGradient :id="'ovsg-' + k.id" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" :stop-color="k.color" stop-opacity="0.22" />
-                <stop offset="100%" :stop-color="k.color" stop-opacity="0" />
-              </linearGradient>
-            </defs>
-            <path :d="k.sparkArea" :fill="`url(#ovsg-${k.id})`" />
-            <path
-              :d="k.sparkLine"
-              fill="none"
-              :stroke="k.color"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            />
-          </svg>
+        <div class="ov-kpi-num">
+          {{ k.value }}<small>{{ k.unit }}</small>
         </div>
+        <div class="ov-kpi-sub">{{ k.sub }}</div>
         <div class="ov-kpi-track">
           <div class="ov-kpi-fill" :style="{ width: Math.min(100, k.meter) + '%', background: k.color }" />
         </div>
       </button>
     </div>
 
-    <!-- 主图区：质量趋势 + 申请单 -->
+    <!-- 主图区：质量趋势 + 待办注意力 -->
     <div class="ov-row ov-row-main">
-      <section class="ov-card ov-card-lg">
+      <section class="ov-card ov-card-lg ov-reveal" style="--i: 0">
         <header class="ov-hd">
           <div>
             <h3>质量分趋势</h3>
@@ -381,8 +464,8 @@ const rangeLabel = computed(() => {
             <svg viewBox="0 0 320 120" class="ov-line" preserveAspectRatio="none">
               <defs>
                 <linearGradient id="ov-q-area" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stop-color="#1e6fff" stop-opacity="0.18" />
-                  <stop offset="100%" stop-color="#1e6fff" stop-opacity="0" />
+                  <stop offset="0%" stop-color="#2f6fed" stop-opacity="0.16" />
+                  <stop offset="100%" stop-color="#2f6fed" stop-opacity="0" />
                 </linearGradient>
               </defs>
               <line x1="0" y1="30" x2="320" y2="30" class="ov-grid" />
@@ -392,7 +475,7 @@ const rangeLabel = computed(() => {
               <path
                 :d="qualityTrendChart.line"
                 fill="none"
-                stroke="#1e6fff"
+                stroke="#2f6fed"
                 stroke-width="2.5"
                 stroke-linecap="round"
                 stroke-linejoin="round"
@@ -402,9 +485,9 @@ const rangeLabel = computed(() => {
                 :key="i"
                 :cx="pt[0]"
                 :cy="pt[1]"
-                r="3.2"
+                r="3"
                 fill="#fff"
-                stroke="#1e6fff"
+                stroke="#2f6fed"
                 stroke-width="1.5"
               />
             </svg>
@@ -433,14 +516,33 @@ const rangeLabel = computed(() => {
         </template>
       </section>
 
-      <section class="ov-card">
+      <section class="ov-card ov-attention ov-reveal" style="--i: 1">
         <header class="ov-hd">
           <div>
-            <h3>申请单</h3>
-            <p>权限 / 出湖待办</p>
+            <h3>需要关注</h3>
+            <p>告警 · 失败 · 待办</p>
           </div>
-          <button type="button" class="ov-link" @click="go('/apply')">详情</button>
+          <button type="button" class="ov-link" @click="go('/apply')">申请中心</button>
         </header>
+
+        <div v-if="attentionItems.length" class="ov-attn-list">
+          <button
+            v-for="a in attentionItems"
+            :key="a.id"
+            type="button"
+            class="ov-attn-item"
+            :class="a.tone"
+            @click="go(a.to)"
+          >
+            <span>{{ a.label }}</span>
+            <b>{{ a.value }}</b>
+          </button>
+        </div>
+        <div v-else class="ov-attn-clear">
+          <b>运行平稳</b>
+          <small>当前窗口无明显告警或积压</small>
+        </div>
+
         <div class="ov-apply">
           <button type="button" class="ov-apply-tile" @click="go('/apply')">
             <span>待审批</span>
@@ -466,7 +568,7 @@ const rangeLabel = computed(() => {
 
     <!-- 分布区 -->
     <div class="ov-row ov-row-3">
-      <section class="ov-card">
+      <section class="ov-card ov-reveal" style="--i: 0">
         <header class="ov-hd">
           <div>
             <h3>数据源状态</h3>
@@ -476,7 +578,7 @@ const rangeLabel = computed(() => {
         </header>
         <div class="ov-donut-row">
           <svg viewBox="0 0 108 108" class="ov-donut" aria-hidden="true">
-            <circle cx="54" cy="54" r="40" fill="none" stroke="#eef2f7" stroke-width="12" />
+            <circle cx="54" cy="54" r="40" fill="none" stroke="var(--bg-2)" stroke-width="12" />
             <path
               v-for="(s, i) in dsDonut"
               :key="i"
@@ -499,7 +601,7 @@ const rangeLabel = computed(() => {
         </div>
       </section>
 
-      <section class="ov-card">
+      <section class="ov-card ov-reveal" style="--i: 1">
         <header class="ov-hd">
           <div>
             <h3>资产分层</h3>
@@ -538,11 +640,11 @@ const rangeLabel = computed(() => {
         </template>
       </section>
 
-      <section class="ov-card">
+      <section class="ov-card ov-reveal" style="--i: 2">
         <header class="ov-hd">
           <div>
             <h3>质量分桶</h3>
-            <p>客户端分桶（资产页质量分 / 黄金榜）</p>
+            <p>资产页质量分 / 黄金榜</p>
           </div>
           <button type="button" class="ov-link" @click="go('/quality')">详情</button>
         </header>
@@ -564,7 +666,7 @@ const rangeLabel = computed(() => {
 
     <!-- 下层：ETL、血缘、标准 -->
     <div class="ov-row ov-row-3">
-      <section class="ov-card">
+      <section class="ov-card ov-reveal" style="--i: 0">
         <header class="ov-hd">
           <div>
             <h3>ETL 任务状态</h3>
@@ -602,7 +704,7 @@ const rangeLabel = computed(() => {
         </div>
       </section>
 
-      <section class="ov-card">
+      <section class="ov-card ov-reveal" style="--i: 1">
         <header class="ov-hd">
           <div>
             <h3>血缘边对比</h3>
@@ -637,7 +739,7 @@ const rangeLabel = computed(() => {
         </template>
       </section>
 
-      <section class="ov-card">
+      <section class="ov-card ov-reveal" style="--i: 2">
         <header class="ov-hd">
           <div>
             <h3>标准合规</h3>
@@ -647,13 +749,13 @@ const rangeLabel = computed(() => {
         </header>
         <div class="ov-gauge-row">
           <svg viewBox="0 0 96 96" class="ov-gauge" aria-hidden="true">
-            <circle cx="48" cy="48" :r="stdGauge.r" fill="none" stroke="#eef2f7" stroke-width="8" />
+            <circle cx="48" cy="48" :r="stdGauge.r" fill="none" stroke="var(--bg-2)" stroke-width="8" />
             <circle
               cx="48"
               cy="48"
               :r="stdGauge.r"
               fill="none"
-              stroke="#00a676"
+              stroke="#059669"
               stroke-width="8"
               stroke-linecap="round"
               :stroke-dasharray="stdGauge.dash"
@@ -674,7 +776,7 @@ const rangeLabel = computed(() => {
 
     <!-- 有真实数据的补充 + 暂无模块占位 -->
     <div class="ov-row ov-row-2">
-      <section class="ov-card">
+      <section class="ov-card ov-reveal" style="--i: 0">
         <header class="ov-hd">
           <div>
             <h3>ETL 近窗运行</h3>
@@ -705,7 +807,11 @@ const rangeLabel = computed(() => {
         </template>
       </section>
 
-      <section class="ov-card" :class="{ 'ov-card-muted': !availability.metrics && !availability.serviceCalls }">
+      <section
+        class="ov-card ov-reveal"
+        :class="{ 'ov-card-muted': !availability.metrics && !availability.serviceCalls }"
+        style="--i: 1"
+      >
         <header class="ov-hd">
           <div>
             <h3>数据服务 / 指标</h3>
@@ -719,16 +825,29 @@ const rangeLabel = computed(() => {
               }}
             </p>
           </div>
-          <button v-if="availability.serviceCalls" type="button" class="ov-link" @click="go('/dataservice')">详情</button>
+          <button
+            v-if="availability.serviceCalls"
+            type="button"
+            class="ov-link"
+            @click="go('/dataservice/runtime')"
+          >
+            详情
+          </button>
         </header>
         <div class="ov-na-grid">
-          <div class="ov-na" :class="{ clickable: availability.serviceCalls }" @click="availability.serviceCalls && go('/dataservice')">
+          <div
+            class="ov-na"
+            :class="{ clickable: availability.serviceCalls }"
+            @click="availability.serviceCalls && go('/dataservice/runtime')"
+          >
             <b>服务调用量</b>
             <template v-if="availability.serviceCalls">
               <span>{{ serviceStats.calls24h != null ? serviceStats.calls24h : '—' }}</span>
               <small>
                 近窗调用
-                <template v-if="serviceStats.avgLatencyMs != null"> · 均延迟 {{ Math.round(serviceStats.avgLatencyMs) }} ms</template>
+                <template v-if="serviceStats.avgLatencyMs != null">
+                  · 均延迟 {{ Math.round(serviceStats.avgLatencyMs) }} ms
+                </template>
               </small>
             </template>
             <template v-else>
@@ -736,14 +855,20 @@ const rangeLabel = computed(() => {
               <small>数据服务 overview 未返回</small>
             </template>
           </div>
-          <div class="ov-na" :class="{ clickable: availability.apiPublish }" @click="availability.apiPublish && go('/dataservice')">
+          <div
+            class="ov-na"
+            :class="{ clickable: availability.apiPublish }"
+            @click="availability.apiPublish && go('/dataservice/apis')"
+          >
             <b>API 发布状态</b>
             <template v-if="availability.apiPublish">
               <span>{{ serviceStats.published }}</span>
               <small>
                 已发布
                 <template v-if="serviceStats.draft"> · 草稿 {{ serviceStats.draft }}</template>
-                <template v-if="serviceStats.sqlrestOnline != null"> · 接口服务上线 {{ serviceStats.sqlrestOnline }}</template>
+                <template v-if="serviceStats.sqlrestOnline != null">
+                  · 接口服务上线 {{ serviceStats.sqlrestOnline }}
+                </template>
               </small>
             </template>
             <template v-else>
@@ -751,13 +876,17 @@ const rangeLabel = computed(() => {
               <small>无后端 API 生命周期统计</small>
             </template>
           </div>
-          <div class="ov-na" :class="{ clickable: availability.metrics }" @click="availability.metrics && go('/metrics')">
+          <div
+            class="ov-na"
+            :class="{ clickable: availability.metrics }"
+            @click="availability.metrics && go('/metrics')"
+          >
             <b>指标构成</b>
             <template v-if="availability.metrics">
               <span>{{ metricStats.total }}</span>
               <small>
-                原子 {{ metricStats.atom }} · 衍生 {{ metricStats.derive }} · 复合 {{ metricStats.composite }} ·
-                已启用 {{ metricStats.active }}
+                原子 {{ metricStats.atom }} · 衍生 {{ metricStats.derive }} · 复合
+                {{ metricStats.composite }} · 已启用 {{ metricStats.active }}
               </small>
             </template>
             <template v-else>
@@ -776,23 +905,29 @@ const rangeLabel = computed(() => {
 
 <style scoped>
 .ov {
-  --ov-gap: 14px;
-  --ov-r: 10px;
+  --ov-gap: 16px;
+  --ov-r: 12px;
+  --ov-ink: #0f172a;
+  --ov-blue: #2f6fed;
+  --ov-blue-soft: #eef4ff;
+  --ov-blue-mid: #c7d7f5;
+  --ov-border: #e5e9f0;
+  position: relative;
 }
 
 .ov-banner {
   margin: -4px 0 12px;
-  padding: 8px 12px;
+  padding: 10px 14px;
   font-size: 12px;
   color: var(--text-2);
-  background: var(--bg-2);
-  border-radius: 8px;
-  border: 1px solid var(--border);
+  background: var(--bg-1);
+  border-radius: 10px;
+  border: 1px solid var(--ov-border);
 }
 .ov-banner.warn {
-  color: #ad6800;
-  background: #fff7e6;
-  border-color: #ffd591;
+  color: #92400e;
+  background: #fffbeb;
+  border-color: #fde68a;
 }
 
 .ov-empty {
@@ -806,101 +941,40 @@ const rangeLabel = computed(() => {
   font-size: 13px;
   text-align: center;
 }
-.ov-empty.sm { min-height: 100px; }
+.ov-empty.sm {
+  min-height: 100px;
+}
 .ov-empty small {
   font-size: 11px;
   color: var(--text-4, #94a3b8);
 }
 
-.ov-apply {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-  margin-bottom: 4px;
-}
-.ov-apply-tile {
-  border: 1px solid var(--border);
-  background: var(--bg-2);
-  border-radius: 8px;
-  padding: 16px 12px;
-  text-align: left;
-  cursor: pointer;
-  font: inherit;
-  color: inherit;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.ov-apply-tile:hover { border-color: var(--primary); }
-.ov-apply-tile span {
-  font-size: 11px;
-  color: var(--text-3);
-}
-.ov-apply-tile b {
-  font-size: 28px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  line-height: 1;
-}
-.ov-apply-tile b.warn { color: var(--warning); }
-
-.ov-na-grid {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 10px;
-}
-.ov-na {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  grid-template-rows: auto auto;
-  gap: 2px 12px;
-  padding: 10px 12px;
-  border-radius: 8px;
-  background: var(--bg-2);
-  border: 1px dashed var(--border);
-}
-.ov-na b {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-2);
-}
-.ov-na > span {
-  font-size: 12px;
-  font-weight: 650;
-  color: var(--text-3);
-  justify-self: end;
-}
-.ov-na small {
-  grid-column: 1 / -1;
-  font-size: 11px;
-  color: var(--text-4, #94a3b8);
-}
-.ov-na-hint {
-  margin: 12px 0 0;
-  font-size: 11px;
-  color: var(--text-3);
-}
-.ov-card-muted {
-  background: linear-gradient(180deg, var(--bg-1) 0%, var(--bg-2) 100%);
-}
-
-/* 主链路 */
+/* 主链路 - 时间轴 */
 .ov-pipe {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0;
-  margin-bottom: 16px;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 18px;
+  padding: 18px 16px 14px;
   background: var(--bg-1);
-  border: 1px solid var(--border);
+  border: 1px solid var(--ov-border);
   border-radius: var(--ov-r);
-  padding: 10px 8px;
-  overflow-x: auto;
+  position: relative;
+  overflow: hidden;
+}
+.ov-pipe-track {
+  position: absolute;
+  left: 8%;
+  right: 8%;
+  top: 28px;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--border-dark), transparent);
+  pointer-events: none;
 }
 .ov-pipe-step {
-  flex: 1;
-  min-width: 120px;
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: flex-start;
   gap: 8px;
   border: none;
   background: transparent;
@@ -908,75 +982,101 @@ const rangeLabel = computed(() => {
   font: inherit;
   color: inherit;
   text-align: left;
-  padding: 6px 10px;
-  border-radius: 8px;
-  position: relative;
+  padding: 4px 8px;
+  border-radius: 10px;
+  transition: background 0.2s ease, transform 0.2s ease;
+  animation: ov-rise 0.45s ease both;
+  animation-delay: calc(var(--i, 0) * 40ms);
 }
 .ov-pipe-step:hover {
   background: var(--bg-2);
+  transform: translateY(-1px);
 }
-.ov-pipe-idx {
-  width: 22px;
-  height: 22px;
+.ov-pipe-dot {
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
-  background: var(--primary-light);
-  color: var(--primary);
-  font-size: 11px;
-  font-weight: 700;
-  display: grid;
-  place-items: center;
-  flex-shrink: 0;
+  background: var(--ov-blue);
+  box-shadow: 0 0 0 3px var(--ov-blue-soft);
+  position: relative;
+  z-index: 1;
 }
 .ov-pipe-txt {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 2px;
   min-width: 0;
 }
 .ov-pipe-txt b {
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 650;
-  color: var(--text-1);
+  color: var(--ov-ink, var(--text-1));
+  letter-spacing: -0.01em;
 }
 .ov-pipe-txt small {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-3);
 }
-.ov-pipe-arrow {
-  margin-left: auto;
-  color: var(--text-4);
-  font-size: 14px;
-  padding-left: 4px;
-}
 
-/* KPI */
-.ov-kpis {
+/* KPI bento */
+.ov-bento {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: 1.45fr repeat(3, minmax(0, 1fr));
   gap: var(--ov-gap);
   margin-bottom: var(--ov-gap);
 }
 @media (max-width: 1100px) {
-  .ov-kpis { grid-template-columns: repeat(2, 1fr); }
+  .ov-bento {
+    grid-template-columns: 1fr 1fr;
+  }
+  .ov-kpi-feature {
+    grid-column: 1 / -1;
+  }
 }
 @media (max-width: 560px) {
-  .ov-kpis { grid-template-columns: 1fr; }
+  .ov-bento {
+    grid-template-columns: 1fr;
+  }
 }
 
 .ov-kpi {
-  border: 1px solid var(--border);
+  border: 1px solid var(--ov-border);
   border-radius: var(--ov-r);
   background: var(--bg-1);
-  padding: 14px 14px 12px;
+  padding: 16px 16px 14px;
   text-align: left;
   cursor: pointer;
   font: inherit;
   color: inherit;
-  transition: border-color 0.15s, box-shadow 0.15s;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+  position: relative;
+  overflow: hidden;
+  animation: ov-rise 0.5s ease both;
+  animation-delay: calc(var(--i, 0) * 50ms);
+}
+.ov-kpi::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--accent, var(--ov-blue));
+  opacity: 0.9;
 }
 .ov-kpi:hover {
-  border-color: #c9d6ef;
-  box-shadow: var(--shadow-sm);
+  border-color: var(--border-dark);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
+}
+.ov-kpi-feature {
+  background: var(--bg-1);
+  padding: 18px 18px 16px;
+}
+.ov-kpi-feature-body {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 4px;
 }
 .ov-kpi-top {
   display: flex;
@@ -998,24 +1098,23 @@ const rangeLabel = computed(() => {
   color: var(--text-3);
   font-variant-numeric: tabular-nums;
 }
-.ov-kpi-mid {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 8px;
-}
 .ov-kpi-num {
   font-size: 28px;
   font-weight: 700;
-  letter-spacing: -0.03em;
+  letter-spacing: -0.04em;
   line-height: 1;
   font-variant-numeric: tabular-nums;
+  color: var(--ov-ink, var(--text-1));
+}
+.ov-kpi-num.lg {
+  font-size: 36px;
 }
 .ov-kpi-num small {
   margin-left: 3px;
   font-size: 12px;
   font-weight: 500;
   color: var(--text-3);
+  letter-spacing: 0;
 }
 .ov-kpi-sub {
   margin-top: 6px;
@@ -1027,8 +1126,12 @@ const rangeLabel = computed(() => {
   height: 32px;
   flex-shrink: 0;
 }
+.ov-spark.lg {
+  width: 140px;
+  height: 40px;
+}
 .ov-kpi-track {
-  margin-top: 10px;
+  margin-top: 12px;
   height: 3px;
   border-radius: 99px;
   background: var(--bg-2);
@@ -1047,7 +1150,7 @@ const rangeLabel = computed(() => {
   margin-bottom: var(--ov-gap);
 }
 .ov-row-main {
-  grid-template-columns: 1.6fr 1fr;
+  grid-template-columns: 1.65fr 1fr;
 }
 .ov-row-3 {
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1058,59 +1161,232 @@ const rangeLabel = computed(() => {
 @media (max-width: 1100px) {
   .ov-row-main,
   .ov-row-3,
-  .ov-row-2 { grid-template-columns: 1fr; }
+  .ov-row-2 {
+    grid-template-columns: 1fr;
+  }
+  .ov-pipe {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .ov-pipe-track {
+    display: none;
+  }
 }
 
 .ov-card {
   background: var(--bg-1);
-  border: 1px solid var(--border);
+  border: 1px solid var(--ov-border);
   border-radius: var(--ov-r);
-  padding: 14px 16px 12px;
+  padding: 16px 18px 14px;
   min-width: 0;
+}
+.ov-card:hover {
+  box-shadow: var(--shadow-sm);
+}
+.ov-reveal {
+  animation: ov-rise 0.55s ease both;
+  animation-delay: calc(var(--i, 0) * 60ms);
 }
 .ov-hd {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
   gap: 8px;
-  margin-bottom: 12px;
+  margin-bottom: 14px;
 }
 .ov-hd h3 {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 650;
-  color: var(--text-1);
+  color: var(--ov-ink, var(--text-1));
   margin: 0;
+  letter-spacing: -0.02em;
 }
 .ov-hd p {
-  margin: 2px 0 0;
+  margin: 3px 0 0;
   font-size: 11px;
   color: var(--text-3);
 }
 .ov-link {
-  border: 1px solid var(--border);
-  background: #fff;
-  border-radius: 6px;
-  padding: 2px 8px;
+  border: 1px solid var(--ov-border);
+  background: var(--bg-1);
+  border-radius: 8px;
+  padding: 3px 10px;
   font-size: 11px;
   color: var(--text-2);
   cursor: pointer;
   flex-shrink: 0;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
 }
 .ov-link:hover {
-  border-color: var(--primary);
-  color: var(--primary);
+  border-color: var(--ov-blue);
+  color: var(--ov-blue);
+  background: var(--ov-blue-soft);
+}
+
+/* attention */
+.ov-attention {
+  background: var(--bg-1);
+}
+.ov-attn-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.ov-attn-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--ov-border);
+  background: rgba(255, 255, 255, 0.9);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  border-left: 3px solid var(--ov-blue);
+  transition: transform 0.15s ease, border-color 0.15s;
+}
+.ov-attn-item.warn {
+  border-left-color: var(--warning);
+}
+.ov-attn-item.danger {
+  border-left-color: var(--danger);
+}
+.ov-attn-item:hover {
+  transform: translateX(2px);
+  border-color: color-mix(in srgb, var(--ov-blue) 35%, var(--ov-border));
+}
+.ov-attn-item span {
+  font-size: 12px;
+  color: var(--text-2);
+}
+.ov-attn-item b {
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ov-ink, var(--text-1));
+}
+.ov-attn-clear {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 12px;
+  margin-bottom: 12px;
+  border-radius: 10px;
+  background: var(--success-light);
+  border: 1px solid color-mix(in srgb, var(--success) 22%, transparent);
+}
+.ov-attn-clear b {
+  font-size: 13px;
+  color: var(--success);
+}
+.ov-attn-clear small {
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.ov-apply {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+.ov-apply-tile {
+  border: 1px solid var(--ov-border);
+  background: var(--bg-2);
+  border-radius: 10px;
+  padding: 14px 12px;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition: border-color 0.15s, transform 0.15s, background 0.15s;
+}
+.ov-apply-tile:hover {
+  border-color: var(--ov-blue);
+  background: var(--ov-blue-soft);
+  transform: translateY(-1px);
+}
+.ov-apply-tile span {
+  font-size: 11px;
+  color: var(--text-3);
+}
+.ov-apply-tile b {
+  font-size: 26px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  letter-spacing: -0.03em;
+}
+.ov-apply-tile b.warn {
+  color: var(--warning);
+}
+
+.ov-na-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+.ov-na {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-rows: auto auto;
+  gap: 2px 12px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: var(--bg-2);
+  border: 1px solid transparent;
+}
+.ov-na.clickable {
+  cursor: pointer;
+}
+.ov-na.clickable:hover {
+  border-color: var(--ov-blue);
+  background: var(--ov-blue-soft);
+}
+.ov-na b {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.ov-na > span {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--ov-ink, var(--text-1));
+  justify-self: end;
+  font-variant-numeric: tabular-nums;
+}
+.ov-na small {
+  grid-column: 1 / -1;
+  font-size: 11px;
+  color: var(--text-4, #94a3b8);
+}
+.ov-na-hint {
+  margin: 12px 0 0;
+  font-size: 11px;
+  color: var(--text-3);
+}
+.ov-card-muted {
+  background: var(--bg-1);
 }
 
 /* line chart */
-.ov-line-wrap { min-height: 140px; }
+.ov-line-wrap {
+  min-height: 140px;
+}
 .ov-line {
   width: 100%;
   height: 120px;
   display: block;
 }
 .ov-grid {
-  stroke: #eef2f7;
+  stroke: var(--border);
   stroke-width: 1;
+  stroke-dasharray: 3 4;
 }
 .ov-axis {
   display: flex;
@@ -1136,7 +1412,7 @@ const rangeLabel = computed(() => {
 .ov-donut-num {
   font-size: 14px;
   font-weight: 700;
-  fill: var(--text-1);
+  fill: var(--ov-ink, var(--text-1));
 }
 .ov-donut-cap {
   font-size: 9px;
@@ -1153,7 +1429,9 @@ const rangeLabel = computed(() => {
   gap: 8px;
   min-width: 0;
 }
-.ov-legend.flat { margin-top: 10px; }
+.ov-legend.flat {
+  margin-top: 10px;
+}
 .ov-legend li {
   display: flex;
   align-items: center;
@@ -1167,16 +1445,22 @@ const rangeLabel = computed(() => {
   border-radius: 50%;
   flex-shrink: 0;
 }
-.ov-legend span { flex: 1; min-width: 0; }
+.ov-legend span {
+  flex: 1;
+  min-width: 0;
+}
 .ov-legend b {
   font-variant-numeric: tabular-nums;
   font-weight: 650;
   color: var(--text-1);
 }
-.ov-legend b.warn { color: var(--warning); }
-.ov-legend b.ok { color: var(--success); }
+.ov-legend b.warn {
+  color: var(--warning);
+}
+.ov-legend b.ok {
+  color: var(--success);
+}
 
-/* horizontal bars */
 .ov-hbars {
   display: flex;
   flex-direction: column;
@@ -1189,17 +1473,12 @@ const rangeLabel = computed(() => {
   color: var(--text-2);
   margin-bottom: 4px;
 }
-.ov-hbar-lab span {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
 .ov-hbar-lab b {
   font-variant-numeric: tabular-nums;
   color: var(--text-1);
 }
 .ov-hbar-track {
-  height: 8px;
+  height: 7px;
   border-radius: 99px;
   background: var(--bg-2);
   overflow: hidden;
@@ -1208,10 +1487,9 @@ const rangeLabel = computed(() => {
   height: 100%;
   border-radius: 99px;
   min-width: 2px;
-  transition: width 0.3s ease;
+  transition: width 0.45s ease;
 }
 
-/* histogram */
 .ov-hist {
   display: flex;
   align-items: flex-end;
@@ -1240,9 +1518,10 @@ const rangeLabel = computed(() => {
   justify-content: center;
 }
 .ov-hist-bar {
-  width: 48%;
+  width: 42%;
   min-height: 4px;
-  border-radius: 4px 4px 0 0;
+  border-radius: 6px 6px 2px 2px;
+  transition: height 0.45s ease;
 }
 .ov-hist-lab {
   margin-top: 6px;
@@ -1250,10 +1529,9 @@ const rangeLabel = computed(() => {
   color: var(--text-3);
 }
 
-/* stacked */
 .ov-stack {
   display: flex;
-  height: 12px;
+  height: 10px;
   border-radius: 99px;
   overflow: hidden;
   background: var(--bg-2);
@@ -1263,7 +1541,6 @@ const rangeLabel = computed(() => {
   min-width: 2px;
 }
 
-/* compare */
 .ov-compare {
   display: flex;
   flex-direction: column;
@@ -1279,7 +1556,7 @@ const rangeLabel = computed(() => {
   color: var(--text-2);
 }
 .ov-compare-track {
-  height: 10px;
+  height: 8px;
   border-radius: 99px;
   background: var(--bg-2);
   overflow: hidden;
@@ -1295,14 +1572,13 @@ const rangeLabel = computed(() => {
   color: var(--text-1);
 }
 
-/* footer stats */
 .ov-foot-stats {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 8px;
-  margin-top: 12px;
-  padding-top: 10px;
-  border-top: 1px solid var(--border);
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--ov-border);
 }
 .ov-foot-stats.compact {
   grid-template-columns: repeat(2, 1fr);
@@ -1322,6 +1598,35 @@ const rangeLabel = computed(() => {
   font-variant-numeric: tabular-nums;
   color: var(--text-1);
 }
-.ov-foot-stats b.ok { color: var(--success); }
-.ov-foot-stats b.warn { color: var(--warning); }
+.ov-foot-stats b.ok {
+  color: var(--success);
+}
+.ov-foot-stats b.warn {
+  color: var(--warning);
+}
+
+@keyframes ov-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ov-kpi,
+  .ov-pipe-step,
+  .ov-reveal {
+    animation: none;
+  }
+  .ov-kpi:hover,
+  .ov-pipe-step:hover,
+  .ov-apply-tile:hover,
+  .ov-attn-item:hover {
+    transform: none;
+  }
+}
 </style>

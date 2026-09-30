@@ -3,11 +3,12 @@
  */
 import { http } from './http.js'
 import { releaseIdempotencyKey, stickyIdempotencyKey } from './idempotency.js'
+import { resolveWs } from '@/utils/ws'
 
 const C = '/lh/compute'
 
 export function fetchScriptTree(ws) {
-  return http.get(`${C}/scripts/tree`, { ws })
+  return http.get(`${C}/scripts/tree`, { ws: resolveWs(ws) })
 }
 
 export function fetchScriptContent(id) {
@@ -15,7 +16,7 @@ export function fetchScriptContent(id) {
 }
 
 export function createScript(body) {
-  return http.post(`${C}/scripts`, body)
+  return http.post(`${C}/scripts`, { ...body, ws: resolveWs(body?.ws) })
 }
 
 export function commitScript(body) {
@@ -43,18 +44,18 @@ export function fetchUdfs(engine) {
 }
 
 export function fetchReleases(ws) {
-  return http.get(`${C}/releases`, { ws })
+  return http.get(`${C}/releases`, { ws: resolveWs(ws) })
 }
 
 export function createRelease(body = {}) {
   const fp = {
     scriptId: body.scriptId,
-    ws: body.ws,
+    ws: resolveWs(body.ws),
     engine: body.engine,
     env: body.env,
   }
   const key = body.idempotencyKey || stickyIdempotencyKey('release_create', fp)
-  const payload = { ...body, idempotencyKey: key }
+  const payload = { ...body, ws: resolveWs(body.ws), idempotencyKey: key }
   return http
     .post(`${C}/releases`, payload, { idempotencyKey: key })
     .then((data) => {

@@ -66,6 +66,13 @@ const detail = reactive({
   roles: [],
 })
 
+const pwdResetOpen = ref(false)
+const pwdResetUser = ref(null)
+const pwdForm = reactive({
+  password: '',
+  confirm: '',
+})
+
 const displayRows = computed(() => rows.value)
 const totalPages = computed(() => Math.max(1, Math.ceil(totalRemote.value / pageSize.value)))
 const pageNums = computed(() => {
@@ -218,12 +225,32 @@ async function toggleStatus(row) {
 }
 
 async function resetPwd(row) {
-  try {
-    await resetUserPassword(row.id)
-    showToast('密码已重置', 'success')
-  } catch (e) {
-    showToast(e.message || '重置失败', 'error')
-  }
+  pwdResetUser.value = row
+  pwdForm.password = ''
+  pwdForm.confirm = ''
+  pwdResetOpen.value = true
+}
+
+async function submitResetPwd() {
+  await runLocked('resetPwd', async () => {
+    const password = String(pwdForm.password || '').trim()
+    const confirm = String(pwdForm.confirm || '').trim()
+    if (!password) {
+      showToast('请输入新密码', 'error')
+      return
+    }
+    if (password !== confirm) {
+      showToast('两次输入的密码不一致', 'error')
+      return
+    }
+    try {
+      await resetUserPassword(pwdResetUser.value.id, password)
+      showToast('密码已重置', 'success')
+      pwdResetOpen.value = false
+    } catch (e) {
+      showToast(e.message || '重置失败', 'error')
+    }
+  })
 }
 
 async function openDetail(row) {
@@ -485,6 +512,49 @@ function onPageSize() {
         <div class="modal-ft">
           <button type="button" class="btn btn-sm" @click="roleGrantOpen = false">取消</button>
           <button type="button" class="btn btn-sm btn-primary" :disabled="busy('grant')" @click="saveRoleGrant">{{ busy('grant') ? '保存中…' : '保存授权' }}</button>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="pwdResetOpen" class="modal-mask" @click.self="pwdResetOpen = false">
+      <div class="modal">
+        <div class="modal-hd">
+          重置密码 · {{ pwdResetUser?.name || pwdResetUser?.account || '' }}
+        </div>
+        <div class="modal-bd form-grid">
+          <label>
+            新密码
+            <input
+              v-model="pwdForm.password"
+              class="input"
+              type="password"
+              autocomplete="new-password"
+              placeholder="请输入新密码"
+            />
+          </label>
+          <label>
+            确认密码
+            <input
+              v-model="pwdForm.confirm"
+              class="input"
+              type="password"
+              autocomplete="new-password"
+              placeholder="请再次输入新密码"
+              @keyup.enter="submitResetPwd"
+            />
+          </label>
+          <p class="hint">请手动设置新密码；需符合系统密码复杂度规则。</p>
+        </div>
+        <div class="modal-ft">
+          <button type="button" class="btn btn-sm" @click="pwdResetOpen = false">取消</button>
+          <button
+            type="button"
+            class="btn btn-sm btn-primary"
+            :disabled="busy('resetPwd')"
+            @click="submitResetPwd"
+          >
+            {{ busy('resetPwd') ? '提交中…' : '确认重置' }}
+          </button>
         </div>
       </div>
     </div>

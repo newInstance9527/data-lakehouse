@@ -107,7 +107,7 @@ export const DS_TYPE_FIELDS = {
       "n": "schema",
       "l": "表清单",
       "t": "textarea",
-      "ph": "s_order, s_order_item, s_payment",
+      "ph": "s_order、s_order_item、s_payment",
       "def": ""
     }
   ],
@@ -299,7 +299,7 @@ export const DS_TYPE_FIELDS = {
       "n": "schema",
       "l": "Schema.表清单",
       "t": "textarea",
-      "ph": "dbo.order, dbo.invoice",
+      "ph": "dbo.order、dbo.invoice",
       "def": ""
     }
   ],
@@ -479,7 +479,7 @@ export const DS_TYPE_FIELDS = {
       "n": "schema",
       "l": "库.表清单",
       "t": "textarea",
-      "ph": "edw.order, edw.user",
+      "ph": "edw.order、edw.user",
       "def": ""
     }
   ],
@@ -700,7 +700,7 @@ export const DS_TYPE_FIELDS = {
       "n": "queues",
       "l": "Queue 清单",
       "t": "textarea",
-      "ph": "order.create, order.pay",
+      "ph": "order.create、order.pay",
       "def": ""
     },
     {
@@ -1119,12 +1119,6 @@ export const DS_TYPE_FIELDS = {
       "def": ""
     },
     {
-      "n": "port",
-      "l": "端口",
-      "t": "text",
-      "def": "443"
-    },
-    {
       "n": "authType",
       "l": "鉴权方式",
       "t": "select",
@@ -1145,11 +1139,16 @@ export const DS_TYPE_FIELDS = {
       "def": ""
     },
     {
-      "n": "pollCycle",
-      "l": "轮询周期",
-      "t": "text",
-      "ph": "每 10min",
-      "def": "每 10min"
+      "n": "access",
+      "l": "接入方式",
+      "t": "select",
+      "o": [
+        "按需请求",
+        "定时轮询 · 10min",
+        "定时轮询 · 1h",
+        "Webhook 推送"
+      ],
+      "def": "按需请求"
     },
     {
       "n": "openapiSpec",
@@ -1162,7 +1161,7 @@ export const DS_TYPE_FIELDS = {
       "n": "schema",
       "l": "接口清单",
       "t": "textarea",
-      "ph": "GET /order, POST /refund",
+      "ph": "选择方法后填 Path，如 /api/users；多条用顿号/逗号：GET /order、POST /refund",
       "def": ""
     }
   ]
@@ -1330,5 +1329,5 @@ export function dsTypeMeta(type) {
     if (DS_TYPE_META[spaced] || DS_TYPE_FIELDS[spaced]) key = spaced
     else if (DS_TYPE_FIELD_ALIAS[spaced]) key = DS_TYPE_FIELD_ALIAS[spaced]
   }
-  return DS_TYPE_META[key] || { bg: '#e8f0ff', color: '#1e6fff', port: '' }
+  return DS_TYPE_META[key] || { bg: '#eff6ff', color: '#3b82f6', port: '' }
 }

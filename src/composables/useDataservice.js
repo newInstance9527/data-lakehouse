@@ -24,7 +24,8 @@ import { pageMyTickets } from '@/api/apply.js'
 import {
   defaultSqlrestEmbed,
 } from '@/data/dataservice'
-import { useSession } from '@/composables/useSession'
+import { resolveWs } from '@/utils/ws'
+import { formatDateTime } from '@/utils/datetime'
 
 const loaded = ref(false)
 const loadedWs = ref('')
@@ -78,7 +79,7 @@ function mapPendingPublish(tickets, apiList) {
       name: api?.name || path,
       state: api?.state || (status === 'pending' ? 'draft' : 'draft'),
       purpose: t.reason || payload.purpose || '',
-      createTime: t.createTime || '',
+      createTime: formatDateTime(t.createTime, { empty: '' }),
       statusLabel:
         status === 'pending' ? '待审·待发布' : status === 'rejected' ? '已驳回·待重改' : status,
       statusCls: status === 'rejected' ? 'tag-red' : 'tag-orange',
@@ -107,8 +108,10 @@ function mapKeyRow(k) {
     apiName: k.apiName || '',
     method: k.method || '—',
     bindingId: k.bindingId || '',
-    user: k.user || k.applicant || '—',
-    applicant: k.applicant || k.user || '—',
+    user: k.applicantName || k.user || k.applicant || '—',
+    applicant: k.applicantName || k.user || k.applicant || '—',
+    applicantId: k.applicant || '',
+    applicantName: k.applicantName || '',
     description: k.description || (k.api ? `${k.api} · ${k.qps || k.qpsLimit || '—'} QPS` : '—'),
     status: statusLabel,
     statusRaw,
@@ -116,9 +119,20 @@ function mapKeyRow(k) {
     qps: k.qps ?? k.qpsLimit ?? '—',
     ticketId: k.ticketId || '',
     ticketNo: k.ticketNo || '',
-    expireAt: k.expireAt || '',
-    createTime: k.createTime || '',
+    expireAt: formatDateTime(k.expireAt, { empty: '' }),
+    createTime: formatDateTime(k.createTime, { empty: '' }),
     remark: k.remark || '',
+  }
+}
+
+/** API 卡片/详情上的时间字段统一格式 */
+function mapApiTimes(row) {
+  if (!row || typeof row !== 'object') return row
+  return {
+    ...row,
+    publishedAt: formatDateTime(row.publishedAt, { empty: '' }),
+    createTime: formatDateTime(row.createTime, { empty: '' }),
+    updateTime: formatDateTime(row.updateTime, { empty: '' }),
   }
 }
 
@@ -195,8 +209,7 @@ function mapCallTrend(wb) {
 
 export function useDataservice() {
   async function ensureLoaded(force = false) {
-    const { currentWs } = useSession()
-    const ws = currentWs.value || 'default'
+    const ws = resolveWs()
     if (loaded.value && loadedWs.value === ws && !force) return
     loading.value = true
     try {
@@ -216,13 +229,13 @@ export function useDataservice() {
         fetchDataapiOverview(ws).catch(() => null),
         fetchDataapiRoutes().catch(() => null),
         fetchDataapiKeys(ws).catch(() => null),
-        fetchDataapiWorkbench().catch(() => null),
+        fetchDataapiWorkbench(ws).catch(() => null),
         fetchListForSqlrest().catch(() => null),
         fetchDataapiEmbedUrl().catch(() => null),
         pageMyTickets({ current: 1, size: 100, ticketType: 'api_publish', ws }).catch(() => null),
       ])
       if (Array.isArray(list)) {
-        apis.value = list
+        apis.value = list.map(mapApiTimes)
         degraded.value = false
       } else {
         apis.value = []
@@ -274,9 +287,9 @@ export function useDataservice() {
   async function openDetail(row) {
     if (!row?.id) return row
     try {
-      return { ...row, ...(await fetchDataapiDetail(row.id, true)) }
+      return mapApiTimes({ ...row, ...(await fetchDataapiDetail(row.id, true)) })
     } catch {
-      return row
+      return mapApiTimes(row)
     }
   }
 
@@ -331,25 +344,26 @@ export function useDataservice() {
       flowCount: form.flowCount,
       contextList: form.contextList,
       contentType: form.contentType,
+      ws: resolveWs(form.ws),
     })
     const binding = buildRes?.binding
     if (!binding?.id) throw new Error(buildRes?.sqlrest?.message || '构建失败（接口服务）')
     if (buildRes?.ok === false) {
       throw new Error(buildRes?.sqlrest?.message || binding.lastError || '接口服务创建/更新失败')
     }
-    const pub = await publishDataapi(binding.id)
+    const pub = await publishDataapi(binding.id, resolveWs())
     await ensureLoaded(true)
     return { build: buildRes, publish: pub, binding: pub?.binding || binding }
   }
 
   async function runSyncApisix() {
-    const r = await syncDataapiApisix()
+    const r = await syncDataapiApisix(resolveWs())
     await ensureLoaded(true)
     return r
   }
 
   async function runSyncFromSqlrest() {
-    const r = await syncFromSqlrest()
+    const r = await syncFromSqlrest(resolveWs())
     await ensureLoaded(true)
     return r
   }
@@ -366,15 +380,8 @@ export function useDataservice() {
     return r
   }
 
-  function openManager(kind = 'interfaceList') {
-    const e = { ...defaultSqlrestEmbed(), ...(embed.value || {}) }
-    const url = e[kind] || e.interfaceList || e.sqlrest
-    if (url) window.open(url, '_blank', 'noopener')
-    return url || null
-  }
-
   async function exportOpenapi({ id, filename } = {}) {
-    const doc = await fetchDataapiOpenapi({ id })
+    const doc = await fetchDataapiOpenapi({ id, ws: resolveWs() })
     if (!doc || typeof doc !== 'object') throw new Error('OpenAPI 为空')
     const blob = new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json;charset=utf-8' })
     const url = URL.createObjectURL(blob)
@@ -409,7 +416,6 @@ export function useDataservice() {
     runSyncFromSqlrest,
     runProjectDs,
     runRegister,
-    openManager,
     exportOpenapi,
   }
 }

@@ -8,6 +8,8 @@ import KnowledgeDetailDrawer from '@/components/knowledge/KnowledgeDetailDrawer.
 import { useToast } from '@/composables/useToast'
 import { usePager } from '@/composables/usePager'
 import { useKnowledge } from '@/composables/useKnowledge'
+import { useSession } from '@/composables/useSession'
+import { resolveWs } from '@/utils/ws'
 import { pageGuideOf } from '@/data/pageGuides'
 import { KB_CATS } from '@/data/knowledge'
 
@@ -16,6 +18,7 @@ const route = useRoute()
 const { showToast } = useToast()
 const guide = pageGuideOf('knowledge')
 const api = useKnowledge()
+const { currentWs } = useSession()
 
 const activeCat = ref('all')
 const search = ref('')
@@ -84,11 +87,18 @@ function syncItemsFromApi() {
 }
 
 async function reloadList() {
-  await api.loadAll({})
+  await api.loadAll({ ws: resolveWs(), scope: 'workspace' })
   syncItemsFromApi()
   applyOverview(api.overview.value)
   resetPage()
 }
+
+watch(currentWs, () => {
+  reloadList().catch((e) => {
+    loadError.value = e?.message || '知识库加载失败'
+    showToast(loadError.value, 'warning')
+  })
+})
 
 function setEntryQuery(id) {
   const q = { ...route.query }

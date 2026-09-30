@@ -131,6 +131,22 @@ const kafkaDsOptions = computed(() =>
     .map((s) => ({ value: s.id, label: `${s.name} (${s.type})` })),
 )
 
+const apiDsOptions = computed(() =>
+  etlSourcePool.value
+    .filter((s) => {
+      const t = String(s.type || '').toLowerCase()
+      const c = String(s.category || '').toLowerCase()
+      return (
+        c === 'api' ||
+        t.includes('api') ||
+        t.includes('http') ||
+        t.includes('openapi') ||
+        t.includes('rest')
+      )
+    })
+    .map((s) => ({ value: s.id, label: `${s.name} (${s.type})` })),
+)
+
 const tableOptions = ref([])
 /** 数据源预览列：[{ table, column, type }] */
 const schemaColumns = ref([])
@@ -256,6 +272,68 @@ function onBindDs(id) {
     baseUrl: s?.endpoint || s?.host || props.conf.baseUrl || '',
   })
   ensureTables(id).catch(() => {})
+}
+
+/** 解析数据源接口清单条目：`GET /order` / `/orders` / `GET /order (OpenAPI)` */
+function parseApiInventoryEntry(raw) {
+  const s = String(raw || '').trim()
+  if (!s) return { path: '', method: '' }
+  const cleaned = s.replace(/\s*\([^)]*\)\s*$/, '').trim()
+  const m = cleaned.match(/^(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+(\S+)/i)
+  if (m) {
+    let path = m[2]
+    if (!path.startsWith('/') && !/^https?:/i.test(path)) path = `/${path}`
+    return { method: m[1].toUpperCase(), path }
+  }
+  return { path: cleaned, method: '' }
+}
+
+function parseApiInventoryLines(raw) {
+  return String(raw || '')
+    .split(/[,;\n\r]+/)
+    .map((x) => x.trim())
+    .filter(Boolean)
+}
+
+/** source_api：绑定后从接口清单下拉，仍可自定义输入 */
+const apiPathOptions = computed(() => {
+  const seen = new Set()
+  const out = []
+  const push = (raw, subHint = '') => {
+    const parsed = parseApiInventoryEntry(raw)
+    const value = parsed.path || String(raw || '').trim()
+    if (!value || seen.has(value)) return
+    seen.add(value)
+    out.push({
+      value,
+      label: value,
+      sub: [parsed.method, subHint].filter(Boolean).join(' · '),
+      method: parsed.method,
+    })
+  }
+  for (const t of tableOptions.value || []) {
+    push(t.value, t.sub || '')
+  }
+  if (!out.length && boundSource.value) {
+    const schema = boundSource.value.schema || boundSource.value.schemaSummary || ''
+    for (const line of parseApiInventoryLines(schema)) push(line)
+  }
+  return out
+})
+
+function onApiPathChange(v) {
+  const raw = String(v || '').trim()
+  const fromOpt = apiPathOptions.value.find((o) => o.value === raw)
+  if (fromOpt?.method) {
+    setMany({ path: raw, method: fromOpt.method })
+    return
+  }
+  const parsed = parseApiInventoryEntry(raw)
+  if (parsed.method && parsed.path) {
+    setMany({ path: parsed.path, method: parsed.method })
+  } else {
+    set('path', raw)
+  }
 }
 
 const selectedTables = computed(() => {
@@ -655,7 +733,7 @@ function onCodeSetPick(v) {
       <span class="form-label">绑定 API 数据源</span>
       <select class="select" :value="conf.dsId || ''" @change="onBindDs($event.target.value)">
         <option value="">— 暂不绑定 / 手填 —</option>
-        <option v-for="o in dsOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
+        <option v-for="o in (apiDsOptions.length ? apiDsOptions : dsOptions)" :key="o.value" :value="o.value">{{ o.label }}</option>
       </select>
       <div class="form-hint">绑定后鉴权与 Base 由数据源中心维护；节点只配 path / 分页 / 字段抽取</div>
     </label>
@@ -667,10 +745,21 @@ function onCodeSetPick(v) {
       <span class="form-label">Base URL</span>
       <input class="input" :value="conf.baseUrl" @input="set('baseUrl', $event.target.value)" />
     </label>
-    <label class="form-field">
+    <div class="form-field">
       <span class="form-label">接口 Path</span>
-      <input class="input" :value="conf.path" @input="set('path', $event.target.value)" />
-    </label>
+      <SearchSelect
+        :model-value="conf.path || ''"
+        :options="apiPathOptions"
+        sub-key="sub"
+        allow-custom
+        placeholder="下拉选择或自定义 Path，如 /orders"
+        empty-text="暂无接口清单，可直接输入 Path"
+        @update:model-value="onApiPathChange"
+      />
+      <div v-if="dsBound && !apiPathOptions.length" class="form-hint">该数据源暂无接口清单，可自定义输入</div>
+      <div v-else-if="dsBound" class="form-hint">来自数据源「接口清单」；也可自定义</div>
+      <div v-else class="form-hint">可手填 Path；绑定 API 数据源后可从清单选择</div>
+    </div>
     <label class="form-field">
       <span class="form-label">Body 模板</span>
       <textarea class="textarea mono" rows="3" :value="conf.bodyTemplate" @input="set('bodyTemplate', $event.target.value)" />
@@ -714,7 +803,23 @@ function onCodeSetPick(v) {
         </select>
       </label>
       <label class="form-field"><span class="form-label">每页数量</span><input class="input" type="number" :value="conf.pageSize" @input="set('pageSize', Number($event.target.value))" /></label>
-      <label class="form-field"><span class="form-label">JSONPath</span><input class="input" :value="conf.jsonPath" @input="set('jsonPath', $event.target.value)" /></label>
+      <label class="form-field">
+        <span class="form-label">JSONPath</span>
+        <input
+          class="input"
+          :value="conf.jsonPath"
+          placeholder="$.data[*]"
+          @input="set('jsonPath', $event.target.value)"
+        />
+        <div class="form-hint">
+          从响应 JSON 中定位「记录数组」。常用：
+          <code>$.data[*]</code>（列表在 data）、
+          <code>$.data.list[*]</code>、
+          <code>$.result.items[*]</code>、
+          <code>$[*]</code>（根即为数组）。
+          主键/增量字段填数组元素内的相对字段名（如 id、updated_at），勿再写完整路径。
+        </div>
+      </label>
       <label class="form-field">
         <span class="form-label">主键字段</span>
         <SearchSelect
@@ -779,8 +884,24 @@ function onCodeSetPick(v) {
       <label class="form-field"><span class="form-label">Bucket</span><input class="input" :value="conf.bucket" @input="set('bucket', $event.target.value)" /></label>
       <label class="form-field"><span class="form-label">Access Key</span><input class="input" :value="conf.accessKey" @input="set('accessKey', $event.target.value)" placeholder="开发态；生产请绑定 dsId" /></label>
     </div>
-    <label class="form-field"><span class="form-label">基础路径</span><input class="input" :value="conf.basePath" @input="set('basePath', $event.target.value)" /></label>
-    <label class="form-field"><span class="form-label">文件匹配 (Glob)</span><input class="input" :value="conf.filePattern" @input="set('filePattern', $event.target.value)" /></label>
+    <label class="form-field"><span class="form-label">基础路径</span><input class="input" :value="conf.basePath" @input="set('basePath', $event.target.value)" placeholder="/data/orders/2026/" /></label>
+    <label class="form-field">
+      <span class="form-label">文件匹配 (Glob)</span>
+      <input
+        class="input"
+        :value="conf.filePattern"
+        placeholder="*.csv.gz"
+        @input="set('filePattern', $event.target.value)"
+      />
+      <div class="form-hint">
+        相对「基础路径」的 Glob，选出本次要读的文件。常用：
+        <code>*.csv</code>、<code>*.csv.gz</code>、<code>*.parquet</code>、
+        <code>orders_*.csv</code>（前缀）、
+        <code>**/*.json</code>（含子目录）、
+        <code>{a,b}*.txt</code>（多前缀）。
+        不要写盘符或完整 URL；路径放「基础路径」，此处只写文件名/相对模式。
+      </div>
+    </label>
 
     <div class="sec-title">文件格式</div>
     <div class="form-grid-2">

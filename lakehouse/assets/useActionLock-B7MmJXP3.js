@@ -1,0 +1,1 @@
+import{et as e,k as t}from"./_plugin-vue_export-helper-D5932XSY.js";function n(){let n=e({});function r(e){return!!n[e]}let i=t(()=>Object.values(n).some(Boolean));async function a(e,t){if(e&&!n[e]){n[e]=!0;try{return await t()}finally{n[e]=!1}}}return{busy:r,anyBusy:i,run:a}}export{n as t};

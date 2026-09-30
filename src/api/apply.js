@@ -1,5 +1,6 @@
 import { http } from './http'
 import { releaseIdempotencyKey, stickyIdempotencyKey } from './idempotency'
+import { resolveWs } from '@/utils/ws'
 
 const BASE = '/lh/apply'
 
@@ -48,7 +49,7 @@ export function pagePendingTickets(params) {
 
 /** 看板 KPI：待我审批 / 我申请的 / 本月通过 / 本月驳回 */
 export function fetchApplyKpi(params = {}) {
-  return http.get(`${BASE}/kpi`, { ws: params.ws })
+  return http.get(`${BASE}/kpi`, { ws: resolveWs(params.ws) })
 }
 
 /** 通过申请 → 写 sec_auth_grant（门户 SoT；不投影 Grav） */

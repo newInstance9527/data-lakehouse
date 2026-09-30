@@ -1,7 +1,9 @@
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import PageHeader from '@/components/common/PageHeader.vue'
+import ListPager from '@/components/common/ListPager.vue'
 import { useToast } from '@/composables/useToast'
+import { DEFAULT_PAGE_SIZE } from '@/config/pagination'
 import {
   orgTree,
   pagePositions,
@@ -26,6 +28,9 @@ const collapsed = ref(new Set())
 
 const listLoading = ref(false)
 const rows = ref([])
+const totalRemote = ref(0)
+const page = ref(1)
+const pageSize = ref(DEFAULT_PAGE_SIZE)
 const kw = ref('')
 
 const formOpen = ref(false)
@@ -37,6 +42,20 @@ const form = reactive({
   code: '',
   category: 'MIDDLE',
   sortCode: 99,
+})
+
+const totalPages = computed(() => Math.max(1, Math.ceil(totalRemote.value / pageSize.value)))
+const pageNums = computed(() => {
+  const tot = totalPages.value
+  const cur = page.value
+  const nums = []
+  const push = (n) => {
+    if (!nums.includes(n) && n >= 1 && n <= tot) nums.push(n)
+  }
+  push(1)
+  for (let i = cur - 1; i <= cur + 1; i++) push(i)
+  push(tot)
+  return nums.sort((a, b) => a - b)
 })
 
 const flatRows = computed(() => {
@@ -54,8 +73,12 @@ const flatOrgOptions = computed(() => {
 onMounted(() => loadTree())
 
 watch(selectedId, () => {
+  page.value = 1
   if (selectedId.value) loadList()
-  else rows.value = []
+  else {
+    rows.value = []
+    totalRemote.value = 0
+  }
 })
 
 function walkVisible(nodes, depth, out) {
@@ -131,20 +154,38 @@ async function loadList() {
   if (!selectedId.value) return
   listLoading.value = true
   try {
-    const page = await pagePositions({
-      current: 1,
-      size: 500,
+    const pageData = await pagePositions({
+      current: page.value,
+      size: pageSize.value,
       orgId: selectedId.value,
       searchKey: kw.value || undefined,
       searchIncludeChild: true,
     })
-    rows.value = page?.records || []
+    rows.value = pageData?.records || []
+    totalRemote.value = Number(pageData?.total || 0)
   } catch (e) {
     showToast(e.message || '加载职位失败', 'error')
     rows.value = []
+    totalRemote.value = 0
   } finally {
     listLoading.value = false
   }
+}
+
+function goPage(p) {
+  page.value = Math.min(totalPages.value, Math.max(1, Number(p) || 1))
+  loadList()
+}
+
+function onPageSize(n) {
+  pageSize.value = n
+  page.value = 1
+  loadList()
+}
+
+function searchList() {
+  page.value = 1
+  loadList()
 }
 
 function openAdd() {
@@ -263,9 +304,9 @@ async function remove(row) {
             class="input input-sm"
             placeholder="职位名称"
             :disabled="!selectedId"
-            @keyup.enter="loadList"
+            @keyup.enter="searchList"
           />
-          <button type="button" class="btn btn-sm" :disabled="!selectedId || listLoading" @click="loadList">
+          <button type="button" class="btn btn-sm" :disabled="!selectedId || listLoading" @click="searchList">
             查询
           </button>
         </div>
@@ -305,6 +346,16 @@ async function remove(row) {
               </tr>
             </tbody>
           </table>
+          <ListPager
+            v-model:page="page"
+            v-model:page-size="pageSize"
+            :total="totalRemote"
+            :total-pages="totalPages"
+            :page-nums="pageNums"
+            :page-count="rows.length"
+            @go="goPage"
+            @update:page-size="onPageSize"
+          />
         </div>
       </section>
     </div>

@@ -2,26 +2,27 @@
  * 可观测用量 / 成本 / 链路 span / 任务运维 / 根因 / Trino（§12 · §24.3 · §29）
  */
 import { http } from './http'
+import { resolveWs } from '@/utils/ws'
 
 const BASE = '/lh/observability'
 
 /** 成本卡：默认 group=ws；可选 ws / range */
 export function fetchObsCosts({ range = '30d', group = 'ws', ws } = {}) {
-  return http.get(`${BASE}/costs`, { range, group, ws })
+  return http.get(`${BASE}/costs`, { range, group, ws: resolveWs(ws) })
 }
 
 /** 用量聚合（与 costs 同源） */
 export function fetchObsUsage({ range = '30d', group = 'ws', ws } = {}) {
-  return http.get(`${BASE}/usage`, { range, group, ws })
+  return http.get(`${BASE}/usage`, { range, group, ws: resolveWs(ws) })
 }
 
 export function fetchObsLinksOverview({ ws } = {}) {
-  return http.get(`${BASE}/links/overview`, { ws })
+  return http.get(`${BASE}/links/overview`, { ws: resolveWs(ws) })
 }
 
 export function fetchObsSpans(params = {}) {
   return http.get(`${BASE}/spans`, {
-    ws: params.ws,
+    ws: resolveWs(params.ws),
     linkId: params.linkId,
     traceId: params.traceId,
     runId: params.runId,
@@ -33,12 +34,12 @@ export function fetchObsSpans(params = {}) {
 }
 
 export function fetchObsTrace(traceId, { ws } = {}) {
-  return http.get(`${BASE}/traces/${encodeURIComponent(traceId)}`, { ws })
+  return http.get(`${BASE}/traces/${encodeURIComponent(traceId)}`, { ws: resolveWs(ws) })
 }
 
 export function fetchObsLogs(params = {}) {
   return http.get(`${BASE}/logs/search`, {
-    ws: params.ws,
+    ws: resolveWs(params.ws),
     q: params.q,
     traceId: params.traceId,
     runId: params.runId,

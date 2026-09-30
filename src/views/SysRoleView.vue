@@ -1,8 +1,10 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import PageHeader from '@/components/common/PageHeader.vue'
+import ListPager from '@/components/common/ListPager.vue'
 import { useToast } from '@/composables/useToast'
 import { useActionLock } from '@/composables/useActionLock'
+import { DEFAULT_PAGE_SIZE } from '@/config/pagination'
 import {
   pageRoles,
   addRole,
@@ -18,6 +20,9 @@ const { busy, run: runLocked } = useActionLock()
 const kw = ref('')
 const loading = ref(false)
 const rows = ref([])
+const totalRemote = ref(0)
+const page = ref(1)
+const pageSize = ref(DEFAULT_PAGE_SIZE)
 
 const formOpen = ref(false)
 const formMode = ref('add')
@@ -35,18 +40,53 @@ const grantRole = ref(null)
 const resourceModules = ref([])
 const checkedMenuIds = ref(new Set())
 
+const totalPages = computed(() => Math.max(1, Math.ceil(totalRemote.value / pageSize.value)))
+const pageNums = computed(() => {
+  const tot = totalPages.value
+  const cur = page.value
+  const nums = []
+  const push = (n) => {
+    if (!nums.includes(n) && n >= 1 && n <= tot) nums.push(n)
+  }
+  push(1)
+  for (let i = cur - 1; i <= cur + 1; i++) push(i)
+  push(tot)
+  return nums.sort((a, b) => a - b)
+})
+
 onMounted(load)
 
 async function load() {
   loading.value = true
   try {
-    const page = await pageRoles({ current: 1, size: 100, searchKey: kw.value || undefined })
-    rows.value = page?.records || []
+    const pageData = await pageRoles({
+      current: page.value,
+      size: pageSize.value,
+      searchKey: kw.value || undefined,
+    })
+    rows.value = pageData?.records || []
+    totalRemote.value = Number(pageData?.total || 0)
   } catch (e) {
     showToast(e.message || '加载角色失败', 'error')
   } finally {
     loading.value = false
   }
+}
+
+function goPage(p) {
+  page.value = Math.min(totalPages.value, Math.max(1, Number(p) || 1))
+  load()
+}
+
+function onPageSize(n) {
+  pageSize.value = n
+  page.value = 1
+  load()
+}
+
+function search() {
+  page.value = 1
+  load()
 }
 
 function openAdd() {
@@ -162,16 +202,48 @@ const flatMenus = computed(() => {
     <PageHeader
       page-id="sys-roles"
       title="角色管理"
-      subtitle="角色 CRUD · 菜单授权 · 治理角色 dataOwner / dataSteward / dataAnalyst（Flyway V51）"
+      subtitle="角色 CRUD · 菜单授权 · 数据范围模板（见数据权限）· 治理角色 V51"
     >
       <button type="button" class="btn btn-sm btn-primary" @click="openAdd">＋ 新建角色</button>
       <button type="button" class="btn btn-sm" :disabled="loading" @click="load">↻ 刷新</button>
     </PageHeader>
 
+    <div class="card data-scope-templates" style="margin-bottom: 12px">
+      <div class="card-body">
+        <div style="font-weight: 600; margin-bottom: 6px">门户数据范围模板（L1，非引擎 ACL）</div>
+        <p style="margin: 0 0 8px; color: var(--muted, #666); font-size: 13px">
+          菜单授权管「进不进页」；下列模板说明行可见范围。跨空间「查看全部」仅 superAdmin / dataOps / bizAdmin，服务端硬门禁。
+          明细见仓库 <code>doc/数据权限.md</code>。
+        </p>
+        <table class="table" style="margin: 0">
+          <thead>
+            <tr><th>模板</th><th>适用角色编码示例</th><th>可见范围</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>仅本人</td>
+              <td><code>dataAnalyst</code> 等</td>
+              <td>个人对象（脚本/查询史/Key/草稿）仅自己；共建对象看当前工作空间</td>
+            </tr>
+            <tr>
+              <td>本空间</td>
+              <td><code>dataSteward</code> / 空间成员</td>
+              <td>当前 ws 共建对象 + 本人私有对象；无 scope=all</td>
+            </tr>
+            <tr>
+              <td>全站巡检</td>
+              <td><code>superAdmin</code> / <code>dataOps</code> / <code>bizAdmin</code></td>
+              <td>可勾选「查看全部」（scope=all）；含他人私有对象巡检</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
     <div class="card">
       <div class="card-body toolbar">
-        <input v-model="kw" class="input input-sm" placeholder="角色名/编码" @keyup.enter="load" />
-        <button type="button" class="btn btn-sm" @click="load">查询</button>
+        <input v-model="kw" class="input input-sm" placeholder="角色名/编码" @keyup.enter="search" />
+        <button type="button" class="btn btn-sm" @click="search">查询</button>
       </div>
       <div class="card-body" style="padding: 0">
         <table class="table">
@@ -204,6 +276,16 @@ const flatMenus = computed(() => {
             </tr>
           </tbody>
         </table>
+        <ListPager
+          v-model:page="page"
+          v-model:page-size="pageSize"
+          :total="totalRemote"
+          :total-pages="totalPages"
+          :page-nums="pageNums"
+          :page-count="rows.length"
+          @go="goPage"
+          @update:page-size="onPageSize"
+        />
       </div>
     </div>
 

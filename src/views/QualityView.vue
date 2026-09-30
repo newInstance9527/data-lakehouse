@@ -12,6 +12,7 @@ import { useSession } from '@/composables/useSession'
 import { QUALITY_RULE_FORM } from '@/data/createForms'
 import {
   ensureMetricBindTables,
+  invalidateMetricBindTables,
   metricBindMetaOf,
   metricBindTableOptions,
   warmMetricBindAssets,
@@ -128,7 +129,8 @@ onMounted(async () => {
 watch(currentWs, async () => {
   busy.value = true
   try {
-    await reloadByRange(range.value)
+    invalidateMetricBindTables()
+    await Promise.all([reloadByRange(range.value), ensureMetricBindTables({ force: true }).catch(() => {})])
     resetPage()
   } catch (e) {
     showToast(`质量数据加载失败：${e.message || e}`, 'error')
@@ -146,6 +148,9 @@ async function onCreateRule(payload) {
   try {
     const row = await createRule(payload)
     createOpen.value = false
+    if (layerFilter.value && row.layer && row.layer !== layerFilter.value) {
+      layerFilter.value = ''
+    }
     resetPage()
     const bindTip = row.field ? `${row.table}.${row.field}` : `${row.table}（整表）`
     const stdTip = row.stdCodeSetId ? ` · 码值集 ${row.stdCodeSetId}` : ''

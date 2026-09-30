@@ -3,6 +3,7 @@
  */
 import { API_BASE, http } from './http.js'
 import { getToken } from './token.js'
+import { resolveWs } from '@/utils/ws'
 
 const Q = '/lh/compute/query'
 
@@ -117,14 +118,14 @@ export function cancelQuery(payload) {
 
 export function fetchQueryHistory(params = {}) {
   return http.get(`${Q}/history`, {
-    ws: params.ws,
+    ws: resolveWs(params.ws),
     limit: params.limit ?? 30,
     mineOnly: params.mineOnly ?? true,
   })
 }
 
 export function fetchSchemaTree(ws) {
-  return http.get(`${Q}/schema-tree`, { ws })
+  return http.get(`${Q}/schema-tree`, { ws: resolveWs(ws) })
 }
 
 /** 懒加载表列。优先 assetId；fqn 为平台 layer.domain.assetCode */
@@ -155,7 +156,7 @@ export function fetchQueryDataset(id) {
 
 export function fetchQueryDatasets(params = {}) {
   return http.get(`${Q}/datasets`, {
-    ws: params.ws,
+    ws: resolveWs(params.ws),
     limit: params.limit ?? 30,
   })
 }
@@ -167,7 +168,7 @@ export function saveQueryScript(payload) {
 
 export function fetchQueryScripts(params = {}) {
   return http.get(`${Q}/saved`, {
-    ws: params.ws,
+    ws: resolveWs(params.ws),
     limit: params.limit ?? 50,
   })
 }
@@ -187,7 +188,7 @@ export function fetchQuerySurface() {
 
 /** Grav→Trino catalog 映射 */
 export function fetchCatalogMaps(params = {}) {
-  return http.get(`${Q}/catalog-map`, { ws: params.ws })
+  return http.get(`${Q}/catalog-map`, { ws: resolveWs(params.ws) })
 }
 
 /** 联邦源开通 */

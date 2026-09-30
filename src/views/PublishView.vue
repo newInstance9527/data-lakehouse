@@ -16,7 +16,7 @@ import {
 const route = useRoute()
 const router = useRouter()
 const { showToast } = useToast()
-const { currentWs, showAll, listWs, watchListScope } = useWsListScope()
+const { currentWs, showAll, canShowAll, listWs, watchListScope } = useWsListScope()
 const { busy, run: runLocked } = useActionLock()
 const guide = pageGuideOf('publish')
 const { items, gateList, focus, focusId, refresh, publish, rollback, select } = usePublish()
@@ -111,7 +111,7 @@ watch(
       :guide-title="guide.title"
       :guide="guide"
     >
-      <label class="ws-mine-chk" title="默认跟随顶栏当前空间；勾选后查看全部归属">
+      <label v-if="canShowAll" class="ws-mine-chk" title="默认跟随顶栏当前空间；勾选后查看全部归属">
         <input v-model="showAll" type="checkbox" />
         查看全部
       </label>

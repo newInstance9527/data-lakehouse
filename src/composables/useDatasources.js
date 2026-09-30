@@ -17,12 +17,15 @@ import {
 } from '@/api/datasource'
 import { tablesToSchema } from '@/utils/schemaList'
 import { dsTypeMeta } from '@/data/dsForm'
+import { resolveWs } from '@/utils/ws'
+import { fetchAllPages, BACKEND_PAGE_SIZE_MAX } from '@/utils/pageFetch'
 
 const sources = ref([])
 /** ETL 编排可用源（usable_in_dag），与全量 sources 分轨，避免冲掉数据源中心列表 */
 const dagSources = ref([])
 const loaded = ref(false)
 const loading = ref(false)
+const loadedWs = ref('')
 let loadError = null
 
 export function useDatasources() {
@@ -32,9 +35,15 @@ export function useDatasources() {
     loading.value = true
     loadError = null
     try {
-      const page = await fetchDatasourcePage(filters, { current: 1, size: 500 })
-      sources.value = (page?.records || []).map(normalizeSource)
+      const ws = resolveWs(filters.ws)
+      if (loadedWs.value && loadedWs.value !== ws) {
+        sources.value = []
+      }
+      const q = { ...filters, ws }
+      const records = await fetchAllPages(({ current, size }) => fetchDatasourcePage(q, { current, size }))
+      sources.value = records.map(normalizeSource)
       loaded.value = true
+      loadedWs.value = ws
       return sources.value
     } catch (e) {
       loadError = e
@@ -46,14 +55,15 @@ export function useDatasources() {
   }
 
   /** 仅在线且 purposes 含 ingest/export；写入 dagSources，不覆盖 sources */
-  async function loadDagUsableSources() {
+  async function loadDagUsableSources(filters = {}) {
     try {
-      const page = await fetchDatasourcePage({ usableInDag: '1' }, { current: 1, size: 500 })
-      dagSources.value = (page?.records || []).map(normalizeSource)
+      const ws = resolveWs(filters.ws)
+      const q = { usableInDag: '1', ws }
+      const records = await fetchAllPages(({ current, size }) => fetchDatasourcePage(q, { current, size }))
+      dagSources.value = records.map(normalizeSource)
       return dagSources.value
     } catch (e) {
       console.warn('[datasource] loadDagUsableSources failed', e)
-      // 回退：用本地 sources 客户端过滤
       dagSources.value = (sources.value || []).filter(isUsableInDag)
       return dagSources.value
     }
@@ -84,8 +94,9 @@ export function useDatasources() {
   }
 
   async function upsertSource(payload) {
-    const existed = !!getSource(payload.id)
-    const saved = existed ? await editDatasource(payload) : await addDatasource(payload)
+    const body = { ...payload, ws: resolveWs(payload?.ws) }
+    const existed = !!getSource(body.id)
+    const saved = existed ? await editDatasource(body) : await addDatasource(body)
     return replaceLocal(saved)
   }
 
@@ -126,7 +137,7 @@ export function useDatasources() {
   }
 
   async function fetchAllTables(id) {
-    const pageSize = 500
+    const pageSize = BACKEND_PAGE_SIZE_MAX
     let current = 1
     let total = Infinity
     const all = []
@@ -137,7 +148,6 @@ export function useDatasources() {
       all.push(...records)
       if (!records.length || records.length < pageSize) break
       current += 1
-      // 防护：异常 total 时避免死循环
       if (current > 100) break
     }
     return all
@@ -152,14 +162,19 @@ export function useDatasources() {
       if (!reported || s.tables.length >= reported) return s.tables
     }
     const tables = await fetchAllTables(id)
-    updateSource(id, { tables, schema: tablesToSchema(tables) || s.schema, tableCount: tables.length })
+    updateSource(id, {
+      tables,
+      schema: tablesToSchema(tables, { sourceType: s.type }) || s.schema,
+      tableCount: tables.length,
+    })
     return getSource(id)?.tables || tables
   }
 
   async function setTables(id, tables) {
+    const s = getSource(id)
     return updateSource(id, {
       tables,
-      schema: tablesToSchema(tables),
+      schema: tablesToSchema(tables, { sourceType: s?.type }),
       tableCount: Array.isArray(tables) ? tables.length : 0,
     })
   }
@@ -232,6 +247,7 @@ export function useDatasources() {
     list,
     loaded,
     loading,
+    loadedWs,
     getLoadError: () => loadError,
     loadSources,
     loadDagUsableSources,
@@ -275,7 +291,7 @@ function normalizeSource(row) {
     ),
     password: row.password || (conn.password ? '******' : '') || '******',
     health: row.health ?? row.healthScore ?? 0,
-    schema: row.schema || tablesToSchema(row.tables) || '',
+    schema: row.schema || tablesToSchema(row.tables, { sourceType: typeLabel }) || '',
     lag: row.lag || '',
     desc: row.desc || '',
     asset: row.asset ?? null,
@@ -284,6 +300,8 @@ function normalizeSource(row) {
     port: row.port || conn.port || '',
     database: row.database || conn.database || '',
     user: row.user || conn.user || conn.username || '',
+    baseURL: row.baseURL || conn.baseURL || conn.httpUrl || '',
+    access: row.access || conn.access || conn.pollCycle || '',
     bg: '#e6f7ff',
     color: '#1890ff',
     tables: Array.isArray(row.tables) ? row.tables.map(normalizeTable) : row.tables,

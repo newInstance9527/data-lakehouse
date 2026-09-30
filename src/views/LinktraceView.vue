@@ -15,7 +15,7 @@ import {
 
 const router = useRouter()
 const { showToast } = useToast()
-const { currentWs, showAll, listWsParams, watchListScope } = useWsListScope()
+const { currentWs, showAll, canShowAll, listWsParams, watchListScope } = useWsListScope()
 const guide = pageGuideOf('linktrace')
 
 const activeLink = ref('A')
@@ -182,7 +182,7 @@ watchListScope(() => loadBoard())
       subtitle="按 A–L 链路采跨组件 span · K=合规删除 · L=作业发布"
       :guide="guide"
     >
-      <label class="ws-mine-chk" title="默认跟随顶栏当前空间；勾选后查看全部归属">
+      <label v-if="canShowAll" class="ws-mine-chk" title="默认跟随顶栏当前空间；勾选后查看全部归属">
         <input v-model="showAll" type="checkbox" />
         查看全部
       </label>

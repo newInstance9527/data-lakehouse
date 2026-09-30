@@ -15,6 +15,8 @@ import {
   updateAiModel,
 } from '@/api/ai'
 import { formatAiPrice, maskApiKey } from '@/data/ai'
+import { resolveWs } from '@/utils/ws'
+import { fetchAllPages } from '@/utils/pageFetch'
 
 function asBoolFlag(v) {
   return v === true || v === 1 || v === '1'
@@ -26,6 +28,7 @@ const usageBars = ref([])
 const overview = ref(null)
 const loading = ref(false)
 const loaded = ref(false)
+const loadedWs = ref('')
 const lastError = ref(null)
 let loadPromise = null
 
@@ -146,8 +149,10 @@ function sceneLabel(s) {
 
 export function useAiModels() {
   function ensureLoaded() {
-    if (loaded.value || loading.value || loadPromise) return loadPromise
-    loadPromise = loadAll()
+    const ws = resolveWs()
+    if (loaded.value && loadedWs.value === ws) return loadPromise
+    if (loading.value && loadPromise) return loadPromise
+    loadPromise = loadAll(ws)
       .catch(() => {})
       .finally(() => {
         loadPromise = null
@@ -155,21 +160,30 @@ export function useAiModels() {
     return loadPromise
   }
 
-  async function loadAll(ws) {
+  async function loadAll(wsIn) {
     loading.value = true
     lastError.value = null
+    const ws = resolveWs(wsIn)
+    if (loadedWs.value && loadedWs.value !== ws) {
+      models.value = []
+      routes.value = []
+      usageBars.value = []
+      overview.value = null
+      loaded.value = false
+    }
     try {
-      const [page, ov, rts, usage] = await Promise.all([
-        fetchAiModels({ ws }, { current: 1, size: 200 }),
+      const [records, ov, rts, usage] = await Promise.all([
+        fetchAllPages((p) => fetchAiModels({ ws }, p)),
         fetchAiModelOverview(ws).catch(() => null),
         fetchAiRoutes(ws).catch(() => []),
         fetchAiUsage({ range: '30d', group: 'model', ws }).catch(() => null),
       ])
-      models.value = (page?.records || page || []).map(normalizeAiModel).filter(Boolean)
+      models.value = records.map(normalizeAiModel).filter(Boolean)
       overview.value = ov
       routes.value = (Array.isArray(rts) ? rts : rts?.records || []).map(normalizeAiRoute).filter(Boolean)
       usageBars.value = buildUsageBars(usage, models.value)
       loaded.value = true
+      loadedWs.value = ws
       return models.value
     } catch (e) {
       lastError.value = e
@@ -221,7 +235,7 @@ export function useAiModels() {
       kind: caps.kind,
       supportsVision: caps.supportsVision,
       supportsImageOutput: caps.supportsImageOutput,
-      ws: payload.ws,
+      ws: resolveWs(payload.ws),
       egressApproved: payload.egressApproved === true || payload.egressApproved === 1 || payload.egressApproved === '1',
     })
     const n = normalizeAiModel(saved)
@@ -277,7 +291,7 @@ export function useAiModels() {
     models.value = models.value.filter((m) => m.id !== id)
     // 后端可能级联停用路由；刷新列表与路由，避免本地假成功
     try {
-      await loadAll()
+      await loadAll(resolveWs())
     } catch {
       /* 删除已成功，列表已本地剔除 */
     }
@@ -299,6 +313,7 @@ export function useAiModels() {
     overview: computed(() => overview.value),
     loading,
     loaded,
+    loadedWs,
     lastError,
     loadAll,
     ensureLoaded,

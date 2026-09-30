@@ -2,12 +2,13 @@
  * 数据服务 API（对齐 /lh/dataapi · 治理壳 + SQLREST Manager）
  */
 import { http } from './http.js'
+import { resolveWs } from '@/utils/ws'
 
 const BASE = '/lh/dataapi'
 const DS = '/lh/datasource'
 
 export function fetchDataapiOverview(ws) {
-  return http.get(`${BASE}/overview`, { ws })
+  return http.get(`${BASE}/overview`, { ws: resolveWs(ws) })
 }
 
 export function fetchDataapiApis(filters = {}) {
@@ -15,7 +16,8 @@ export function fetchDataapiApis(filters = {}) {
     q: filters.q ?? filters.keyword,
     state: filters.state,
     domain: filters.domain,
-    ws: filters.ws,
+    tag: filters.tag,
+    ws: resolveWs(filters.ws),
   })
 }
 
@@ -24,7 +26,8 @@ export function fetchDataapiDetail(id, withSqlrest = true) {
 }
 
 export function buildDataapi(payload) {
-  return http.post(`${BASE}/build`, payload)
+  const p = payload && typeof payload === 'object' ? payload : {}
+  return http.post(`${BASE}/build`, { ...p, ws: resolveWs(p.ws) })
 }
 
 export function trialDataapi(payload) {
@@ -32,16 +35,16 @@ export function trialDataapi(payload) {
 }
 
 export function publishDataapi(id, ws, publishTicketNo) {
-  return http.post(`${BASE}/publish`, { id, ws, publishTicketNo })
+  return http.post(`${BASE}/publish`, { id, ws: resolveWs(ws), publishTicketNo })
 }
 
 /** 取消发布 → 草稿（须重新申请发布）；与永久下线 retire 不同 */
 export function unpublishDataapi(id, ws) {
-  return http.post(`${BASE}/unpublish`, { id, ws })
+  return http.post(`${BASE}/unpublish`, { id, ws: resolveWs(ws) })
 }
 
 export function retireDataapi(id, ws) {
-  return http.post(`${BASE}/retire`, { id, ws })
+  return http.post(`${BASE}/retire`, { id, ws: resolveWs(ws) })
 }
 
 export function fetchDataapiVersions(id) {
@@ -54,7 +57,8 @@ export function rollbackDataapi(id, commitId, version) {
 }
 
 export function syncDataapiApisix(ws) {
-  return http.post(`${BASE}/syncApisix${ws ? `?ws=${encodeURIComponent(ws)}` : ''}`, {})
+  const w = resolveWs(ws)
+  return http.post(`${BASE}/syncApisix?ws=${encodeURIComponent(w)}`, {})
 }
 
 export function fetchDataapiRoutes() {
@@ -62,23 +66,35 @@ export function fetchDataapiRoutes() {
 }
 
 export function fetchDataapiKeys(ws) {
-  return http.get(`${BASE}/keys`, { ws })
+  return http.get(`${BASE}/keys`, { ws: resolveWs(ws) })
+}
+
+/** 二次查看订阅 Key 密文（Vault）；body: { id, reason? } */
+export function revealDataapiKey({ id, reason } = {}) {
+  return http.post(`${BASE}/keys/reveal`, { id, reason })
 }
 
 export function fetchDataapiEmbedUrl() {
   return http.get(`${BASE}/embedUrl`)
 }
 
-export function fetchDataapiWorkbench() {
-  return http.get(`${BASE}/workbench`)
+export function fetchDataapiWorkbench(ws) {
+  return http.get(`${BASE}/workbench`, { ws: resolveWs(ws) })
 }
 
 export function syncFromSqlrest(ws) {
-  return http.post(`${BASE}/syncFromSqlrest${ws ? `?ws=${encodeURIComponent(ws)}` : ''}`, {})
+  const w = resolveWs(ws)
+  return http.post(`${BASE}/syncFromSqlrest?ws=${encodeURIComponent(w)}`, {})
 }
 
 export function registerDataapi(payload) {
-  return http.post(`${BASE}/register`, payload)
+  const p = payload && typeof payload === 'object' ? payload : {}
+  return http.post(`${BASE}/register`, { ...p, ws: resolveWs(p.ws) })
+}
+
+/** 全量替换自定义标签（已发布亦可）；body: { id, tags: string[] } */
+export function updateDataapiTags({ id, tags } = {}) {
+  return http.post(`${BASE}/updateTags`, { id, tags: Array.isArray(tags) ? tags : [] })
 }
 
 export function parseDataapiParams(payload) {
@@ -93,12 +109,12 @@ export function gatewayProbe(payload) {
   return http.post(`${BASE}/gatewayProbe`, payload)
 }
 
-export function fetchDataapiCallStats(days = 7) {
-  return http.get(`${BASE}/callStats`, { days })
+export function fetchDataapiCallStats(days = 7, ws) {
+  return http.get(`${BASE}/callStats`, { days, ws: resolveWs(ws) })
 }
 
 export function fetchDataapiOpenapi({ ws, id } = {}) {
-  return http.get(`${BASE}/openapi.json`, { ws, id })
+  return http.get(`${BASE}/openapi.json`, { ws: resolveWs(ws), id })
 }
 
 export function fetchListForSqlrest() {
@@ -116,4 +132,3 @@ export {
   fetchMetaViews,
   fetchMetaColumns,
 } from './datasource.js'
-

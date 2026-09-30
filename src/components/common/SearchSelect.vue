@@ -40,9 +40,8 @@ const selected = computed(() =>
 
 const displayLabel = computed(() => {
   if (selected.value) {
-    const main = selected.value[props.labelKey] || ''
-    const sub = props.subKey && selected.value[props.subKey] ? ` · ${selected.value[props.subKey]}` : ''
-    return main + sub
+    // 触发器只显示主标题，副标题留在下拉行内，避免选中后挤成一长串
+    return selected.value[props.labelKey] || String(props.modelValue ?? '')
   }
   // 自定义值：直接展示 modelValue
   if (props.allowCustom && props.modelValue !== '' && props.modelValue != null) {
@@ -282,8 +281,8 @@ function clear(e) {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 2px;
-  padding: 8px 12px;
+  gap: 3px;
+  padding: 9px 12px;
   border: none;
   background: transparent;
   cursor: pointer;
@@ -296,11 +295,17 @@ function clear(e) {
 }
 .search-select-opt-main {
   color: var(--text-1);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.35;
+  word-break: break-all;
 }
 .search-select-opt-sub {
   color: var(--text-3);
   font-size: 11px;
+  line-height: 1.35;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  word-break: break-all;
 }
 .search-select-empty {
   padding: 16px;

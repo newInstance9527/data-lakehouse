@@ -1,11 +1,12 @@
 <script setup>
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppDrawer from '@/components/common/AppDrawer.vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import { useToast } from '@/composables/useToast'
 import { useStorageTrend } from '@/composables/useStorageTrend'
 import { useSession } from '@/composables/useSession'
+import { resolveWs } from '@/utils/ws'
 import { pageGuideOf } from '@/data/pageGuides'
 
 const router = useRouter()
@@ -67,8 +68,12 @@ const subtitle = computed(() => {
 })
 
 async function reload() {
-  await loadAll()
+  await loadAll(resolveWs())
 }
+
+watch(currentWs, () => {
+  reload().catch((e) => showToast(`存储趋势加载失败：${e.message || e}`, 'error'))
+})
 
 onMounted(async () => {
   if (route.query.range) {
@@ -87,7 +92,7 @@ onMounted(async () => {
 
 async function onRange(next) {
   try {
-    await setRange(next)
+    await setRange(next, resolveWs())
     router.replace({ query: { ...route.query, range: next } })
   } catch (e) {
     showToast(`切换窗口失败：${e.message || e}`, 'error')
@@ -96,7 +101,7 @@ async function onRange(next) {
 
 async function onFilter(next) {
   try {
-    await setTableFilter(next)
+    await setTableFilter(next, resolveWs())
   } catch (e) {
     showToast(`筛选失败：${e.message || e}`, 'error')
   }

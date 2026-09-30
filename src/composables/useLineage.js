@@ -14,6 +14,7 @@ import {
 } from '@/api/lineage'
 import { focusTableMeta } from '@/data/lineage'
 import { ensureLineageLayout } from '@/utils/lineageLayout'
+import { fetchAllPages } from '@/utils/pageFetch'
 
 const fieldEdges = ref([])
 const graphPayload = ref(null)
@@ -141,8 +142,8 @@ export function useLineage() {
   }
 
   async function loadFields(filters = {}) {
-    const page = await fetchLineageFields(filters, { current: 1, size: 500 })
-    fieldEdges.value = (page?.records || []).map(normalizeEdge).filter(Boolean)
+    const records = await fetchAllPages(({ current, size }) => fetchLineageFields(filters, { current, size }))
+    fieldEdges.value = records.map(normalizeEdge).filter(Boolean)
     graphPayload.value = null
     impactPayload.value = null
     lastParsedAt.value = new Date().toLocaleString()

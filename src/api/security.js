@@ -2,16 +2,17 @@
  * 安全中心运营台 API（/lh/sec）
  */
 import { http } from './http.js'
+import { resolveWs } from '@/utils/ws'
 
 const BASE = '/lh/sec'
 
 export function fetchSecOverview(params = {}) {
-  return http.get(`${BASE}/overview`, { ws: params.ws })
+  return http.get(`${BASE}/overview`, { ws: resolveWs(params.ws) })
 }
 
 export function fetchSecGrants(params = {}) {
   return http.get(`${BASE}/grants`, {
-    ws: params.ws,
+    ws: resolveWs(params.ws),
     q: params.q,
     current: params.current || 1,
     size: params.size || 20,
@@ -20,7 +21,7 @@ export function fetchSecGrants(params = {}) {
 
 export function fetchSecMasks(params = {}) {
   return http.get(`${BASE}/masks`, {
-    ws: params.ws,
+    ws: resolveWs(params.ws),
     q: params.q,
     current: params.current || 1,
     size: params.size || 20,
@@ -28,12 +29,12 @@ export function fetchSecMasks(params = {}) {
 }
 
 export function fetchSecClassification(params = {}) {
-  return http.get(`${BASE}/classification`, { ws: params.ws })
+  return http.get(`${BASE}/classification`, { ws: resolveWs(params.ws) })
 }
 
 export function fetchSecAudit(params = {}) {
   return http.get(`${BASE}/audit`, {
-    ws: params.ws,
+    ws: resolveWs(params.ws),
     q: params.q,
     current: params.current || 1,
     size: params.size || 20,
@@ -41,7 +42,7 @@ export function fetchSecAudit(params = {}) {
 }
 
 export function fetchSecSa(params = {}) {
-  return http.get(`${BASE}/sa`, { ws: params.ws })
+  return http.get(`${BASE}/sa`, { ws: resolveWs(params.ws) })
 }
 
 export function registerSecSa(body) {

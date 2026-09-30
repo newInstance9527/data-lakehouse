@@ -16,7 +16,8 @@ import {
   upsertQualityGate,
   upsertQualityRule,
 } from '@/api/quality'
-import { useSession } from '@/composables/useSession'
+import { resolveWs } from '@/utils/ws'
+import { fetchAllPages } from '@/utils/pageFetch'
 import { metricBindMetaOf } from '@/data/metricBindAssets'
 
 const overview = ref(null)
@@ -27,14 +28,15 @@ const rules = ref([])
 const gates = ref([])
 const loading = ref(false)
 const loaded = ref(false)
+const loadedWs = ref('')
 const lastError = ref(null)
 let loadPromise = null
 
 const LEVEL_GRADIENT = {
-  技术: 'linear-gradient(90deg,#5cdbd3,#00c48c)',
-  标准: 'linear-gradient(90deg,#82aaff,#1e6fff)',
-  业务: 'linear-gradient(90deg,#ea9bff,#722ed1)',
-  时效: 'linear-gradient(90deg,#ffc069,#ffa940)',
+  技术: 'linear-gradient(90deg,#5cdbd3,#059669)',
+  标准: 'linear-gradient(90deg,#93c5fd,#2f6fed)',
+  业务: 'linear-gradient(90deg,#c4b5fd,#7c3aed)',
+  时效: 'linear-gradient(90deg,#ffc069,#d97706)',
 }
 
 function fmtNum(n) {
@@ -122,7 +124,7 @@ function buildMetrics(ov) {
       value: empty ? '—' : String(passRate),
       unit: empty ? '' : '%',
       ringPct: empty ? 0 : passRate,
-      ringColor: '#1e6fff',
+      ringColor: '#2f6fed',
       ringText: empty ? '暂无' : `${Math.round(passRate)}%`,
       sub: empty ? '暂无质量运行' : `共执行 ${ov.runCount ?? 0} 次 · 失败 ${ov.failCount ?? 0} 次`,
       subSuccess: false,
@@ -228,24 +230,29 @@ export function useQuality() {
     loading.value = true
     lastError.value = null
     try {
-      const { currentWs } = useSession()
-      const workspace = ws || currentWs.value || 'default'
+      const workspace = resolveWs(ws)
+      if (loadedWs.value && loadedWs.value !== workspace) {
+        rules.value = []
+        gates.value = []
+        overview.value = null
+      }
       const q = { ws: workspace, range }
-      const [ov, tr, td, g, page, gt] = await Promise.all([
+      const [ov, tr, td, g, ruleRecords, gt] = await Promise.all([
         fetchQualityOverview(q),
         fetchQualityTrend(q),
         fetchQualityTypeDist({ ws: workspace }),
         fetchQualityGold({ ws: workspace, limit: 5 }),
-        fetchQualityRules({ ws: workspace }, { current: 1, size: 200 }),
+        fetchAllPages(({ current, size }) => fetchQualityRules(q, { current, size })),
         fetchQualityGates({ ws: workspace }),
       ])
       overview.value = ov
       trend.value = tr || []
       typeDist.value = td || []
       gold.value = g || []
-      rules.value = (page?.records || []).map(normalizeRule).filter(Boolean)
+      rules.value = ruleRecords.map(normalizeRule).filter(Boolean)
       gates.value = (Array.isArray(gt) ? gt : []).map(normalizeGate).filter(Boolean)
       loaded.value = true
+      loadedWs.value = workspace
       return { overview: ov, rules: rules.value, gates: gates.value }
     } catch (e) {
       lastError.value = e
@@ -256,9 +263,11 @@ export function useQuality() {
     }
   }
 
-  function ensureLoaded(range = '30') {
-    if (loaded.value || loading.value || loadPromise) return loadPromise
-    loadPromise = loadAll(range)
+  function ensureLoaded(range = '30', force = false) {
+    const ws = resolveWs()
+    if (!force && loaded.value && loadedWs.value === ws) return loadPromise
+    if (loading.value && loadPromise && !force) return loadPromise
+    loadPromise = loadAll(range, ws)
       .catch(() => {})
       .finally(() => {
         loadPromise = null
@@ -271,7 +280,6 @@ export function useQuality() {
   }
 
   async function createRule(form) {
-    const { currentWs } = useSession()
     const name = String(form.name || '')
       .replace(/\s+/g, '_')
       .toUpperCase()
@@ -293,14 +301,14 @@ export function useQuality() {
       severity: form.sev,
       stdCodeSetId: stdCodeSetId || undefined,
       assetId: form.assetId || meta?.assetId || undefined,
-      ws: form.ws || currentWs.value || 'default',
+      ws: resolveWs(form.ws),
     })
     const row = normalizeRule(saved)
     const idx = rules.value.findIndex((r) => r.id === row.id)
     if (idx >= 0) rules.value[idx] = row
     else rules.value.unshift(row)
     try {
-      const workspace = form.ws || currentWs.value || 'default'
+      const workspace = resolveWs(form.ws)
       overview.value = await fetchQualityOverview({ ws: workspace })
       typeDist.value = await fetchQualityTypeDist({ ws: workspace })
     } catch {
@@ -310,12 +318,11 @@ export function useQuality() {
   }
 
   async function saveGate(form) {
-    const { currentWs } = useSession()
     const tableName = String(form.tableName || form.table || '').trim()
     const meta = tableName ? metricBindMetaOf(tableName) : null
     const saved = await upsertQualityGate({
       id: form.id,
-      ws: form.ws || currentWs.value || 'default',
+      ws: resolveWs(form.ws),
       layer: form.layer || '',
       tableName,
       assetId: form.assetId || meta?.assetId || '',
@@ -336,9 +343,8 @@ export function useQuality() {
 
   async function loadRuleRuns(ruleId, { current = 1, size = 20 } = {}) {
     if (!ruleId) return { records: [], total: 0 }
-    const { currentWs } = useSession()
     const page = await fetchQualityRuns(ruleId, {
-      ws: currentWs.value || 'default',
+      ws: resolveWs(),
       current,
       size,
     })
@@ -353,13 +359,14 @@ export function useQuality() {
   }
 
   async function syncOm() {
-    const { currentWs } = useSession()
-    const workspace = currentWs.value || 'default'
+    const workspace = resolveWs()
     const r = await syncQualityOm({ ws: workspace })
     try {
       overview.value = await fetchQualityOverview({ ws: workspace })
-      const page = await fetchQualityRules({ ws: workspace }, { current: 1, size: 200 })
-      rules.value = (page?.records || []).map(normalizeRule).filter(Boolean)
+      const ruleRecords = await fetchAllPages(({ current, size }) =>
+        fetchQualityRules({ ws: workspace }, { current, size }),
+      )
+      rules.value = ruleRecords.map(normalizeRule).filter(Boolean)
     } catch {
       /* ignore refresh */
     }

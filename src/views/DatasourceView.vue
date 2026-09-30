@@ -225,19 +225,6 @@ const topoLayers = [
   { key: 'pipeline', label: '⑨ Pipeline / ML（仅目录）' },
 ]
 
-const catColors = {
-  rdb: '#1890ff',
-  dw: '#1890ff',
-  mq: '#1890ff',
-  nosql: '#1890ff',
-  search: '#1890ff',
-  storage: '#1890ff',
-  api: '#1890ff',
-  dashboard: '#1890ff',
-  pipeline: '#1890ff',
-  outbound: '#1890ff',
-}
-
 function clearFilter() {
   filters.kw = ''
   filters.type = ''
@@ -503,7 +490,6 @@ function goPage(p) {
                 class="ds-card"
                 @click="openDetail(s.id)"
               >
-                <div class="ds-card-bar" :style="{ background: catColors[dsCategory(s)] || '#ccc' }" />
                 <div class="ds-card-head">
                   <div class="ds-card-icon" :style="{ background: s.bg, color: s.color }">
                     <DsTypeIcon :type="s.type" :type-code="s.typeCode" :size="20" />
@@ -531,10 +517,10 @@ function goPage(p) {
                 <div class="ds-card-schema">
                   <button
                     class="btn-link btn-sm ds-schema-link"
-                    :title="schemaSummary(s.schema).text"
+                    :title="schemaSummary(s.schema, 3, { sourceType: s.type }).text"
                     @click="openTables(s.id, $event)"
                   >
-                    📋 {{ schemaSummary(s.schema).text }}
+                    📋 {{ schemaSummary(s.schema, 3, { sourceType: s.type }).text }}
                   </button>
                   <span style="margin-left: auto; color: var(--text-3)" :title="s.owner">👤 {{ displayUser(s.ownerName, s.owner) }}</span>
                 </div>

@@ -2,66 +2,78 @@
  * 生命周期与小文件治理 API（对齐 /lh/lifecycle · doc/生命周期.md）
  */
 import { http } from './http.js'
+import { resolveWs } from '@/utils/ws'
 
 const L = '/lh/lifecycle'
 
 export function fetchLcOverview(ws) {
-  return http.get(`${L}/overview`, { ws })
+  return http.get(`${L}/overview`, { ws: resolveWs(ws) })
 }
 
 export function fetchLcJobsLatest(ws) {
-  return http.get(`${L}/jobs/latest`, { ws })
+  return http.get(`${L}/jobs/latest`, { ws: resolveWs(ws) })
 }
 
 export function fetchLcTopStorage(ws, limit = 20) {
-  return http.get(`${L}/top-storage`, { ws, limit })
+  return http.get(`${L}/top-storage`, { ws: resolveWs(ws), limit })
 }
 
 export function fetchLcStats(table, ws) {
-  return http.get(`${L}/stats`, { table, ws })
+  return http.get(`${L}/stats`, { table, ws: resolveWs(ws) })
 }
 
 export function fetchLcPolicies(ws) {
-  return http.get(`${L}/policies`, { ws })
+  return http.get(`${L}/policies`, { ws: resolveWs(ws) })
 }
 
 export function fetchLcPolicy(table, ws) {
-  return http.get(`${L}/policy`, { table, ws })
+  return http.get(`${L}/policy`, { table, ws: resolveWs(ws) })
 }
 
 export function upsertLcPolicy(payload) {
-  return http.put(`${L}/policies`, payload)
+  const p = payload && typeof payload === 'object' ? payload : {}
+  return http.put(`${L}/policies`, { ...p, ws: resolveWs(p.ws) })
 }
 
 export function triggerLcCompact({ tableFqn, ws, remark, adviceId } = {}) {
-  return http.post(`${L}/compact`, { tableFqn, ws, remark, adviceId })
+  return http.post(`${L}/compact`, {
+    tableFqn,
+    ws: resolveWs(ws),
+    remark,
+    adviceId,
+  })
 }
 
 export function triggerLcExpire({ tableFqn, ws, remark, adviceId } = {}) {
-  return http.post(`${L}/expire`, { tableFqn, ws, remark, adviceId })
+  return http.post(`${L}/expire`, {
+    tableFqn,
+    ws: resolveWs(ws),
+    remark,
+    adviceId,
+  })
 }
 
 export function scanLcOrphan({ ws, bucket, dryRun = true } = {}) {
-  return http.post(`${L}/orphan/scan`, { ws, bucket, dryRun })
+  return http.post(`${L}/orphan/scan`, { ws: resolveWs(ws), bucket, dryRun })
 }
 
 export function runLcJobsNow({ ws, remark } = {}) {
-  return http.post(`${L}/jobs/run-now`, { ws, remark })
+  return http.post(`${L}/jobs/run-now`, { ws: resolveWs(ws), remark })
 }
 
 export function fetchLcStorageTrend(ws, rangeOrDays = '30d') {
   const range =
     typeof rangeOrDays === 'number' ? `${rangeOrDays}d` : rangeOrDays || '30d'
-  return http.get(`${L}/storage/trend`, { ws, range, group: 'layer' })
+  return http.get(`${L}/storage/trend`, { ws: resolveWs(ws), range, group: 'layer' })
 }
 
 export function fetchLcStorageSummary(ws, range = '30d') {
-  return http.get(`${L}/storage/summary`, { ws, range })
+  return http.get(`${L}/storage/summary`, { ws: resolveWs(ws), range })
 }
 
 export function fetchLcStorageTables(params = {}) {
   return http.get(`${L}/storage/tables`, {
-    ws: params.ws,
+    ws: resolveWs(params.ws),
     range: params.range || '30d',
     layer: params.layer,
     filter: params.filter || 'all',
@@ -73,37 +85,37 @@ export function fetchLcStorageTables(params = {}) {
 }
 
 export function fetchLcStorageTableDetail(fqtn, ws, range = '90d') {
-  return http.get(`${L}/storage/tables/detail`, { fqtn, ws, range })
+  return http.get(`${L}/storage/tables/detail`, { fqtn, ws: resolveWs(ws), range })
 }
 
 export function fetchLcStorageBuckets(ws) {
-  return http.get(`${L}/storage/buckets`, { ws })
+  return http.get(`${L}/storage/buckets`, { ws: resolveWs(ws) })
 }
 
 export function fetchLcStorageAdvice(ws) {
-  return http.get(`${L}/storage/advice`, { ws })
+  return http.get(`${L}/storage/advice`, { ws: resolveWs(ws) })
 }
 
 export function fetchLcStorageShowback(ws, range = '30d', group = 'ws') {
-  return http.get(`${L}/storage/showback`, { ws, range, group })
+  return http.get(`${L}/storage/showback`, { ws: resolveWs(ws), range, group })
 }
 
 /** 存储日报导出（GET /lh/lifecycle/storage/report/export）；无表时 content 为空串 */
 export function exportLcStorageReport({ ws, range = '30d', format = 'csv' } = {}) {
-  return http.get(`${L}/storage/report/export`, { ws, range, format })
+  return http.get(`${L}/storage/report/export`, { ws: resolveWs(ws), range, format })
 }
 
 export function fetchLcArchiveCandidates(ws) {
-  return http.get(`${L}/archive-candidates`, { ws })
+  return http.get(`${L}/archive-candidates`, { ws: resolveWs(ws) })
 }
 
 export function fetchLcCompliancePreview(ws, limit = 10) {
-  return http.get(`${L}/compliance/preview`, { ws, limit })
+  return http.get(`${L}/compliance/preview`, { ws: resolveWs(ws), limit })
 }
 
 export function fetchLcRuns(filters = {}) {
   return http.get(`${L}/runs`, {
-    ws: filters.ws,
+    ws: resolveWs(filters.ws),
     kind: filters.kind,
     tableFqn: filters.tableFqn,
     status: filters.status,

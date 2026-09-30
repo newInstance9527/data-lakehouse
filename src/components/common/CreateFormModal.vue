@@ -14,9 +14,12 @@ const props = defineProps({
   width: { type: String, default: '560px' },
   /** 打开时预填（编辑场景） */
   initialValues: { type: Object, default: null },
+  /** page：嵌入路由页；modal：遮罩弹窗（默认） */
+  mode: { type: String, default: 'modal' },
 })
 
 const emit = defineEmits(['close', 'submit'])
+const isPageMode = computed(() => props.mode === 'page')
 const { showToast } = useToast()
 const { locale } = useLocale()
 
@@ -493,15 +496,19 @@ const visibleFields = computed(() => props.fields.filter((f) => !isHidden(f)))
 </script>
 
 <template>
-  <Teleport to="body">
-    <div v-if="open" class="modal-mask" @click.self="close">
-      <div class="modal" :style="{ width }">
+  <Teleport to="body" :disabled="isPageMode">
+    <div
+      v-if="open"
+      :class="isPageMode ? 'cfm-page-root' : 'modal-mask'"
+      @click.self="isPageMode ? undefined : close()"
+    >
+      <div class="modal" :class="{ 'modal-page': isPageMode }" :style="isPageMode ? undefined : { width }">
         <div class="modal-header">
           <div>
             <div class="modal-title">{{ displayTitle }}</div>
             <div v-if="displayIntro" class="modal-sub">{{ displayIntro }}</div>
           </div>
-          <button type="button" class="btn btn-sm" @click="close">✕</button>
+          <button type="button" class="btn btn-sm" @click="close">{{ isPageMode ? '返回' : '✕' }}</button>
         </div>
         <div class="modal-body">
           <div class="form-section">
@@ -614,6 +621,21 @@ const visibleFields = computed(() => props.fields.filter((f) => !isHidden(f)))
 </template>
 
 <style scoped>
+.cfm-page-root {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.cfm-page-root .modal.modal-page {
+  width: 100%;
+  max-width: 920px;
+  margin: 0 auto;
+  max-height: none;
+  box-shadow: none;
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 8px;
+}
 .create-form-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;

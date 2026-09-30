@@ -2,6 +2,7 @@
  * 字段血缘 API（对齐 /lh/lineage）
  */
 import { http } from './http.js'
+import { resolveWs } from '@/utils/ws'
 
 const L = '/lh/lineage'
 
@@ -12,7 +13,7 @@ export function fetchLineageGraph(params = {}) {
     omFqn: params.omFqn,
     upDepth: params.upDepth,
     downDepth: params.downDepth,
-    ws: params.ws,
+    ws: resolveWs(params.ws),
   })
 }
 
@@ -23,7 +24,7 @@ export function fetchLineageImpact(params = {}) {
     omFqn: params.omFqn,
     upDepth: params.upDepth,
     downDepth: params.downDepth,
-    ws: params.ws,
+    ws: resolveWs(params.ws),
   })
 }
 
@@ -34,20 +35,20 @@ export function fetchLineageFields(filters = {}, { current = 1, size = 200 } = {
     q: filters.q ?? filters.keyword,
     focusTable: filters.focusTable,
     focusField: filters.focusField,
-    ws: filters.ws,
+    ws: resolveWs(filters.ws),
   })
 }
 
 export function syncLineageFields(params = {}) {
   const qs = new URLSearchParams()
-  if (params.ws) qs.set('ws', params.ws)
+  qs.set('ws', resolveWs(params.ws))
   if (params.etlJobId) qs.set('etlJobId', params.etlJobId)
   const q = qs.toString()
   return http.post(`${L}/fields/sync${q ? `?${q}` : ''}`, {})
 }
 
 export function fetchLineageSyncStatus(params = {}) {
-  return http.get(`${L}/fields/sync/status`, { ws: params.ws })
+  return http.get(`${L}/fields/sync/status`, { ws: resolveWs(params.ws) })
 }
 
 export function fetchMarquezNamespaces() {
@@ -59,7 +60,7 @@ export function postChangeEval(payload = {}) {
     table: payload.table,
     field: payload.field,
     toType: payload.toType,
-    ws: payload.ws,
+    ws: resolveWs(payload.ws),
   })
 }
 
@@ -68,6 +69,6 @@ export function postBlockDdl(payload = {}) {
     table: payload.table,
     field: payload.field,
     reason: payload.reason,
-    ws: payload.ws,
+    ws: resolveWs(payload.ws),
   })
 }

@@ -4,7 +4,7 @@ import SchemaListField from '@/components/datasource/SchemaListField.vue'
 import DsTypeIcon from '@/components/datasource/DsTypeIcon.vue'
 import SearchSelect from '@/components/common/SearchSelect.vue'
 import { DS_COMMON_FIELDS, dsTypeFields, dsTypeMeta } from '@/data/dsForm'
-import { groupTypesByCategory } from '@/data/datasources'
+import { groupTypesByCategory, parseHttpBaseUrl } from '@/data/datasources'
 import { isInventoryField, tablesToSchema } from '@/utils/schemaList'
 import { ensureWorkspaceUserOptions, workspaceUserById, workspaceUserOptions } from '@/data/workspaceUsers'
 import { useToast } from '@/composables/useToast'
@@ -86,9 +86,9 @@ function flattenSeed(seed) {
     database: seed.database || conn.database || conn.sid || conn.namespace || '',
     user: seed.user || conn.user || conn.username || '',
     password: seed.password || '',
-    // extra / access 严格分轨，禁止互相回落
+    // extra / access 严格分轨，禁止互相回落；旧 pollCycle 回落到 access
     extra: seed.extra || conn.extra || '',
-    access: seed.access || conn.access || '',
+    access: seed.access || conn.access || conn.pollCycle || seed.pollCycle || '',
     lag: seed.lag || '',
     asset: seed.asset || '',
     schema: schemaText,
@@ -226,6 +226,7 @@ async function discoverInventory() {
   return res
 }
 
+/** 从 Base URL 解析 hostname / port（HTTPS 默认 443，HTTP 默认 80） */
 function submit() {
   if (!validate()) return
   if (!tested.value && !isEdit.value) {
@@ -233,16 +234,24 @@ function submit() {
     return
   }
   const meta = dsTypeMeta(form.type)
-  const host =
+  const baseURL = form.baseURL || form.httpUrl || ''
+  const parsed = baseURL ? parseHttpBaseUrl(baseURL) : null
+  let host =
     form.host ||
     form.bootstrap ||
     form.endpoint ||
     form.nameNode ||
     form.serviceUrl ||
     form.zkQuorum ||
-    form.baseURL ||
     ''
-  const port = form.port || meta.port || ''
+  let port = form.port || ''
+  if (parsed) {
+    host = parsed.host
+    port = parsed.port
+  } else {
+    host = String(host || baseURL).replace(/^https?:\/\//, '').split('/')[0] || host
+    port = port || meta.port || ''
+  }
   const database =
     form.database || form.sid || form.namespace || form.vhost || form.tenant || form.db || form.path || ''
   const payload = {
@@ -252,7 +261,7 @@ function submit() {
     purpose: form.purpose,
     owner: form.owner || user.value?.id || '',
     desc: form.desc || '',
-    host: String(host).replace(/^https?:\/\//, '').split('/')[0] || host,
+    host: String(host),
     port: String(port),
     database: String(database),
     user: form.user || form.accessKey || '',
@@ -266,6 +275,7 @@ function submit() {
       typeFields.value.map((f) => [f.n, form[f.n]]).filter(([, v]) => v != null && v !== ''),
     ),
   }
+  if (baseURL) payload.baseURL = baseURL
   emit('submit', payload)
   close()
 }

@@ -2,7 +2,9 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
+import ListPager from '@/components/common/ListPager.vue'
 import { useToast } from '@/composables/useToast'
+import { usePager } from '@/composables/usePager'
 import { useWsListScope } from '@/composables/useWsListScope'
 import { pageGuideOf } from '@/data/pageGuides'
 import { SEC_IRON_RULES, SEC_PATH_ALLOW, SEC_PATH_FORBID } from '@/data/security'
@@ -22,7 +24,7 @@ import {
 
 const router = useRouter()
 const { showToast } = useToast()
-const { currentWs, showAll, listWsParams, watchListScope } = useWsListScope()
+const { currentWs, showAll, canShowAll, listWsParams, watchListScope } = useWsListScope()
 const guide = pageGuideOf('security')
 
 const loading = ref(false)
@@ -51,6 +53,26 @@ const vaultStatusText = ref('')
 const pathAllow = ref(SEC_PATH_ALLOW)
 const pathForbid = ref(SEC_PATH_FORBID)
 const auditHint = ref('')
+
+const {
+  page: saPage,
+  pageSize: saPageSize,
+  total: saTotal,
+  totalPages: saTotalPages,
+  paged: saPaged,
+  pageNums: saPageNums,
+  goPage: goSaPage,
+} = usePager(saItems)
+
+const {
+  page: vaultPage,
+  pageSize: vaultPageSize,
+  total: vaultTotal,
+  totalPages: vaultTotalPages,
+  paged: vaultPaged,
+  pageNums: vaultPageNums,
+  goPage: goVaultPage,
+} = usePager(vaultItems)
 
 const kpis = computed(() => {
   const o = overview.value || {}
@@ -273,7 +295,8 @@ watchListScope(() => loadBoard())
       subtitle="统一权限裁决 · 查询侧动态脱敏 · 人机分身份"
       :guide="guide"
     >
-      <label class="ws-mine-chk" title="默认跟随顶栏当前空间；勾选后查看全部归属">
+      <span class="acl-empty-hint" style="font-size:12px;color:var(--muted,#888);margin-right:8px">默认当前空间</span>
+      <label v-if="canShowAll" class="ws-mine-chk" title="默认跟随顶栏当前空间；勾选后查看全部归属">
         <input v-model="showAll" type="checkbox" />
         查看全部
       </label>
@@ -459,7 +482,7 @@ watchListScope(() => loadBoard())
               <tr v-if="!saItems.length">
                 <td colspan="5" class="sec-empty">{{ saHint || '暂无服务账号' }}</td>
               </tr>
-              <tr v-for="s in saItems" :key="s.id">
+              <tr v-for="s in saPaged" :key="s.id">
                 <td>
                   <div class="sec-vault-label">{{ s.saName }}</div>
                   <code class="sec-vault-path">{{ s.vaultPath }}</code>
@@ -480,6 +503,15 @@ watchListScope(() => loadBoard())
               </tr>
             </tbody>
           </table>
+          <ListPager
+            v-model:page="saPage"
+            v-model:page-size="saPageSize"
+            :total="saTotal"
+            :total-pages="saTotalPages"
+            :page-nums="saPageNums"
+            :page-count="saPaged.length"
+            @go="goSaPage"
+          />
           <div class="sec-footnote">铁律：一个 SA 对应一个作业域 · 禁止人持有 SA 凭证 · 凭证仅进 Vault</div>
         </div>
       </div>
@@ -514,7 +546,7 @@ watchListScope(() => loadBoard())
               <tr v-if="!vaultItems.length">
                 <td colspan="5" class="sec-empty">{{ vaultHint || '暂无轮换台账' }}</td>
               </tr>
-              <tr v-for="v in vaultItems" :key="v.vaultPath">
+              <tr v-for="v in vaultPaged" :key="v.vaultPath">
                 <td>
                   <div class="sec-vault-label">{{ v.bindLabel || '—' }}</div>
                   <code class="sec-vault-path">{{ v.vaultPath }}</code>
@@ -537,6 +569,15 @@ watchListScope(() => loadBoard())
               </tr>
             </tbody>
           </table>
+          <ListPager
+            v-model:page="vaultPage"
+            v-model:page-size="vaultPageSize"
+            :total="vaultTotal"
+            :total-pages="vaultTotalPages"
+            :page-nums="vaultPageNums"
+            :page-count="vaultPaged.length"
+            @go="goVaultPage"
+          />
           <div v-if="vaultHint && vaultItems.length" class="sec-footnote">{{ vaultHint }}</div>
         </div>
       </div>

@@ -22,6 +22,7 @@ import {
   triggerBase64Download,
   triggerBlobDownload,
 } from '@/data/storageTrend'
+import { resolveWs } from '@/utils/ws'
 
 const LAYER_COLOR = {
   ODS: '#4d8dff',
@@ -103,6 +104,7 @@ const EMPTY_KPIS = [
 export function useStorageTrend() {
   const loading = ref(false)
   const loaded = ref(false)
+  const loadedWs = ref('')
   const lastError = ref(null)
   const range = ref('30d')
   const tableFilter = ref('anomaly')
@@ -374,10 +376,21 @@ export function useStorageTrend() {
     return buildDetailCurveChart(curve)
   })
 
-  async function loadAll(ws) {
+  async function loadAll(wsIn) {
     loading.value = true
     lastError.value = null
+    const ws = resolveWs(wsIn)
     const r = range.value
+    if (loadedWs.value && loadedWs.value !== ws) {
+      summary.value = null
+      trend.value = null
+      tablesPage.value = null
+      buckets.value = []
+      bucketsMeta.value = null
+      advice.value = []
+      showback.value = null
+      loaded.value = false
+    }
     try {
       const [sum, tr, tables, bucks, adv, sb] = await Promise.all([
         fetchLcStorageSummary(ws, r),
@@ -409,6 +422,7 @@ export function useStorageTrend() {
       advice.value = adv || []
       showback.value = sb
       loaded.value = true
+      loadedWs.value = ws
       return { summary: sum, trend: tr, tables, buckets: bucks, advice: adv, showback: sb }
     } catch (e) {
       lastError.value = e
@@ -427,12 +441,13 @@ export function useStorageTrend() {
     }
   }
 
-  async function setRange(next, ws) {
+  async function setRange(next, wsIn) {
     range.value = next
-    return loadAll(ws)
+    return loadAll(wsIn)
   }
 
-  async function setTableFilter(next, ws) {
+  async function setTableFilter(next, wsIn) {
+    const ws = resolveWs(wsIn)
     tableFilter.value = next
     loading.value = true
     try {

@@ -2,7 +2,9 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
+import ListPager from '@/components/common/ListPager.vue'
 import { useToast } from '@/composables/useToast'
+import { usePager } from '@/composables/usePager'
 import { pageGuideOf } from '@/data/pageGuides'
 import { opsStatusIconClass } from '@/data/ops'
 import {
@@ -210,6 +212,36 @@ const dsSuccessRate = computed(() => {
 
 const reconPassCount = computed(() => reconcileBlocks.value.filter((r) => r.pass).length)
 const reconFailCount = computed(() => reconcileBlocks.value.filter((r) => !r.pass).length)
+
+const {
+  page: flinkPage,
+  pageSize: flinkPageSize,
+  total: flinkTotal,
+  totalPages: flinkTotalPages,
+  paged: flinkPaged,
+  pageNums: flinkPageNums,
+  goPage: goFlinkPage,
+} = usePager(flinkJobs)
+
+const {
+  page: batchPage,
+  pageSize: batchPageSize,
+  total: batchTotal,
+  totalPages: batchTotalPages,
+  paged: batchPaged,
+  pageNums: batchPageNums,
+  goPage: goBatchPage,
+} = usePager(dsDags)
+
+const {
+  page: reconPage,
+  pageSize: reconPageSize,
+  total: reconTotal,
+  totalPages: reconTotalPages,
+  paged: reconPaged,
+  pageNums: reconPageNums,
+  goPage: goReconPage,
+} = usePager(reconcileBlocks)
 
 async function loadOpsBoard() {
   loading.value = true
@@ -475,7 +507,7 @@ function metaToneStyle(tone) {
     <div class="grid grid-2 ops-tasks">
       <div class="card">
         <div class="card-header">
-          <div class="card-title">🌊 流作业</div>
+          <div class="card-title">🌊 流作业 <span class="tip">· 共 {{ flinkTotal }} 条</span></div>
           <div class="ops-header-tags">
             <span v-if="flinkJobs.length" class="tag tag-green">{{ flinkTagSummary.run }} RUNNING</span>
             <span v-if="flinkTagSummary.fail" class="tag tag-red">{{ flinkTagSummary.fail }} FAIL</span>
@@ -483,9 +515,9 @@ function metaToneStyle(tone) {
           </div>
         </div>
         <div class="card-body">
-          <div v-if="!flinkJobs.length" class="tip" style="padding: 12px">暂无流作业</div>
+          <div v-if="!flinkPaged.length" class="tip" style="padding: 12px">暂无流作业</div>
           <div
-            v-for="t in flinkJobs"
+            v-for="t in flinkPaged"
             :key="t.id"
             class="task-card"
             :class="{ clickable: !!t.route }"
@@ -514,21 +546,30 @@ function metaToneStyle(tone) {
               </div>
             </div>
           </div>
+          <ListPager
+            v-model:page="flinkPage"
+            v-model:page-size="flinkPageSize"
+            :total="flinkTotal"
+            :total-pages="flinkTotalPages"
+            :page-nums="flinkPageNums"
+            :page-count="flinkPaged.length"
+            @go="goFlinkPage"
+          />
         </div>
       </div>
 
       <div class="card">
         <div class="card-header">
-          <div class="card-title">🐬 批任务今日运行</div>
+          <div class="card-title">🐬 批任务今日运行 <span class="tip">· 共 {{ batchTotal }} 条</span></div>
           <div class="ops-ds-rate">
             <template v-if="dsSuccessRate != null">成功率 <b>{{ dsSuccessRate }}%</b></template>
             <template v-else>暂无</template>
           </div>
         </div>
         <div class="card-body">
-          <div v-if="!dsDags.length" class="tip" style="padding: 12px">暂无批 DAG</div>
+          <div v-if="!batchPaged.length" class="tip" style="padding: 12px">暂无批 DAG</div>
           <div
-            v-for="t in dsDags"
+            v-for="t in batchPaged"
             :key="t.id"
             class="task-card"
             :class="{ clickable: !!t.route }"
@@ -557,6 +598,15 @@ function metaToneStyle(tone) {
               </div>
             </div>
           </div>
+          <ListPager
+            v-model:page="batchPage"
+            v-model:page-size="batchPageSize"
+            :total="batchTotal"
+            :total-pages="batchTotalPages"
+            :page-nums="batchPageNums"
+            :page-count="batchPaged.length"
+            @go="goBatchPage"
+          />
         </div>
       </div>
     </div>
@@ -565,7 +615,7 @@ function metaToneStyle(tone) {
       <div class="card-header">
         <div class="card-title">
           🔁 湖仓对账
-          <span class="tip">· 未通过自动摘牌黄金数据集</span>
+          <span class="tip">· 未通过自动摘牌黄金数据集 · 共 {{ reconTotal }} 条</span>
         </div>
         <div class="flex gap-8 ops-reconcile-actions">
           <span v-if="reconcileBlocks.length" class="tag tag-green">
@@ -580,8 +630,8 @@ function metaToneStyle(tone) {
         </div>
       </div>
       <div class="card-body">
-        <div v-if="!reconcileBlocks.length" class="tip" style="padding: 12px">暂无对账记录</div>
-        <div v-for="r in reconcileBlocks" :key="r.table" class="reconcile-block">
+        <div v-if="!reconPaged.length" class="tip" style="padding: 12px">暂无对账记录</div>
+        <div v-for="r in reconPaged" :key="r.table" class="reconcile-block">
           <div class="reconcile-table-name">{{ r.table }}</div>
           <div class="reconcile-card" :class="{ 'is-fail': !r.pass }">
             <div class="rc-side">
@@ -607,6 +657,15 @@ function metaToneStyle(tone) {
             （默认以湖表为准重导加速层）
           </div>
         </div>
+        <ListPager
+          v-model:page="reconPage"
+          v-model:page-size="reconPageSize"
+          :total="reconTotal"
+          :total-pages="reconTotalPages"
+          :page-nums="reconPageNums"
+          :page-count="reconPaged.length"
+          @go="goReconPage"
+        />
       </div>
     </div>
   </div>

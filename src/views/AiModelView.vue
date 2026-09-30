@@ -8,6 +8,8 @@ import ListPager from '@/components/common/ListPager.vue'
 import { useToast } from '@/composables/useToast'
 import { usePager } from '@/composables/usePager'
 import { useAiModels } from '@/composables/useAiModels'
+import { useSession } from '@/composables/useSession'
+import { resolveWs } from '@/utils/ws'
 import { useActionLock } from '@/composables/useActionLock'
 import { AI_MODEL_EDIT_FORM, AI_MODEL_FORM } from '@/data/createForms'
 import { pageGuideOf } from '@/data/pageGuides'
@@ -23,6 +25,7 @@ const { showToast } = useToast()
 const { busy, run: runLocked } = useActionLock()
 const guide = pageGuideOf('aimodel')
 const api = useAiModels()
+const { currentWs } = useSession()
 
 const createOpen = ref(false)
 const editOpen = ref(false)
@@ -44,6 +47,26 @@ const kpiCards = ref([
 const gatewayHint = ref('')
 
 const { page, pageSize, total, totalPages, paged, pageNums, goPage, resetPage } = usePager(models)
+const {
+  page: routePage,
+  pageSize: routePageSize,
+  total: routeTotal,
+  totalPages: routeTotalPages,
+  paged: routePaged,
+  pageNums: routePageNums,
+  goPage: goRoutePage,
+  resetPage: resetRoutePage,
+} = usePager(routeRows)
+const {
+  page: usagePage,
+  pageSize: usagePageSize,
+  total: usageTotal,
+  totalPages: usageTotalPages,
+  paged: usagePaged,
+  pageNums: usagePageNums,
+  goPage: goUsagePage,
+  resetPage: resetUsagePage,
+} = usePager(usageBars)
 const enabledCount = computed(() => models.value.filter((m) => m.enabled).length)
 
 function applyApiPayload() {
@@ -73,12 +96,15 @@ function applyApiPayload() {
     gatewayHint.value = '已接 API'
   }
   resetPage()
+  resetRoutePage()
+  resetUsagePage()
 }
 
-onMounted(async () => {
+async function reloadModels() {
   try {
-    await api.loadAll()
+    await api.loadAll(resolveWs())
     applyApiPayload()
+    loadError.value = ''
   } catch (e) {
     loadError.value = e?.message || '加载失败'
     models.value = []
@@ -87,6 +113,14 @@ onMounted(async () => {
     gatewayHint.value = ''
     showToast(loadError.value, 'warning')
   }
+}
+
+onMounted(() => {
+  reloadModels()
+})
+
+watch(currentWs, () => {
+  reloadModels()
 })
 
 function applyOverviewKpi(ov) {
@@ -224,7 +258,7 @@ async function onEditModel(payload) {
     )
     // 重新拉列表，避免本地缓存与 Vault/model_name 不一致
     try {
-      await api.loadAll()
+      await api.loadAll(resolveWs())
       applyApiPayload()
     } catch {
       /* ignore */
@@ -564,11 +598,11 @@ watch(
     <div class="grid grid-2 aim-bottom">
       <div class="card">
         <div class="card-header">
-          <div class="card-title">🔀 模型路由策略 <span class="tip">· 按场景/空间路由</span></div>
+          <div class="card-title">🔀 模型路由策略 <span class="tip">· 按场景/空间路由 · 共 {{ routeTotal }} 条</span></div>
           <button type="button" class="btn btn-sm" @click="addPolicy">＋ 新增策略</button>
         </div>
         <div class="card-body" style="padding: 0">
-          <table class="table">
+          <table v-if="routePaged.length" class="table">
             <thead>
               <tr>
                 <th>场景</th>
@@ -579,7 +613,7 @@ watch(
               </tr>
             </thead>
             <tbody>
-              <tr v-for="(r, i) in routeRows" :key="i">
+              <tr v-for="(r, i) in routePaged" :key="`${r.scene}-${r.ws}-${i}`">
                 <td>{{ r.scene }}</td>
                 <td><code>{{ r.ws }}</code></td>
                 <td><b>{{ r.primary }}</b></td>
@@ -590,21 +624,41 @@ watch(
               </tr>
             </tbody>
           </table>
+          <p v-else class="tip" style="padding: 12px 16px">暂无路由策略</p>
+          <ListPager
+            v-model:page="routePage"
+            v-model:page-size="routePageSize"
+            :total="routeTotal"
+            :total-pages="routeTotalPages"
+            :page-nums="routePageNums"
+            :page-count="routePaged.length"
+            @go="goRoutePage"
+          />
         </div>
       </div>
 
       <div class="card">
         <div class="card-header">
-          <div class="card-title">📊 各模型用量 · 近 7 天 <span class="tip">· 按空间分摊成本</span></div>
+          <div class="card-title">📊 各模型用量 · 近 7 天 <span class="tip">· 按空间分摊成本 · 共 {{ usageTotal }} 条</span></div>
         </div>
         <div class="card-body">
-          <div v-for="(d, i) in usageBars" :key="i" class="call-bar-row">
+          <div v-if="!usagePaged.length" class="tip">暂无用量数据</div>
+          <div v-for="(d, i) in usagePaged" :key="`${d.name}-${i}`" class="call-bar-row">
             <div class="cbr-name">{{ d.name }}</div>
             <div class="cbr-bar">
               <div class="cbr-bar-fill" :style="{ width: `${d.pct}%` }" />
             </div>
             <div class="cbr-val">{{ formatUsageCalls(d.calls) }} · {{ d.cost }}</div>
           </div>
+          <ListPager
+            v-model:page="usagePage"
+            v-model:page-size="usagePageSize"
+            :total="usageTotal"
+            :total-pages="usageTotalPages"
+            :page-nums="usagePageNums"
+            :page-count="usagePaged.length"
+            @go="goUsagePage"
+          />
         </div>
       </div>
     </div>

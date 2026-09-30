@@ -1,6 +1,7 @@
 <script setup>
 import { reactive, watch } from 'vue'
 import { useToast } from '@/composables/useToast'
+import { resolveWs } from '@/utils/ws'
 
 const props = defineProps({
   open: { type: Boolean, default: false },
@@ -53,7 +54,7 @@ function submit() {
     showToast('请选择或填写接口服务 ID', 'warning')
     return
   }
-  emit('submit', { ...form })
+  emit('submit', { ...form, ws: resolveWs() })
 }
 </script>
 

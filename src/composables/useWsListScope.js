@@ -1,26 +1,32 @@
 /**
  * 列表范围（空间优先定型）：
  * - 默认跟随 currentWs（切换即刷新）
- * - 「查看全部」→ scope=all（不传 ws；特权巡检）
+ * - 「查看全部」→ scope=all（不传 ws；仅特权巡检，服务端硬门禁）
  * 资产目录列表默认 scope=workspace（本空间）。
  */
 import { computed, ref, watch } from 'vue'
 import { useSession } from '@/composables/useSession'
 
 export function useWsListScope() {
-  const { currentWs, user } = useSession()
+  const { currentWs, user, canScopeAll } = useSession()
   /** true = 仅当前空间（默认）；false = 查看全部 */
   const mineOnly = ref(true)
 
-  /** UI：勾选 = 查看全部（与 mineOnly 相反） */
+  const canShowAll = computed(() => Boolean(canScopeAll.value))
+
+  /** UI：勾选 = 查看全部（与 mineOnly 相反）；非特权不可开 */
   const showAll = computed({
-    get: () => !mineOnly.value,
+    get: () => !mineOnly.value && canShowAll.value,
     set: (v) => {
+      if (v && !canShowAll.value) {
+        mineOnly.value = true
+        return
+      }
       mineOnly.value = !v
     },
   })
 
-  const listWs = computed(() => (mineOnly.value ? currentWs.value || 'default' : undefined))
+  const listWs = computed(() => (mineOnly.value || !canShowAll.value ? currentWs.value || 'default' : undefined))
 
   function listWsParams(extra = {}) {
     const ws = listWs.value
@@ -34,10 +40,13 @@ export function useWsListScope() {
    */
   function watchListScope(reload) {
     watch(mineOnly, () => reload())
+    watch(canShowAll, (ok) => {
+      if (!ok) mineOnly.value = true
+    })
     watch(currentWs, () => {
       if (mineOnly.value) reload()
     })
   }
 
-  return { user, currentWs, mineOnly, showAll, listWs, listWsParams, watchListScope }
+  return { user, currentWs, mineOnly, showAll, canShowAll, listWs, listWsParams, watchListScope }
 }

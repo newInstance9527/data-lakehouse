@@ -20,7 +20,8 @@ import {
   metricTypeMeta,
   setMetricCatalogProvider,
 } from '@/data/metrics'
-import { useSession } from '@/composables/useSession'
+import { resolveWs } from '@/utils/ws'
+import { fetchAllPages, BACKEND_PAGE_SIZE_MAX } from '@/utils/pageFetch'
 
 const catalog = ref([])
 const overview = ref(null)
@@ -111,6 +112,7 @@ export function normalizeMetric(row) {
     omFqn: row.omFqn,
     gravAssetId: row.gravAssetId,
     revision: row.revision,
+    ws: row.ws || '',
     createTime: row.createTime || null,
     updateTime: row.updateTime,
   }
@@ -140,6 +142,12 @@ function upsertLocal(row) {
   return catalog.value.find((r) => r.id === n.id)
 }
 
+async function fetchAllMetricRecords(filters) {
+  return fetchAllPages(({ current, size }) => fetchMetricList(filters, { current, size }), {
+    pageSize: BACKEND_PAGE_SIZE_MAX,
+  })
+}
+
 setMetricCatalogProvider(() => catalog.value)
 
 export function useMetrics() {
@@ -149,11 +157,10 @@ export function useMetrics() {
   })
 
   function ensureLoaded() {
-    const { currentWs } = useSession()
-    const ws = currentWs.value || 'default'
+    const ws = resolveWs()
     if (loaded.value && loadedWs.value === ws) return loadPromise
     if (loading.value && loadPromise) return loadPromise
-    loadPromise = loadAll({ ws })
+    loadPromise = loadAll({ ws, scope: 'workspace' })
       .catch(() => {})
       .finally(() => {
         loadPromise = null
@@ -165,18 +172,17 @@ export function useMetrics() {
     loading.value = true
     lastError.value = null
     try {
-      const { currentWs } = useSession()
-      const ws = filters.ws || currentWs.value || 'default'
+      const ws = resolveWs(filters.ws)
       if (loadedWs.value && loadedWs.value !== ws) {
         catalog.value = []
         overview.value = null
       }
-      const q = { ...filters, ws }
-      const [page, ov] = await Promise.all([
-        fetchMetricList(q, { current: 1, size: 500 }),
+      const q = { ...filters, ws, scope: filters.scope || 'workspace' }
+      const [records, ov] = await Promise.all([
+        fetchAllMetricRecords(q),
         fetchMetricOverview(ws).catch(() => null),
       ])
-      catalog.value = sortMetricCatalog((page?.records || []).map(normalizeMetric).filter(Boolean))
+      catalog.value = sortMetricCatalog(records.map(normalizeMetric).filter(Boolean))
       overview.value = ov
       loaded.value = true
       loadedWs.value = ws
@@ -192,53 +198,58 @@ export function useMetrics() {
 
   async function refreshOverview(ws) {
     try {
-      const { currentWs } = useSession()
-      overview.value = await fetchMetricOverview(ws || currentWs.value || 'default')
+      overview.value = await fetchMetricOverview(resolveWs(ws))
     } catch (e) {
       console.warn('[metrics] overview failed', e)
     }
   }
 
-  async function reloadDetail(code) {
-    const raw = await fetchMetricDetail(code)
+  async function reloadDetail(code, ws) {
+    const raw = await fetchMetricDetail(code, resolveWs(ws))
     return upsertLocal(raw)
   }
 
   async function addMetric(payload) {
-    const saved = await createMetric(payload)
-    const row = upsertLocal(saved)
-    await refreshOverview()
+    const ws = resolveWs(payload?.ws)
+    const saved = await createMetric({ ...payload, ws })
+    // 以服务端本空间列表为准，避免仅本地 upsert 后被筛选项/旧缓存挡住
+    await loadAll({ ws, scope: 'workspace' })
+    const row =
+      upsertLocal(saved) || catalog.value.find((r) => r.id === (saved?.metricCode || saved?.id))
+    await refreshOverview(ws)
     return row
   }
 
   async function saveMetric(code, payload) {
-    const saved = await updateMetric(code, payload)
+    const ws = resolveWs(payload?.ws)
+    const saved = await updateMetric(code, { ...payload, ws })
     const row = upsertLocal(saved)
-    await refreshOverview()
+    await refreshOverview(ws)
     return row
   }
 
   async function runTransition(code, action, note) {
-    const saved = await transitionMetric(code, { action, note })
+    const ws = resolveWs()
+    const saved = await transitionMetric(code, { action, note, ws })
     const row = upsertLocal(saved)
-    await refreshOverview()
+    await refreshOverview(ws)
     return row
   }
 
   async function runCompile(payload) {
-    return compileMetric(payload)
+    return compileMetric({ ...payload, ws: resolveWs(payload?.ws) })
   }
 
   async function runQuery(payload) {
-    return queryMetric(payload)
+    return queryMetric({ ...payload, ws: resolveWs(payload?.ws) })
   }
 
   async function runTrial(code, payload = {}) {
-    return trialMetric(code, payload)
+    return trialMetric(code, { ...payload, ws: resolveWs(payload?.ws) })
   }
 
   async function runMaterialize(code, payload = {}) {
-    return materializeMetric(code, payload)
+    return materializeMetric(code, { ...payload, ws: resolveWs(payload?.ws) })
   }
 
   const liveKpis = computed(() => {
@@ -310,6 +321,7 @@ export function useMetrics() {
     liveKpis,
     loading,
     loaded,
+    loadedWs,
     lastError,
     ensureLoaded,
     loadAll,

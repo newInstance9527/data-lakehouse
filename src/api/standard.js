@@ -2,11 +2,12 @@
  * 数据标准 API（对齐 /lh/standard）
  */
 import { http } from './http.js'
+import { resolveWs } from '@/utils/ws'
 
 const STD = '/lh/standard'
 
 export function fetchStdOverview(ws) {
-  return http.get(`${STD}/overview`, { ws })
+  return http.get(`${STD}/overview`, { ws: resolveWs(ws) })
 }
 
 export function fetchStdFields(filters = {}, { current = 1, size = 200 } = {}) {
@@ -16,7 +17,7 @@ export function fetchStdFields(filters = {}, { current = 1, size = 200 } = {}) {
     q: filters.q ?? filters.keyword,
     domain: filters.domain ?? filters.domainCode,
     status: filters.status,
-    ws: filters.ws,
+    ws: resolveWs(filters.ws),
   })
 }
 
@@ -31,7 +32,7 @@ export function upsertStdField(payload) {
     domainCode: payload.domainCode || payload.domain,
     desc: payload.desc || payload.description,
     description: payload.description || payload.desc,
-    ws: payload.ws,
+    ws: resolveWs(payload.ws),
     remark: payload.remark,
   })
 }
@@ -42,7 +43,7 @@ export function fetchStdCodes(filters = {}, { current = 1, size = 200 } = {}) {
     size,
     q: filters.q ?? filters.keyword,
     status: filters.status,
-    ws: filters.ws,
+    ws: resolveWs(filters.ws),
   })
 }
 
@@ -56,7 +57,7 @@ export function upsertStdCode(payload) {
     values: payload.values,
     mapped: payload.mapped || payload.mappedSummary,
     mappedSummary: payload.mappedSummary || payload.mapped,
-    ws: payload.ws,
+    ws: resolveWs(payload.ws),
     remark: payload.remark,
   }
   if (Array.isArray(payload.items) && payload.items.length) {
@@ -74,7 +75,7 @@ export function fetchStdNamings(filters = {}, { current = 1, size = 200 } = {}) 
     size,
     q: filters.q ?? filters.keyword,
     layer: filters.layer,
-    ws: filters.ws,
+    ws: resolveWs(filters.ws),
   })
 }
 
@@ -84,25 +85,25 @@ export function upsertStdNaming(payload) {
     example: payload.example,
     layer: payload.layer,
     status: payload.status,
-    ws: payload.ws,
+    ws: resolveWs(payload.ws),
     remark: payload.remark,
   })
 }
 
 export function deleteStdField(id, ws) {
-  return http.post(`${STD}/fields/delete`, { id, ws })
+  return http.post(`${STD}/fields/delete`, { id, ws: resolveWs(ws) })
 }
 
 export function deleteStdCode(id, ws) {
-  return http.post(`${STD}/codes/delete`, { id, ws })
+  return http.post(`${STD}/codes/delete`, { id, ws: resolveWs(ws) })
 }
 
 export function deleteStdNaming(id, ws) {
-  return http.post(`${STD}/namings/delete`, { id, ws })
+  return http.post(`${STD}/namings/delete`, { id, ws: resolveWs(ws) })
 }
 
 export function deleteStdMapping(id, ws) {
-  return http.post(`${STD}/mappings/delete`, { id, ws })
+  return http.post(`${STD}/mappings/delete`, { id, ws: resolveWs(ws) })
 }
 
 export function fetchStdMappings(filters = {}, { current = 1, size = 200 } = {}) {
@@ -112,7 +113,7 @@ export function fetchStdMappings(filters = {}, { current = 1, size = 200 } = {})
     q: filters.q ?? filters.keyword,
     status: filters.status,
     dsId: filters.dsId,
-    ws: filters.ws,
+    ws: resolveWs(filters.ws),
   })
 }
 
@@ -132,7 +133,7 @@ export function upsertStdMapping(payload) {
     dsId: payload.dsId,
     assetId: payload.assetId,
     etlJobId: payload.etlJobId,
-    ws: payload.ws,
+    ws: resolveWs(payload.ws),
     remark: payload.remark,
   })
 }
@@ -143,14 +144,14 @@ export function fetchStdDetects(filters = {}, { current = 1, size = 200 } = {}) 
     size,
     q: filters.q ?? filters.keyword,
     status: filters.status,
-    ws: filters.ws,
+    ws: resolveWs(filters.ws),
   })
 }
 
 /** 运行落地检测（写入 gov_std_detect_result） */
 export function runStdLandingDetect(ws) {
-  const q = ws ? `?ws=${encodeURIComponent(ws)}` : ''
-  return http.post(`${STD}/detects/run${q}`, {})
+  const w = resolveWs(ws)
+  return http.post(`${STD}/detects/run?ws=${encodeURIComponent(w)}`, {})
 }
 
 export function fetchStdMetaOptions() {

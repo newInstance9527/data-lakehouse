@@ -1,5 +1,6 @@
 import { ref } from 'vue'
 import { createApplyTicket, approveTicket, pageMyTickets, pagePendingTickets } from '@/api/apply'
+import { resolveWs } from '@/utils/ws'
 
 /**
  * 申请中心看板（模块单例）：出湖页与申请中心共用 pending / mine。
@@ -586,7 +587,7 @@ function upsertBoardCard(listRef, card, preferFront = true) {
  */
 export async function hydrateApplyBoardFromServer(ws) {
   try {
-    const q = { current: 1, size: 50 }
+    const q = { current: 1, size: 200 }
     if (ws) q.ws = ws
     const [minePage, pendingPage] = await Promise.all([
       pageMyTickets(q),
@@ -639,6 +640,7 @@ export async function pushExportApply({
       exportTable: tableLabel,
       exportTarget: targetLabel,
       expireLabel,
+      ws: resolveWs(),
       ...(assetId ? { assetId } : {}),
     })
     const card = mapServerTicket(server, 'pending')
@@ -673,7 +675,7 @@ export async function approveExportOnBoard(ticket) {
     const approvedNo = res?.ticketNo || res?.ticket?.ticketNo || ticketNo
     if (res?.awaitingSecurity || res?.status === 'pending_security') {
       const mid = mapServerTicket(res.ticket || { ...ticket, status: 'pending_security', ticketNo: approvedNo })
-      await hydrateApplyBoardFromServer().catch(() => {})
+      await hydrateApplyBoardFromServer(resolveWs()).catch(() => {})
       return { ticketNo: approvedNo, awaitingSecurity: true, approved: mid, fromServer: true }
     }
     const approved = {

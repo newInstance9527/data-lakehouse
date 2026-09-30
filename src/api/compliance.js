@@ -2,16 +2,17 @@
  * 合规删除 / 被遗忘权 API（对齐 /lh/compliance · doc/合规删除.md）
  */
 import { http } from './http.js'
+import { resolveWs } from '@/utils/ws'
 
 const C = '/lh/compliance'
 
 export function fetchDelSummary(ws) {
-  return http.get(`${C}/summary`, { ws })
+  return http.get(`${C}/summary`, { ws: resolveWs(ws) })
 }
 
 export function fetchDelRequests(filters = {}) {
   return http.get(`${C}/requests`, {
-    ws: filters.ws,
+    ws: resolveWs(filters.ws),
     status: filters.status,
     reqType: filters.reqType,
     kw: filters.kw,
@@ -25,7 +26,7 @@ export function fetchDelRequest(reqId) {
 }
 
 export function createDelRequest(payload) {
-  return http.post(`${C}/requests`, payload)
+  return http.post(`${C}/requests`, { ...payload, ws: resolveWs(payload?.ws) })
 }
 
 export function assessDelRequest(reqId) {
@@ -87,15 +88,15 @@ export function revealDelSubjectPlain({ reqId, confirmReqNo, reason } = {}) {
 }
 
 export function fetchDelSubjectMaps({ ws, subjectType, carrier } = {}) {
-  return http.get(`${C}/subject-maps`, { ws, subjectType, carrier })
+  return http.get(`${C}/subject-maps`, { ws: resolveWs(ws), subjectType, carrier })
 }
 
 export function upsertDelSubjectMap(payload) {
-  return http.put(`${C}/subject-maps`, payload)
+  return http.put(`${C}/subject-maps`, { ...payload, ws: resolveWs(payload?.ws) })
 }
 
 export function fetchDelCoverage(ws) {
-  return http.get(`${C}/coverage`, { ws })
+  return http.get(`${C}/coverage`, { ws: resolveWs(ws) })
 }
 
 /** E7：补数门禁预检 */

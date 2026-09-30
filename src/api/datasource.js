@@ -2,6 +2,7 @@
  * 数据源 API（后端已按前端字段返回，此处仅组分页/提交载荷）
  */
 import { http } from './http.js'
+import { resolveWs } from '@/utils/ws'
 
 const DS = '/lh/datasource'
 
@@ -17,7 +18,7 @@ export function fetchDatasourcePage(filters = {}, { current = 1, size = 200 } = 
     category: filters.cat,
     purpose: filters.purpose,
     usableInDag: filters.usableInDag,
-    ws: filters.ws,
+    ws: resolveWs(filters.ws),
   })
 }
 
@@ -51,7 +52,7 @@ export function fetchMetaColumns(id, schema, table) {
 }
 
 export function fetchDatasourceKpi(ws) {
-  return http.get(`${DS}/kpi`, { ws })
+  return http.get(`${DS}/kpi`, { ws: resolveWs(ws) })
 }
 
 /** 投影门户数据源到 SQLREST（可按 id 列表；空=全部可投影） */
@@ -165,11 +166,14 @@ export function toSubmitBody(form) {
     'serviceUrl',
     'zkQuorum',
     'baseURL',
+    'httpUrl',
     'bucket',
     'accessKey',
     'secretKey',
     'path',
     'token',
+    'authType',
+    'openapiSpec',
     'sid',
     'namespace',
     'vhost',
@@ -202,5 +206,6 @@ export function toSubmitBody(form) {
     access: form.access,
     asset: form.asset,
     conn,
+    ws: resolveWs(form.ws),
   }
 }

@@ -2,6 +2,7 @@
  * ETL 编排 API（对齐 /lh/etl · doc/ETL编排.md）
  */
 import { http } from './http.js'
+import { resolveWs } from '@/utils/ws'
 
 const E = '/lh/etl'
 
@@ -11,14 +12,14 @@ export function fetchEtlDags(filters = {}, { current = 1, size = 100 } = {}) {
     size,
     q: filters.q ?? filters.keyword,
     status: filters.status,
-    ws: filters.ws,
+    ws: resolveWs(filters.ws),
     scope: filters.scope,
   })
 }
 
 export function createEtlDag(payload) {
   return http.post(`${E}/dags`, {
-    ws: payload.ws,
+    ws: resolveWs(payload.ws),
     dagCode: payload.dagCode || payload.name,
     name: payload.name || payload.dagCode,
     description: payload.description ?? payload.desc,
@@ -96,7 +97,7 @@ export function backfillEtlDag(id, { markKey, markValue, env, confirmReqNo } = {
 }
 
 export function fetchEtlRuns({ dagId, ws, current = 1, size = 50 } = {}) {
-  return http.get(`${E}/dags/runs`, { dagId, ws, current, size })
+  return http.get(`${E}/dags/runs`, { dagId, ws: resolveWs(ws), current, size })
 }
 
 export function fetchEtlRunDetail(runId) {

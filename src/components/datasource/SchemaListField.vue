@@ -1,7 +1,12 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import {
+  formatHttpApiEntry,
+  HTTP_API_METHODS,
+  isHttpApiInventory,
+  isPathLikeInventory,
   joinSchemaList,
+  parseHttpApiEntry,
   parseSchemaList,
 } from '@/utils/schemaList'
 import { useToast } from '@/composables/useToast'
@@ -27,13 +32,32 @@ const emit = defineEmits(['update:modelValue', 'sync'])
 
 const { showToast } = useToast()
 const draft = ref('')
-const items = ref(parseSchemaList(props.modelValue))
+const draftMethod = ref('GET')
+const listOpts = computed(() => ({
+  sourceType: props.sourceType,
+  fieldName: props.fieldName,
+  label: props.label,
+  pathLike: isPathLikeInventory(props.sourceType, props.fieldName, props.label),
+}))
+const httpApiMode = computed(() =>
+  isHttpApiInventory(props.sourceType, props.fieldName, props.label),
+)
+const items = ref(parseSchemaList(props.modelValue, listOpts.value))
 const syncing = ref(false)
 
 watch(
   () => props.modelValue,
   (v) => {
-    const next = parseSchemaList(v)
+    const next = parseSchemaList(v, listOpts.value)
+    const cur = items.value.join('\0')
+    if (next.join('\0') !== cur) items.value = next
+  },
+)
+
+watch(
+  () => [props.sourceType, props.fieldName, props.label],
+  () => {
+    const next = parseSchemaList(props.modelValue, listOpts.value)
     const cur = items.value.join('\0')
     if (next.join('\0') !== cur) items.value = next
   },
@@ -43,22 +67,65 @@ const syncEnabled = computed(
   () => !!props.discover && (props.alwaysSyncable || props.canSync),
 )
 
+const pathPlaceholder = computed(() => {
+  if (httpApiMode.value) return '/api/users 或粘贴 GET /api/users'
+  return props.placeholder
+})
+
 function commit(next) {
   items.value = next
-  emit('update:modelValue', joinSchemaList(next))
+  emit('update:modelValue', joinSchemaList(next, listOpts.value))
+}
+
+function normalizeIncomingNames(rawNames) {
+  if (!httpApiMode.value) return rawNames
+  return rawNames
+    .map((n) => {
+      const parsed = parseHttpApiEntry(n)
+      if (parsed.method) return formatHttpApiEntry(parsed.method, parsed.path)
+      // 纯 path：用当前下拉方法补齐
+      return formatHttpApiEntry(draftMethod.value, parsed.path || n)
+    })
+    .filter(Boolean)
 }
 
 function addItem() {
-  const name = draft.value.trim()
-  if (!name) {
-    showToast('请输入清单项名称', 'warning')
+  const raw = draft.value.trim()
+  if (!raw) {
+    showToast(httpApiMode.value ? '请输入接口 Path' : '请输入清单项名称', 'warning')
     return
   }
-  if (items.value.includes(name)) {
-    showToast('该项已存在', 'warning')
+  let names
+  if (httpApiMode.value) {
+    // 支持一次粘贴多条：GET /a, POST /b；单条则带上所选方法
+    const parts = parseSchemaList(raw, listOpts.value)
+    if (parts.length > 1) {
+      names = normalizeIncomingNames(parts)
+    } else {
+      const one = formatHttpApiEntry(draftMethod.value, raw)
+      names = one ? [one] : []
+    }
+  } else if (listOpts.value.pathLike) {
+    names = parseSchemaList(raw, listOpts.value)
+  } else {
+    names = [raw]
+  }
+  if (!names.length) {
+    showToast(httpApiMode.value ? '请输入接口 Path' : '请输入清单项名称', 'warning')
     return
   }
-  commit([...items.value, name])
+  const next = [...items.value]
+  let added = 0
+  for (const name of names) {
+    if (next.includes(name)) continue
+    next.push(name)
+    added += 1
+  }
+  if (!added) {
+    showToast(names.length === 1 ? '该项已存在' : '这些项均已存在', 'warning')
+    return
+  }
+  commit(next)
   draft.value = ''
 }
 
@@ -75,6 +142,10 @@ function onDraftKey(e) {
   }
 }
 
+function entryParts(item) {
+  return parseHttpApiEntry(item)
+}
+
 function normalizeDiscoverResult(res) {
   if (Array.isArray(res)) {
     return res.map((x) => (typeof x === 'string' ? x : x?.name)).filter(Boolean)
@@ -83,7 +154,7 @@ function normalizeDiscoverResult(res) {
   if (Array.isArray(res?.tables)) {
     return res.tables.map((t) => (typeof t === 'string' ? t : t?.name)).filter(Boolean)
   }
-  if (typeof res?.schema === 'string') return parseSchemaList(res.schema)
+  if (typeof res?.schema === 'string') return parseSchemaList(res.schema, listOpts.value)
   return []
 }
 
@@ -100,10 +171,18 @@ async function syncList() {
   showToast(`🔄 正在同步${props.label}…`, 'info')
   try {
     const res = await props.discover()
-    const names = normalizeDiscoverResult(res)
+    let names = normalizeDiscoverResult(res)
+    if (httpApiMode.value) {
+      names = names.map((n) => {
+        const p = parseHttpApiEntry(n)
+        return p.method
+          ? formatHttpApiEntry(p.method, p.path)
+          : formatHttpApiEntry('GET', p.path || n)
+      })
+    }
     commit(names)
     showToast(`✅ 已同步 ${names.length} 项（源端真实表）`, 'success')
-    emit('sync', joinSchemaList(names))
+    emit('sync', joinSchemaList(names, listOpts.value))
   } catch (e) {
     showToast(`同步失败：${e?.message || e}`, 'error')
   } finally {
@@ -127,21 +206,41 @@ async function syncList() {
     </div>
 
     <div class="schema-list-add">
+      <select
+        v-if="httpApiMode"
+        v-model="draftMethod"
+        class="select schema-list-method"
+        title="请求方式"
+      >
+        <option v-for="m in HTTP_API_METHODS" :key="m" :value="m">{{ m }}</option>
+      </select>
       <input
         v-model="draft"
         class="input"
-        :placeholder="placeholder"
+        :placeholder="pathPlaceholder"
         @keydown="onDraftKey"
       />
       <button type="button" class="btn btn-sm" @click="addItem">＋ 添加</button>
     </div>
 
     <div v-if="!items.length" class="schema-list-empty">
-      未同步，可手动添加或{{ alwaysSyncable ? '' : '先测通后' }}点击「同步清单」拉取源端真实表
+      <template v-if="httpApiMode">
+        未同步，可选择请求方式并填写 Path 添加；也支持粘贴
+        <code>GET /a, POST /b</code>
+      </template>
+      <template v-else>
+        未同步，可手动添加或{{ alwaysSyncable ? '' : '先测通后' }}点击「同步清单」拉取源端真实表
+      </template>
     </div>
     <ul v-else class="schema-list">
       <li v-for="(item, idx) in items" :key="item + idx" class="schema-list-row">
-        <span class="schema-list-name">{{ item }}</span>
+        <span class="schema-list-name">
+          <template v-if="httpApiMode && entryParts(item).method">
+            <span class="schema-list-verb">{{ entryParts(item).method }}</span>
+            <span>{{ entryParts(item).path }}</span>
+          </template>
+          <template v-else>{{ item }}</template>
+        </span>
         <button type="button" class="btn-link btn-sm" @click="removeItem(idx)">删除</button>
       </li>
     </ul>
@@ -170,6 +269,10 @@ async function syncList() {
   gap: 8px;
   align-items: center;
 }
+.schema-list-method {
+  width: 108px;
+  flex-shrink: 0;
+}
 .schema-list-add .input {
   flex: 1;
   min-width: 0;
@@ -181,6 +284,10 @@ async function syncList() {
   background: var(--bg-2);
   border-radius: 6px;
   border: 1px dashed var(--border);
+}
+.schema-list-empty code {
+  font-size: 11px;
+  color: var(--text-2);
 }
 .schema-list {
   list-style: none;
@@ -208,5 +315,17 @@ async function syncList() {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   color: var(--text-1);
   word-break: break-all;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.schema-list-verb {
+  display: inline-block;
+  min-width: 3.2em;
+  font-weight: 600;
+  font-size: 11px;
+  color: var(--primary, #1890ff);
+  flex-shrink: 0;
 }
 </style>

@@ -67,27 +67,107 @@ function defaultEngine(type) {
   if (/Elastic|OpenSearch/i.test(t)) return 'Lucene'
   if (/Redis/i.test(t)) return 'Redis'
   if (/S3|MinIO|HDFS|FTP/i.test(t)) return 'Object'
+  if (/HTTP|REST|OpenAPI/i.test(t)) return 'HTTP'
   return '—'
 }
 
-export function parseSchemaList(value) {
+/** 接口 / 对象路径类清单：名称本身含 `/`，不能用斜杠当分隔符 */
+export function isPathLikeInventory(sourceType = '', fieldName = '', label = '') {
+  const blob = `${sourceType} ${fieldName} ${label}`
+  return /HTTP|REST|OpenAPI|接口|S3|MinIO|HDFS|FTP|GCS|ADLS|路径|文件|Bucket|Key\b/i.test(blob)
+}
+
+/** HTTP API / 接口清单：需记录 METHOD + path */
+export function isHttpApiInventory(sourceType = '', fieldName = '', label = '') {
+  const blob = `${sourceType} ${fieldName} ${label}`
+  return /HTTP|REST|OpenAPI|接口/i.test(blob)
+}
+
+export const HTTP_API_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']
+
+/**
+ * 解析接口清单条目：`GET /order` / `/orders` / `GET /order (OpenAPI)`
+ * @returns {{ method: string, path: string, raw: string }}
+ */
+export function parseHttpApiEntry(raw) {
+  const s = String(raw || '').trim()
+  if (!s) return { method: '', path: '', raw: '' }
+  const cleaned = s.replace(/\s*\([^)]*\)\s*$/, '').trim()
+  const m = cleaned.match(/^(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+(\S+)/i)
+  if (m) {
+    let path = m[2]
+    if (!path.startsWith('/') && !/^https?:/i.test(path)) path = `/${path}`
+    return { method: m[1].toUpperCase(), path, raw: s }
+  }
+  let path = cleaned
+  if (path && !path.startsWith('/') && !/^https?:/i.test(path) && !/\s/.test(path)) {
+    path = `/${path}`
+  }
+  return { method: '', path, raw: s }
+}
+
+/** 规范化为 `METHOD /path`；粘贴整段时优先用文内方法 */
+export function formatHttpApiEntry(method, path) {
+  let p = String(path || '').trim()
+  if (!p) return ''
+  const embedded = parseHttpApiEntry(p)
+  const m = String(embedded.method || method || 'GET').toUpperCase()
+  p = embedded.path || p
+  if (!p.startsWith('/') && !/^https?:/i.test(p)) p = `/${p}`
+  return `${m} ${p}`
+}
+
+/** 文本内容像 HTTP 接口清单（含 METHOD /path）时，也不按 `/` 拆 */
+function looksHttpApiInventory(value) {
+  const s = String(value || '')
+  return /(?:^|[,;|，、\n\r])\s*(?:GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+\S+/i.test(
+    `,\n${s}`,
+  )
+}
+
+/**
+ * 清单分隔：统一用逗号 / 中文逗号 / 顿号（及分号、竖线、换行）。
+ * 路径/接口类禁止用 `/` 分隔（path 本身含斜杠）；表名类解析仍兼容历史 `/` 拼接。
+ */
+export const INVENTORY_SEP = '、'
+const PATH_LIKE_DELIM = /[,，、|;|\n\r]+/
+const TABLE_LIKE_DELIM = /[/|,，、;\n\r]+/
+
+/**
+ * @param {string|string[]|object[]} value
+ * @param {{ pathLike?: boolean, sourceType?: string, fieldName?: string, label?: string }} [opts]
+ */
+export function parseSchemaList(value, opts = {}) {
   if (!value) return []
   if (Array.isArray(value)) {
     return value
       .map((x) => (typeof x === 'string' ? x.trim() : String(x?.name || '').trim()))
       .filter(Boolean)
   }
+  const pathLike =
+    opts.pathLike === true ||
+    isPathLikeInventory(opts.sourceType, opts.fieldName, opts.label) ||
+    looksHttpApiInventory(value)
+  const delim = pathLike ? PATH_LIKE_DELIM : TABLE_LIKE_DELIM
   return String(value)
-    .split(/[/|,，\n\r]+/)
+    .split(delim)
     .map((x) => x.trim())
     .filter(Boolean)
 }
 
-export function joinSchemaList(items) {
+/**
+ * @param {string[]|object[]|string} items
+ * @param {{ pathLike?: boolean, sourceType?: string, fieldName?: string, label?: string }} [opts]
+ */
+export function joinSchemaList(items, opts = {}) {
+  const sep = INVENTORY_SEP
   if (Array.isArray(items) && items.length && typeof items[0] === 'object') {
-    return items.map((t) => t.name).filter(Boolean).join('/')
+    return items.map((t) => t.name).filter(Boolean).join(sep)
   }
-  return parseSchemaList(items).join('/')
+  if (Array.isArray(items)) {
+    return items.map((x) => String(x || '').trim()).filter(Boolean).join(sep)
+  }
+  return parseSchemaList(items, opts).join(sep)
 }
 
 export function isInventoryField(field) {
@@ -118,7 +198,9 @@ export function resolveTables(source) {
       typeof t === 'string' ? enrichTableMeta(t, source.type) : { ...enrichTableMeta(t.name, source.type, t), ...t },
     )
   }
-  return parseSchemaList(source.schema).map((name) => enrichTableMeta(name, source.type))
+  return parseSchemaList(source.schema, { sourceType: source.type }).map((name) =>
+    enrichTableMeta(name, source.type),
+  )
 }
 
 /** 静态演示：仅样例页可用；注册弹窗禁止再调用（会生成 {seed}_user 等假表） */
@@ -174,8 +256,8 @@ export function mockSyncTables(type = 'MySQL', fieldName = 'schema', seed = '') 
   return names.map((name) => enrichTableMeta(name, t, { syncedAt: now }))
 }
 
-export function schemaSummary(value, limit = 3) {
-  const items = parseSchemaList(value)
+export function schemaSummary(value, limit = 3, opts = {}) {
+  const items = parseSchemaList(value, opts)
   if (!items.length) return { text: '(未同步 Schema)', count: 0, preview: [] }
   const preview = items.slice(0, limit)
   const more =
@@ -184,13 +266,14 @@ export function schemaSummary(value, limit = 3) {
       : items.length > 1
         ? ` · 共 ${items.length} 项`
         : ''
+  // 各类型清单展示统一顿号分隔，避免与 path 中的 `/` 混淆
   return {
-    text: preview.join(' / ') + more,
+    text: preview.join(INVENTORY_SEP) + more,
     count: items.length,
     preview,
   }
 }
 
-export function tablesToSchema(tables) {
-  return joinSchemaList(tables || [])
+export function tablesToSchema(tables, opts = {}) {
+  return joinSchemaList(tables || [], opts)
 }

@@ -13,9 +13,8 @@ const { bootstrapSession } = useSession()
 /** 绑定 locale，切换语言时刷新登录文案 */
 const { locale } = useLocale()
 
-/** 与 Snowy 种子用户一致：账号 superAdmin，默认密码 SNOWY_SYS_DEFAULT_PASSWORD_FOR_B */
-const account = ref('superAdmin')
-const password = ref('Snowy@2026!')
+const account = ref('')
+const password = ref('')
 const loading = ref(false)
 const errorMsg = ref('')
 
@@ -91,14 +90,29 @@ async function submit() {
         <p class="lh-login__tagline">{{ t('login.tagline') }}</p>
       </header>
 
-      <form class="lh-login__form" @submit.prevent="submit">
+      <form class="lh-login__form" autocomplete="off" @submit.prevent="submit">
         <label class="lh-login__field">
           <span>{{ t('login.account') }}</span>
-          <input v-model="account" type="text" autocomplete="username" :placeholder="t('login.account.ph')" />
+          <input
+            v-model="account"
+            type="text"
+            name="lh-account"
+            autocomplete="off"
+            autocapitalize="off"
+            autocorrect="off"
+            spellcheck="false"
+            :placeholder="t('login.account.ph')"
+          />
         </label>
         <label class="lh-login__field">
           <span>{{ t('login.password') }}</span>
-          <input v-model="password" type="password" autocomplete="current-password" :placeholder="t('login.password.ph')" />
+          <input
+            v-model="password"
+            type="password"
+            name="lh-password"
+            autocomplete="new-password"
+            :placeholder="t('login.password.ph')"
+          />
         </label>
         <p v-if="errorMsg" class="lh-login__error" role="alert">{{ errorMsg }}</p>
         <button class="lh-login__submit" type="submit" :disabled="loading">

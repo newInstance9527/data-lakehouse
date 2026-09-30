@@ -4,7 +4,9 @@ import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
 import AppDrawer from '@/components/common/AppDrawer.vue'
 import SearchSelect from '@/components/common/SearchSelect.vue'
+import ListPager from '@/components/common/ListPager.vue'
 import { useToast } from '@/composables/useToast'
+import { usePager } from '@/composables/usePager'
 import { pageGuideOf } from '@/data/pageGuides'
 import {
   APPLY_API_OPTIONS,
@@ -29,15 +31,17 @@ import {
   permModeLabel,
   tableKindLabel,
 } from '@/data/apply'
-import { createApplyTicket, approveTicket as apiApproveTicket, rejectTicket as apiRejectTicket, fetchApplyKpi } from '@/api/apply'
+import { createApplyTicket, approveTicket as apiApproveTicket, rejectTicket as apiRejectTicket, fetchApplyKpi, pagePendingTickets } from '@/api/apply'
 import { fetchDatasourcePage } from '@/api/datasource'
 import { fetchDataapiApis, fetchDataapiDetail } from '@/api/dataapi'
 import { fetchEtlDags } from '@/api/etl'
-import { useApplyBoard, pushExportApply, approveExportOnBoard, hydrateApplyBoardFromServer } from '@/composables/useApplyBoard'
+import { useApplyBoard, pushExportApply, approveExportOnBoard, hydrateApplyBoardFromServer, mapServerTicket } from '@/composables/useApplyBoard'
 import { useMetrics } from '@/composables/useMetrics'
 import { useAssets } from '@/composables/useAssets'
 import { fetchReleases } from '@/api/compute'
 import { useSession } from '@/composables/useSession'
+import { resolveWs } from '@/utils/ws'
+import { DEFAULT_PAGE_SIZE } from '@/config/pagination'
 import { useActionLock } from '@/composables/useActionLock'
 import { OPS_RESOURCE_ENABLED, opsResourceLabel } from '@/data/opsResourceTypes'
 
@@ -120,13 +124,14 @@ async function refreshApplyKpi() {
   }
 }
 
-/** 刷新看板列表 + KPI */
+/** 刷新看板列表 + KPI（待审批走服务端分页） */
 async function syncApplyBoard() {
   await hydrateApplyBoardFromServer(currentWs.value || 'default').catch(() => false)
+  await loadPendingPage()
   await refreshApplyKpi()
 }
 const { catalog: metricCatalog, ensureLoaded: ensureMetricsLoaded } = useMetrics()
-const { list: assetList, ensureLoaded: ensureAssetsLoaded } = useAssets()
+const { list: assetList, ensureLoaded: ensureAssetsLoaded, loadAssets } = useAssets()
 const { currentWs } = useSession()
 const assetsLive = ref(false)
 const assetsLoadError = ref('')
@@ -176,6 +181,7 @@ onMounted(async () => {
 
 watch(currentWs, () => {
   syncApplyBoard().catch(() => {})
+  loadAssets({ ws: resolveWs(), scope: 'workspace' }).catch(() => {})
 })
 
 const TYPE_LABEL = Object.fromEntries(APPLY_TYPE_OPTIONS.map((o) => [o.value, o.label]))
@@ -226,7 +232,7 @@ function emptyForm() {
 
 const activeTab = ref('all')
 const creating = ref(false)
-const showKpis = ref(false)
+const showKpis = ref(true)
 const form = ref(emptyForm())
 const tokenModal = ref(null)
 const rejectModal = ref(null) // { ticket, remark }
@@ -440,14 +446,102 @@ const showExpireField = computed(() => {
   return true
 })
 
-const pendingFiltered = computed(() => {
-  const list = pending.value.filter((c) => applyTabMatches(c.type, activeTab.value))
-  if (activeTab.value === 'all') return list.slice(0, 6)
-  return list
-})
 const mineFiltered = computed(() =>
   mine.value.filter((c) => applyTabMatches(c.type, activeTab.value)),
 )
+
+/** 待审批：服务端分页（/lh/apply/tickets/pending） */
+const pendingPage = ref(1)
+const pendingPageSize = ref(DEFAULT_PAGE_SIZE)
+const pendingTotal = ref(0)
+const pendingPaged = ref([])
+const pendingLoading = ref(false)
+
+function tabToPendingTicketType(tab) {
+  if (!tab || tab === 'all') return undefined
+  if (tab === 'ops') return 'manage'
+  if (tab === 'perm') return 'perm'
+  if (tab === 'compliance') return 'compliance'
+  return tab
+}
+
+const pendingTotalPages = computed(() =>
+  Math.max(1, Math.ceil((Number(pendingTotal.value) || 0) / pendingPageSize.value) || 1),
+)
+
+const pendingPageNums = computed(() => {
+  const tot = pendingTotalPages.value
+  const cur = pendingPage.value
+  const nums = []
+  const push = (n) => {
+    if (!nums.includes(n) && n >= 1 && n <= tot) nums.push(n)
+  }
+  push(1)
+  for (let i = cur - 1; i <= cur + 1; i++) push(i)
+  push(tot)
+  return nums.sort((a, b) => a - b)
+})
+
+function goPendingPage(p) {
+  pendingPage.value = Math.min(pendingTotalPages.value, Math.max(1, Number(p) || 1))
+}
+
+async function loadPendingPage() {
+  pendingLoading.value = true
+  try {
+    const q = {
+      current: pendingPage.value,
+      size: pendingPageSize.value,
+      ws: resolveWs(currentWs.value),
+    }
+    const tt = tabToPendingTicketType(activeTab.value)
+    if (tt) q.ticketType = tt
+    const page = await pagePendingTickets(q)
+    const recs = page?.records || page?.rows || []
+    const cards = recs
+      .map((t) => mapServerTicket(t, 'pending'))
+      .filter((c) => c && c.side === 'pending')
+    pendingPaged.value = cards
+    pendingTotal.value = Number(page?.total ?? cards.length)
+    // 同步进看板单例，供详情/审批按 id 查找
+    for (const card of cards) {
+      const idx = pending.value.findIndex((p) => p.id === card.id || p.ticketNo === card.ticketNo)
+      if (idx >= 0) pending.value[idx] = { ...pending.value[idx], ...card }
+      else pending.value.push(card)
+    }
+  } catch {
+    pendingPaged.value = []
+    pendingTotal.value = 0
+  } finally {
+    pendingLoading.value = false
+  }
+}
+
+const {
+  page: minePage,
+  pageSize: minePageSize,
+  total: mineTotal,
+  totalPages: mineTotalPages,
+  paged: minePaged,
+  pageNums: minePageNums,
+  goPage: goMinePage,
+  resetPage: resetMinePage,
+} = usePager(mineFiltered)
+
+watch(activeTab, () => {
+  resetMinePage()
+  if (pendingPage.value !== 1) pendingPage.value = 1
+  else loadPendingPage()
+})
+
+watch(pendingPageSize, () => {
+  if (pendingPage.value !== 1) pendingPage.value = 1
+  else loadPendingPage()
+})
+
+watch(pendingPage, () => {
+  loadPendingPage()
+})
 
 watch(
   () => route.query.type,
@@ -630,6 +724,8 @@ function syncMetricVersionDefaults() {
 
 function setTab(id) {
   activeTab.value = id
+  pendingPage.value = 1
+  resetMinePage()
   const label = APPLY_TABS.find((t) => t.id === id)?.label || id
   showToast(`已切换至：${label.replace(/^[^\s]+\s/, '')}`, 'info')
 }
@@ -670,7 +766,7 @@ async function submitApply() {
   await runLocked('submit', async () => {
   if (form.value.type === 'api_publish') {
     showToast('API 发布申请请到「数据服务 → 构建工作台」保存后发起', 'warning')
-    router.push('/dataservice')
+    router.push('/dataservice/build')
     return
   }
   if (form.value.type === 'metric' && (form.value.metricKind === 'create' || form.value.metricKind === 'change')) {
@@ -771,6 +867,7 @@ async function submitApply() {
         apiBindingId: hit?.bindingId || undefined,
         qps: form.value.qps || 100,
         expireLabel: form.value.expire,
+        ws: resolveWs(),
       })
       showToast(
         `✅ 订阅申请已提交 ${server?.ticketNo || server?.id || ''}，审批通过后签发调用 Key`,
@@ -816,6 +913,7 @@ async function submitApply() {
         resourceId,
         privilege,
         expireLabel: form.value.expire,
+        ws: resolveWs(),
       })
       showToast(
         `✅ 操作权限申请已提交 ${server?.ticketNo || server?.id || ''}，审批通过后写入 ${privilege} 授权`,
@@ -837,6 +935,7 @@ async function submitApply() {
         privilege: form.value.permMode === 'read' ? 'SELECT' : form.value.permMode,
         expireLabel: form.value.expire,
         columns: form.value.columns.trim() || null,
+        ws: resolveWs(),
       })
       const sid = server?.id || server?.ticketNo || id
       submitPermApply(sid, now, purpose, { fromServer: true, serverId: server?.id })
@@ -862,6 +961,7 @@ async function submitApply() {
         publishEnv: env,
         rollbackPlan: form.value.rollbackPlan.trim(),
         expireLabel: form.value.expire,
+        ws: resolveWs(),
       })
       showToast(
         `✅ 发布包申请已提交：${server?.ticketNo || server?.id || ''}，审批通过后到「环境与发布」点发布`,
@@ -904,6 +1004,7 @@ async function submitApply() {
         title: '扫描抬额 · 硬顶 50GB',
         reason: purpose,
         expireLabel: form.value.expire,
+        ws: resolveWs(),
       })
       showToast(
         `✅ 扫描抬额已提交：${server?.ticketNo || server?.id || ''}，审批通过后可勾选 elevated`,
@@ -946,6 +1047,7 @@ async function submitMetricApply(id, now, purpose) {
       metricCode: metricId,
       metricKind: 'query',
       expireLabel: form.value.expire,
+      ws: resolveWs(),
     })
     showToast(
       `✅ 指标查询权限申请已提交 ${server?.ticketNo || server?.id || ''}，审批通过后生效`,
@@ -1696,7 +1798,6 @@ async function loadApiPublishPreview(bindingId) {
       script,
       params,
       outputs,
-      managerDeepLink: d.managerDeepLink || '',
     }
   } catch (e) {
     apiPreviewError.value = e?.message || String(e)
@@ -1721,7 +1822,10 @@ function toggleTokenVisible() {
 }
 
 function goMetricCenter(metricId) {
-  router.push({ path: '/metrics', query: metricId && metricId !== '（待分配）' ? { q: metricId } : {} })
+  router.push({
+    path: '/metrics/catalog',
+    query: metricId && metricId !== '（待分配）' ? { q: metricId } : {},
+  })
 }
 
 function goCatalog(asset) {
@@ -1734,12 +1838,7 @@ function goPublishCenter(pkg) {
 }
 
 function goDataservice(path) {
-  router.push({ path: '/dataservice', query: path ? { q: path } : {} })
-}
-
-function openExternal(url) {
-  if (!url) return
-  window.open(url, '_blank', 'noopener')
+  router.push({ path: '/dataservice/apis', query: path ? { q: path } : {} })
 }
 
 function approveBtnLabel(w) {
@@ -1873,7 +1972,7 @@ function displayToken() {
                 <strong>口径变更发布</strong>：请到「指标中心」对已启用指标点「申请变更」；审核通过后自动启用新版本。本页只做审批与查看。
               </template>
             </p>
-            <button type="button" class="btn btn-sm" @click="router.push('/metrics')">打开指标中心</button>
+            <button type="button" class="btn btn-sm" @click="router.push('/metrics/catalog')">打开指标目录</button>
           </template>
           <template v-else>
             <label class="wide">
@@ -2119,7 +2218,7 @@ function displayToken() {
         </p>
         <p v-else-if="form.type === 'api_publish'" class="apply-api-hint">
           <strong>API 发布申请</strong>：请到「数据服务 → 构建工作台」保存后点「申请发布」；审核通过后自动上线。本页只做审批与查看，不在此新建发布单。
-          <button type="button" class="btn-link" @click="router.push('/dataservice')">前往数据服务</button>
+          <button type="button" class="btn-link" @click="router.push('/dataservice/build')">前往数据服务</button>
         </p>
         <p v-else-if="form.type === 'metric'" class="apply-api-hint">
           <template v-if="form.metricKind === 'query'">查询权限通过后登记授权，可供看板 / 即席 / API 引用已启用指标。</template>
@@ -2144,7 +2243,7 @@ function displayToken() {
           v-if="form.type === 'api_publish'"
           type="button"
           class="btn btn-sm btn-primary"
-          @click="router.push('/dataservice')"
+          @click="router.push('/dataservice/build')"
         >
           前往构建工作台
         </button>
@@ -2179,52 +2278,64 @@ function displayToken() {
     </div>
 
     <div class="grid grid-2 apply-columns">
-      <div class="card">
+      <div class="card apply-pending-card">
         <div class="card-header">
           <div class="card-title">⏳ 待审批工单 <span class="tip">（我是资产 Owner / 空间 Owner / 超管）</span></div>
-          <span class="tag tag-orange">{{ pendingFiltered.length }} 单</span>
+          <span class="tag tag-orange">{{ pendingTotal }} 单</span>
         </div>
-        <div class="card-body">
-          <div v-if="!pendingFiltered.length" class="apply-empty">当前分类无待审批工单</div>
-          <div v-for="w in pendingFiltered" :key="w.id" class="workflow-card">
-            <div class="wf-side" :class="w.side" />
-            <div class="wf-content">
-              <div class="wf-header">
-                <div class="wf-title" v-html="w.titleHtml" />
-                <span class="tag" :class="w.statusCls">{{ w.statusTag }}</span>
-              </div>
-              <div class="wf-desc">{{ w.desc }}</div>
-              <div v-if="w.side === 'rejected' && w.remark" class="wf-reject-opin">
-                <span class="wf-reject-label">驳回意见</span>
-                {{ w.remark }}
-              </div>
-              <div class="wf-timeline">
-                <template v-for="(node, ni) in w.timeline" :key="ni">
-                  <span class="wf-node" :class="node.cls">{{ node.label }}</span>
-                  <span v-if="ni < w.timeline.length - 1" class="wf-arrow">→</span>
-                </template>
-              </div>
-              <div class="wf-actions">
-                <button type="button" class="btn btn-sm" @click="openDetail(w)">详情</button>
-                <button
-                  type="button"
-                  class="btn btn-sm btn-primary"
-                  :disabled="busy('approve:' + w.id)"
-                  @click="approveTicket(w.id)"
-                >
-                  {{ busy('approve:' + w.id) ? '处理中…' : approveBtnLabel(w) }}
-                </button>
-                <button
-                  type="button"
-                  class="btn btn-sm"
-                  :disabled="busy('approve:' + w.id) || rejectSubmitting"
-                  @click="rejectTicket(w.id)"
-                >
-                  驳回 / 退回重改
-                </button>
+        <div class="card-body apply-pending-body">
+          <div class="apply-pending-list">
+            <div v-if="pendingLoading && !pendingPaged.length" class="apply-empty">加载中…</div>
+            <div v-else-if="!pendingTotal" class="apply-empty">当前分类无待审批工单</div>
+            <div v-for="w in pendingPaged" :key="w.id" class="workflow-card">
+              <div class="wf-side" :class="w.side" />
+              <div class="wf-content">
+                <div class="wf-header">
+                  <div class="wf-title" v-html="w.titleHtml" />
+                  <span class="tag" :class="w.statusCls">{{ w.statusTag }}</span>
+                </div>
+                <div class="wf-desc">{{ w.desc }}</div>
+                <div v-if="w.side === 'rejected' && w.remark" class="wf-reject-opin">
+                  <span class="wf-reject-label">驳回意见</span>
+                  {{ w.remark }}
+                </div>
+                <div class="wf-timeline">
+                  <template v-for="(node, ni) in w.timeline" :key="ni">
+                    <span class="wf-node" :class="node.cls">{{ node.label }}</span>
+                    <span v-if="ni < w.timeline.length - 1" class="wf-arrow">→</span>
+                  </template>
+                </div>
+                <div class="wf-actions">
+                  <button type="button" class="btn btn-sm" @click="openDetail(w)">详情</button>
+                  <button
+                    type="button"
+                    class="btn btn-sm btn-primary"
+                    :disabled="busy('approve:' + w.id)"
+                    @click="approveTicket(w.id)"
+                  >
+                    {{ busy('approve:' + w.id) ? '处理中…' : approveBtnLabel(w) }}
+                  </button>
+                  <button
+                    type="button"
+                    class="btn btn-sm"
+                    :disabled="busy('approve:' + w.id) || rejectSubmitting"
+                    @click="rejectTicket(w.id)"
+                  >
+                    驳回 / 退回重改
+                  </button>
+                </div>
               </div>
             </div>
           </div>
+          <ListPager
+            v-model:page="pendingPage"
+            v-model:page-size="pendingPageSize"
+            :total="pendingTotal"
+            :total-pages="pendingTotalPages"
+            :page-nums="pendingPageNums"
+            :page-count="pendingPaged.length"
+            @go="goPendingPage"
+          />
         </div>
       </div>
 
@@ -2236,8 +2347,8 @@ function displayToken() {
         </div>
         <div class="card apply-mine-card">
           <div class="card-body">
-            <div v-if="!mineFiltered.length" class="apply-empty">当前分类无我的申请</div>
-            <div v-for="(w, wi) in mineFiltered" :key="w.id || wi" class="workflow-card">
+            <div v-if="!mineTotal" class="apply-empty">当前分类无我的申请</div>
+            <div v-for="(w, wi) in minePaged" :key="w.id || wi" class="workflow-card">
               <div class="wf-side" :class="w.side" />
               <div class="wf-content">
                 <div class="wf-header">
@@ -2265,6 +2376,15 @@ function displayToken() {
                 </div>
               </div>
             </div>
+            <ListPager
+              v-model:page="minePage"
+              v-model:page-size="minePageSize"
+              :total="mineTotal"
+              :total-pages="mineTotalPages"
+              :page-nums="minePageNums"
+              :page-count="minePaged.length"
+              @go="goMinePage"
+            />
           </div>
         </div>
       </div>
@@ -2530,14 +2650,6 @@ function displayToken() {
         </div>
         <div v-else-if="detail.type === 'api_publish'" class="detail-actions-row">
           <button type="button" class="btn btn-sm" @click="goDataservice(detail.apiPath)">打开数据服务</button>
-          <button
-            v-if="apiPreview?.managerDeepLink"
-            type="button"
-            class="btn btn-sm"
-            @click="openExternal(apiPreview.managerDeepLink)"
-          >
-            在 Manager 打开
-          </button>
           <button type="button" class="btn btn-sm" :disabled="apiPreviewLoading" @click="loadApiPublishPreview(detail.apiBindingId)">
             刷新 API 内容
           </button>
@@ -2690,6 +2802,32 @@ function displayToken() {
   gap: 16px;
   margin-top: 16px;
   grid-template-columns: 1fr 1fr;
+  align-items: start;
+}
+.apply-pending-card {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: calc(100vh - 260px);
+}
+.apply-pending-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+  padding: 12px 16px 0 !important;
+}
+.apply-pending-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding-bottom: 4px;
+}
+.apply-pending-body :deep(.ds-pager) {
+  flex-shrink: 0;
+  margin-top: 8px;
+  margin-bottom: 0;
+  padding-bottom: 12px;
 }
 .apply-mine-tabs {
   background: var(--bg-1);

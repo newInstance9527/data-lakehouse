@@ -80,8 +80,8 @@ export function disableUser(id) {
   return http.post('/sys/user/disableUser', { id })
 }
 
-export function resetUserPassword(id) {
-  return http.post('/sys/user/resetPassword', { id })
+export function resetUserPassword(id, password) {
+  return http.post('/sys/user/resetPassword', { id, password })
 }
 
 export function ownUserRoles(id) {

@@ -1,7 +1,10 @@
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import PageHeader from '@/components/common/PageHeader.vue'
+import ListPager from '@/components/common/ListPager.vue'
 import { useToast } from '@/composables/useToast'
+import { usePager } from '@/composables/usePager'
+import { DEFAULT_PAGE_SIZE } from '@/config/pagination'
 import {
   orgTree,
   addOrg,
@@ -25,8 +28,38 @@ const collapsed = ref(new Set())
 
 const membersLoading = ref(false)
 const sysUsers = ref([])
+const sysUserTotal = ref(0)
+const sysUserPage = ref(1)
+const sysUserPageSize = ref(DEFAULT_PAGE_SIZE)
 const persons = ref([])
 const memberKw = ref('')
+
+const {
+  page: personPage,
+  pageSize: personPageSize,
+  total: personTotal,
+  totalPages: personTotalPages,
+  paged: personPaged,
+  pageNums: personPageNums,
+  goPage: goPersonPage,
+  resetPage: resetPersonPage,
+} = usePager(persons)
+
+const sysUserTotalPages = computed(() =>
+  Math.max(1, Math.ceil((Number(sysUserTotal.value) || 0) / sysUserPageSize.value) || 1),
+)
+const sysUserPageNums = computed(() => {
+  const tot = sysUserTotalPages.value
+  const cur = sysUserPage.value
+  const nums = []
+  const push = (n) => {
+    if (!nums.includes(n) && n >= 1 && n <= tot) nums.push(n)
+  }
+  push(1)
+  for (let i = cur - 1; i <= cur + 1; i++) push(i)
+  push(tot)
+  return nums.sort((a, b) => a - b)
+})
 
 const orgFormOpen = ref(false)
 const orgFormMode = ref('add')
@@ -73,12 +106,79 @@ const flatParentOptions = computed(() => {
 onMounted(() => loadTree())
 
 watch(selectedId, () => {
+  sysUserPage.value = 1
+  resetPersonPage()
   if (selectedId.value) loadMembers()
   else {
     sysUsers.value = []
+    sysUserTotal.value = 0
     persons.value = []
   }
 })
+
+async function loadSysUsersOnly() {
+  if (!selectedId.value) return
+  try {
+    const userPage = await pageUsers({
+      current: sysUserPage.value,
+      size: sysUserPageSize.value,
+      orgId: selectedId.value,
+      searchKey: memberKw.value || undefined,
+      searchIncludeChild: true,
+    })
+    sysUsers.value = userPage?.records || []
+    sysUserTotal.value = Number(userPage?.total || 0)
+  } catch (e) {
+    showToast(e.message || '加载系统用户失败', 'error')
+    sysUsers.value = []
+    sysUserTotal.value = 0
+  }
+}
+
+function onSysUserGo(p) {
+  sysUserPage.value = Math.min(sysUserTotalPages.value, Math.max(1, Number(p) || 1))
+  loadSysUsersOnly()
+}
+
+function onSysUserPageSize(n) {
+  sysUserPageSize.value = n
+  sysUserPage.value = 1
+  loadSysUsersOnly()
+}
+
+function searchMembers() {
+  sysUserPage.value = 1
+  resetPersonPage()
+  loadMembers()
+}
+
+async function loadMembers() {
+  if (!selectedId.value) return
+  membersLoading.value = true
+  try {
+    const [userPage, personList] = await Promise.all([
+      pageUsers({
+        current: sysUserPage.value,
+        size: sysUserPageSize.value,
+        orgId: selectedId.value,
+        searchKey: memberKw.value || undefined,
+        searchIncludeChild: true,
+      }),
+      listOrgPersons(selectedId.value, memberKw.value || undefined, true),
+    ])
+    sysUsers.value = userPage?.records || []
+    sysUserTotal.value = Number(userPage?.total || 0)
+    persons.value = Array.isArray(personList) ? personList : []
+    resetPersonPage()
+  } catch (e) {
+    showToast(e.message || '加载成员失败', 'error')
+    sysUsers.value = []
+    sysUserTotal.value = 0
+    persons.value = []
+  } finally {
+    membersLoading.value = false
+  }
+}
 
 function walkVisible(nodes, depth, rows) {
   if (!Array.isArray(nodes)) return
@@ -144,31 +244,6 @@ function toggleCollapse(id) {
   if (collapsed.value.has(sid)) collapsed.value.delete(sid)
   else collapsed.value.add(sid)
   collapsed.value = new Set(collapsed.value)
-}
-
-async function loadMembers() {
-  if (!selectedId.value) return
-  membersLoading.value = true
-  try {
-    const [userPage, personList] = await Promise.all([
-      pageUsers({
-        current: 1,
-        size: 500,
-        orgId: selectedId.value,
-        searchKey: memberKw.value || undefined,
-        searchIncludeChild: true,
-      }),
-      listOrgPersons(selectedId.value, memberKw.value || undefined, true),
-    ])
-    sysUsers.value = userPage?.records || []
-    persons.value = Array.isArray(personList) ? personList : []
-  } catch (e) {
-    showToast(e.message || '加载成员失败', 'error')
-    sysUsers.value = []
-    persons.value = []
-  } finally {
-    membersLoading.value = false
-  }
 }
 
 function openAddRoot() {
@@ -454,9 +529,9 @@ async function removePerson(row) {
             class="input input-sm"
             placeholder="搜索成员"
             :disabled="!selectedId"
-            @keyup.enter="loadMembers"
+            @keyup.enter="searchMembers"
           />
-          <button type="button" class="btn btn-sm" :disabled="!selectedId || membersLoading" @click="loadMembers">
+          <button type="button" class="btn btn-sm" :disabled="!selectedId || membersLoading" @click="searchMembers">
             查询
           </button>
           <button type="button" class="btn btn-sm btn-primary" :disabled="!selectedId" @click="openAttach">
@@ -468,7 +543,7 @@ async function removePerson(row) {
         </div>
 
         <div class="card-body" style="padding-top: 0">
-          <h4 class="sec-title">系统用户（本部门及下级 · 主部门）</h4>
+          <h4 class="sec-title">系统用户（本部门及下级 · 主部门）· 共 {{ sysUserTotal }} 条</h4>
           <table class="table">
             <thead>
               <tr>
@@ -504,8 +579,18 @@ async function removePerson(row) {
               </tr>
             </tbody>
           </table>
+          <ListPager
+            v-model:page="sysUserPage"
+            v-model:page-size="sysUserPageSize"
+            :total="sysUserTotal"
+            :total-pages="sysUserTotalPages"
+            :page-nums="sysUserPageNums"
+            :page-count="sysUsers.length"
+            @go="onSysUserGo"
+            @update:page-size="onSysUserPageSize"
+          />
 
-          <h4 class="sec-title">非系统人员（本部门及下级）</h4>
+          <h4 class="sec-title">非系统人员（本部门及下级）· 共 {{ personTotal }} 条</h4>
           <table class="table">
             <thead>
               <tr>
@@ -521,10 +606,10 @@ async function removePerson(row) {
               <tr v-if="!selectedId">
                 <td colspan="6" class="empty">请选择左侧部门</td>
               </tr>
-              <tr v-else-if="!persons.length">
+              <tr v-else-if="!personTotal">
                 <td colspan="6" class="empty">暂无非系统人员</td>
               </tr>
-              <tr v-for="p in persons" :key="p.id">
+              <tr v-for="p in personPaged" :key="p.id">
                 <td>{{ p.name }}</td>
                 <td style="font-size: 12px">{{ p.orgName || '—' }}</td>
                 <td>{{ p.phone || '—' }}</td>
@@ -537,6 +622,15 @@ async function removePerson(row) {
               </tr>
             </tbody>
           </table>
+          <ListPager
+            v-model:page="personPage"
+            v-model:page-size="personPageSize"
+            :total="personTotal"
+            :total-pages="personTotalPages"
+            :page-nums="personPageNums"
+            :page-count="personPaged.length"
+            @go="goPersonPage"
+          />
         </div>
       </section>
     </div>

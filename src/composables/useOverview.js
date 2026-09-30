@@ -13,6 +13,8 @@ import { fetchDataapiOverview } from '@/api/dataapi.js'
 import { fetchQualityGold, fetchQualityOverview, fetchQualityTrend } from '@/api/quality'
 import { fetchStdNamings, fetchStdOverview } from '@/api/standard'
 import { layerMeta } from '@/data/assetMeta'
+import { resolveWs } from '@/utils/ws'
+import { fetchAllPages } from '@/utils/pageFetch'
 
 /** 总览时间范围 → 质量 API range */
 const RANGE_TO_QUALITY = {
@@ -136,24 +138,59 @@ export function useOverview() {
     loading.value = true
     lastError.value = null
     const qRange = RANGE_TO_QUALITY[rangeKey] || '30'
+    const ws = resolveWs()
+    const assetQ = { ws, scope: 'workspace' }
+    const dsQ = { ws }
     try {
       const results = await Promise.allSettled([
-        fetchDatasourceKpi(),
-        fetchDatasourcePage({}, { current: 1, size: 500 }),
-        fetchAssetPage({}, { current: 1, size: 500 }),
-        fetchEtlDags({}, { current: 1, size: 200 }),
-        fetchEtlRuns({ current: 1, size: 100 }),
-        fetchQualityOverview({ range: qRange }),
-        fetchQualityTrend({ range: qRange }),
-        fetchQualityGold({ limit: 50 }),
-        fetchStdOverview(),
-        fetchStdNamings({}, { current: 1, size: 1 }),
-        fetchLineageFields({}, { current: 1, size: 500 }),
-        pagePendingTickets({ current: 1, size: 1 }),
-        pageMyTickets({ current: 1, size: 1 }),
-        fetchApplyKpi().catch(() => null),
-        fetchMetricOverview(),
-        fetchDataapiOverview().catch(() => null),
+        fetchDatasourceKpi(ws),
+        (async () => {
+          let total = 0
+          const records = await fetchAllPages(async (p) => {
+            const page = await fetchDatasourcePage(dsQ, p)
+            total = Number(page?.total ?? page?.totalRows ?? total)
+            return page
+          })
+          return { records, total: total || records.length }
+        })(),
+        (async () => {
+          let total = 0
+          const records = await fetchAllPages(async (p) => {
+            const page = await fetchAssetPage(assetQ, p)
+            total = Number(page?.total ?? page?.totalRows ?? total)
+            return page
+          })
+          return { records, total: total || records.length }
+        })(),
+        (async () => {
+          let total = 0
+          const records = await fetchAllPages(async (p) => {
+            const page = await fetchEtlDags({ ws, scope: 'workspace' }, p)
+            total = Number(page?.total ?? total)
+            return page
+          })
+          return { records, total: total || records.length }
+        })(),
+        fetchEtlRuns({ ws, current: 1, size: 100 }),
+        fetchQualityOverview({ ws, range: qRange }),
+        fetchQualityTrend({ ws, range: qRange }),
+        fetchQualityGold({ ws, limit: 50 }),
+        fetchStdOverview(ws),
+        fetchStdNamings({ ws }, { current: 1, size: 1 }),
+        (async () => {
+          let total = 0
+          const records = await fetchAllPages(async (p) => {
+            const page = await fetchLineageFields({ ws }, p)
+            total = Number(page?.total ?? total)
+            return page
+          })
+          return { records, total: total || records.length }
+        })(),
+        pagePendingTickets({ ws, current: 1, size: 1 }),
+        pageMyTickets({ ws, current: 1, size: 1 }),
+        fetchApplyKpi({ ws }).catch(() => null),
+        fetchMetricOverview(ws),
+        fetchDataapiOverview(ws).catch(() => null),
       ])
 
       const val = (i) => (results[i].status === 'fulfilled' ? results[i].value : null)

@@ -2,11 +2,12 @@
  * 指标中心 API（对齐 /lh/metric · doc/指标中心.md）
  */
 import { http } from './http.js'
+import { resolveWs } from '@/utils/ws'
 
 const M = '/lh/metric'
 
 export function fetchMetricOverview(ws) {
-  return http.get(`${M}/overview`, { ws })
+  return http.get(`${M}/overview`, { ws: resolveWs(ws) })
 }
 
 export function fetchMetricList(filters = {}, { current = 1, size = 200 } = {}) {
@@ -17,13 +18,13 @@ export function fetchMetricList(filters = {}, { current = 1, size = 200 } = {}) 
     domain: filters.domain ?? filters.domainCode,
     kind: filters.kind ?? filters.type,
     status: filters.status,
-    ws: filters.ws,
-    scope: filters.scope,
+    ws: resolveWs(filters.ws),
+    scope: filters.scope || 'workspace',
   })
 }
 
 export function fetchMetricDetail(code, ws) {
-  return http.get(`${M}/${encodeURIComponent(code)}`, { ws })
+  return http.get(`${M}/${encodeURIComponent(code)}`, { ws: resolveWs(ws) })
 }
 
 export function createMetric(payload) {
@@ -39,44 +40,50 @@ export function transitionMetric(code, { action, note, ws } = {}) {
     metricCode: code,
     action,
     note,
-    ws,
+    ws: resolveWs(ws),
   })
 }
 
 export function compileMetric(payload = {}) {
-  return http.post(`${M}/compile`, payload)
+  return http.post(`${M}/compile`, { ...payload, ws: resolveWs(payload.ws) })
 }
 
 export function queryMetric(payload = {}) {
-  return http.post(`${M}/query`, payload)
+  return http.post(`${M}/query`, { ...payload, ws: resolveWs(payload.ws) })
 }
 
 export function trialMetric(code, payload = {}) {
-  return http.post(`${M}/${encodeURIComponent(code)}/trial`, payload)
+  return http.post(`${M}/${encodeURIComponent(code)}/trial`, {
+    ...payload,
+    ws: resolveWs(payload.ws),
+  })
 }
 
 export function fetchMetricLineage(code, ws) {
-  return http.get(`${M}/${encodeURIComponent(code)}/lineage`, { ws })
+  return http.get(`${M}/${encodeURIComponent(code)}/lineage`, { ws: resolveWs(ws) })
 }
 
 export function fetchMetricAnomaly(code, { ws, days } = {}) {
-  return http.get(`${M}/${encodeURIComponent(code)}/anomaly`, { ws, days })
+  return http.get(`${M}/${encodeURIComponent(code)}/anomaly`, { ws: resolveWs(ws), days })
 }
 
 export function rerunMetricSample(ws) {
-  return http.post(`${M}/anomaly/rerun`, null, { params: { ws } })
+  return http.post(`${M}/anomaly/rerun`, null, { params: { ws: resolveWs(ws) } })
 }
 
 export function fetchMetricBoard(ws) {
-  return http.get(`${M}/board`, { ws })
+  return http.get(`${M}/board`, { ws: resolveWs(ws) })
 }
 
 export function fetchMetricMaterialize(code, ws) {
-  return http.get(`${M}/${encodeURIComponent(code)}/materialize`, { ws })
+  return http.get(`${M}/${encodeURIComponent(code)}/materialize`, { ws: resolveWs(ws) })
 }
 
 export function materializeMetric(code, payload = {}) {
-  return http.post(`${M}/${encodeURIComponent(code)}/materialize`, payload)
+  return http.post(`${M}/${encodeURIComponent(code)}/materialize`, {
+    ...payload,
+    ws: resolveWs(payload.ws),
+  })
 }
 
 export function fetchReconPartition({ metricCode, status, limit } = {}) {
@@ -88,7 +95,7 @@ export function runReconPartition(payload = {}) {
 }
 
 export function fetchReconRules({ ws, ruleType, enabled } = {}) {
-  return http.get('/lh/recon/rules', { ws, ruleType, enabled })
+  return http.get('/lh/recon/rules', { ws: resolveWs(ws), ruleType, enabled })
 }
 
 export function upsertReconRule(payload = {}) {
@@ -101,7 +108,7 @@ export function deleteReconRule(id) {
 
 export function fetchReconDiff({ ws, lakeTable, table, partitionKey, dt, ruleId, limit } = {}) {
   return http.get('/lh/recon/diff', {
-    ws,
+    ws: resolveWs(ws),
     lakeTable: lakeTable || table,
     partitionKey: partitionKey || dt,
     ruleId,
@@ -134,7 +141,7 @@ function toUpsertBody(payload = {}) {
     unit: payload.unit,
     caliber: payload.caliber,
     owner: payload.owner,
-    ws: payload.ws,
+    ws: resolveWs(payload.ws),
     remark: payload.remark,
     table: payload.table,
     field: payload.field,

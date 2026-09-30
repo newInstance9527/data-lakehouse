@@ -99,7 +99,7 @@ export const PAGE_GUIDES_EN = {
     'Data domains',
     sections4({
       about: [
-        'Maintains enterprise business domain codes and names (e.g. trade, user, goods).',
+        'Maintains enterprise business domain codes and names (e.g. trade, user, goods); under Metadata.',
         'Metrics, Catalog, and Standards dropdowns all read from this module for consistent scope.',
       ],
       ops: [
@@ -146,7 +146,7 @@ export const PAGE_GUIDES_EN = {
     'Data Standards',
     sections4({
       about: [
-        'Defines enterprise semantics: standard fields, code sets, naming rules, source-to-standard maps, and conformance results.',
+        'Defines enterprise semantics: standard fields, code sets, naming rules, source-to-standard maps, and conformance results; under Metadata.',
         'Fields and codes are referenced by modeling and cleansing; conformance checks verify landed tables remain compliant.',
       ],
       ops: [
@@ -413,7 +413,7 @@ export const PAGE_GUIDES_EN = {
     'Data Contracts',
     sections4({
       about: [
-        'Agreements between producers and consumers on schema, compatibility, and SLA.',
+        'Agreements between producers and consumers on schema, compatibility, and SLA; under Metadata.',
         'Structural changes require review; incompatibilities and breaches are trackable to reduce cross-team conflicts.',
       ],
       ops: [
@@ -434,49 +434,136 @@ export const PAGE_GUIDES_EN = {
   ),
 
   dataservice: guide(
-    'Data Services',
+    'Service Overview',
     sections4({
       about: [
-        'Packages tables or metrics as stable APIs for business systems, avoiding direct warehouse connections.',
-        'Main path: project datasource → build and trial → publish → serve via the unified gateway; the portal owns bindings and publish state.',
+        'Packages tables or metrics as stable APIs via the unified gateway; this page is the flow entry and todo summary.',
+        'Main path: project datasource → build/trial → publish → runtime; sub-pages are split by function.',
       ],
       ops: [
-        'Confirm the datasource is projected.',
-        'Build an API, select a source, write SQL/script, and trial-run.',
-        'Publish and bind assets or metrics.',
-        'Share the gateway URL; issue keys via Apply Center.',
+        'Handle pending/failed projection lists.',
+        'Review KPIs and pending-publish summary.',
+        'Jump to API Catalog or Workbench from shortcuts.',
       ],
       example:
-        'Scenario: order aggregate API for a business system\n1. Project the source, build the API, trial successfully\n2. Publish and bind the related metric/asset\n3. Caller applies for a key and invokes via the gateway',
+        'Scenario: expose a new source as an API\n1. Finish projection on overview\n2. Build and trial in Workbench\n3. Track publish status in API Catalog',
       next: [
-        'Handle API publish/call tickets in Apply Center.',
-        'Bind consistent metrics in Metrics Center.',
-        'Monitor success rate and latency in Call Trace.',
-        'Watch related cost and quotas in Query & Cost Gov.',
+        'Manage bindings in API Catalog.',
+        'Edit SQL/script in Workbench.',
+        'Inspect calls and keys in Runtime & Gateway.',
+        'Handle publish/call tickets in Apply Center.',
+      ],
+    }),
+  ),
+
+  'dataservice-apis': guide(
+    'API Catalog',
+    sections4({
+      about: [
+        'Directory of published/bound APIs: sync catalog, register binding, export OpenAPI, online debug.',
+        'Custom tags with tag filters; pending-publish tickets are tracked here; edit definitions in Workbench.',
+      ],
+      ops: [
+        'Sync catalog or register a binding.',
+        'Search or filter by tags, open API detail and manage tags; subscription key detail can reveal the secret.',
+        'Open Workbench when the definition must change.',
+      ],
+      example:
+        'Scenario: investigate a live API\n1. Search by path or filter by tags\n2. Open detail for version, ticket, and tags\n3. Unpublish then edit in Workbench if needed',
+      next: [
+        'Edit and request publish in Workbench.',
+        'View call trends in Runtime & Gateway.',
+        'Request call credentials in Apply Center.',
+      ],
+    }),
+  ),
+
+  'dataservice-build': guide(
+    'API Workbench',
+    sections4({
+      about: [
+        'Author SQL/Groovy, trial-run, save draft, and request publish inside the portal.',
+        'Published APIs are read-only until cancelled from API detail.',
+      ],
+      ops: [
+        'Pick a projected datasource, write SQL/script, and trial.',
+        'Configure params/outputs and save the draft.',
+        'Request publish; approval brings it online.',
+      ],
+      example:
+        'Scenario: order aggregate API\n1. Select projected source and write SQL\n2. Trial and save\n3. Request publish and bind asset/metric',
+      next: [
+        'Review binding in API Catalog.',
+        'Track the publish ticket in Apply Center.',
+        'Confirm projection on Service Overview.',
+      ],
+    }),
+  ),
+
+  'dataservice-runtime': guide(
+    'Runtime & Gateway',
+    sections4({
+      about: [
+        'Call trends, top paths, edge routes, and subscription key metadata.',
+        'Keys are issued in Apply Center; lists stay masked, and detail can reveal the secret from Vault with permission.',
+      ],
+      ops: [
+        'Inspect 7-day trends and top paths.',
+        'Verify edge routes and gateway URL.',
+        'Open key details to reveal/copy the secret, or jump to the related API.',
+      ],
+      example:
+        'Scenario: abnormal call volume\n1. Locate the path in trends/top\n2. Open API Catalog for the definition\n3. Check key status and apply tickets',
+      next: [
+        'Open the API in API Catalog.',
+        'Request call credentials in Apply Center.',
+        'Inspect cross-component latency in Call Trace.',
       ],
     }),
   ),
 
   metrics: guide(
-    'Metrics Center',
+    'Metrics Overview',
     sections4({
       about: [
-        'Unifies metric names and business definitions across atomic, derived, and composite types.',
+        'Metrics Center overview: KPIs, lifecycle, and pending-publish summary. Browse and create/edit in Catalog.',
         'Lifecycle: draft → publish request → active; then request query access or definition change. An empty catalog is valid.',
+        'Atomic metrics bind lake tables (Iceberg/Hive) and run via Trino; they cannot query source MySQL directly—ingest and register the lake table first.',
       ],
       ops: [
-        'Create a metric, save as draft, and verify definition and bound tables.',
-        'Apply to publish; approval activates the metric.',
-        'Request query access from list/detail into Apply Center.',
-        'For definition changes on active metrics, submit a change request for a formal version bump.',
+        'Review KPIs and pending-publish summary; jump to Catalog with status filter when needed.',
+        'Use shortcuts to open Catalog or create a metric (catalog modal).',
+        'Confirm the table is in the lake and registered as a lake asset in Catalog.',
       ],
       example:
-        'Scenario: launch a GMV metric\n1. Define an atomic metric bound to detail columns\n2. Save draft, apply to publish, activate after approval\n3. Business users request query access for dashboards',
+        'Scenario: follow pending metrics\n1. Open pending summary on Overview\n2. Jump to Catalog for detail and ticket\n3. After reject, edit in the catalog modal and re-apply',
       next: [
+        'Filter, page, detail, and create/edit in Metrics Catalog.',
         'Track publish/access/change tickets in Apply Center.',
         'Expose the metric as an API in Data Services.',
+      ],
+    }),
+  ),
+
+  'metrics-catalog': guide(
+    'Metrics Catalog',
+    sections4({
+      about: [
+        'Catalog with domain/type/status filters, paging, detail drawer, and row actions; create/edit uses an in-page modal.',
+        'URL `?q=<metricCode>` opens detail; `?status=` preselects status; `?create=1` / `?edit=<code>` opens the form modal.',
+      ],
+      ops: [
+        'Filter by domain, type, and status; open detail to verify definition and bindings.',
+        'Use New Metric or row Edit to open the modal; only draft/pending can edit directly.',
+        'Apply to publish from draft; active metrics can request query access or definition change.',
+      ],
+      example:
+        'Scenario: launch a GMV metric\n1. Detail data is ingested and registered as Iceberg\n2. Create an atomic metric in the catalog modal and save draft\n3. Apply to publish; activate after approval\n4. Business users request query access',
+      next: [
+        'Track tickets in Apply Center.',
+        'Expose the metric as an API in Data Services.',
         'Review related summaries on Overview.',
-        'Align units and naming in Standards.',
+        'Review pending summary on Metrics Overview.',
       ],
     }),
   ),

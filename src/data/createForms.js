@@ -316,7 +316,7 @@ export const QUALITY_RULE_FORM = {
       type: 'search-select',
       required: true,
       optionsResolver: () => metricBindTableOptions(),
-      optionsLoad: () => ensureMetricBindTables(),
+      optionsLoad: () => ensureMetricBindTables({ force: true }),
       placeholder: '搜索资产目录中的表…',
       searchKeys: ['label', 'sub', 'name', 'assetCode', 'search'],
       subKey: 'sub',
@@ -408,7 +408,7 @@ export const EXPORT_APPLY_FORM = {
       type: 'search-select',
       required: true,
       optionsResolver: () => exportBindTableOptions(),
-      optionsLoad: () => ensureMetricBindTables(),
+      optionsLoad: () => ensureMetricBindTables({ force: true }),
       placeholder: '搜索资产目录中的表（优先 ADS / DWD / DWS）',
       searchKeys: ['label', 'sub', 'name', 'assetCode', 'layer', 'domain', 'search', 'value'],
       subKey: 'sub',
@@ -964,7 +964,8 @@ const METRIC_DOMAINS = [] // 运行时由 domain options 填充
 /** 新建指标 · 原子 / 衍生 / 复合（按类型切换字段） */
 export const METRIC_CREATE_FORM = {
   title: '＋ 新建指标',
-  intro: '原子定义聚合；衍生 = 原子 + 业务限定 + 粒度 + 周期；复合只写公式',
+  intro:
+    '原子指标绑定湖表（Iceberg/Hive），经 Trino 试跑/查询；不能直连源端 MySQL 等。衍生=原子+限定+粒度；复合只写公式。',
   submitLabel: '保存草稿',
   width: '680px',
   fields: [
@@ -999,16 +1000,16 @@ export const METRIC_CREATE_FORM = {
     // —— 原子（绑定表/字段读资产目录 gov_asset + Grav/OM schema）——
     {
       key: 'table',
-      label: '绑定表',
+      label: '绑定表（湖表）',
       type: 'search-select',
       requiredWhen: { key: 'kind', value: '原子' },
       showWhen: { key: 'kind', value: '原子' },
       optionsResolver: () => metricBindTableOptions(),
-      optionsLoad: () => ensureMetricBindTables(),
-      placeholder: '搜索资产目录中的表…',
-      searchKeys: ['label', 'sub', 'name', 'assetCode', 'search'],
+      optionsLoad: () => ensureMetricBindTables({ force: true }),
+      placeholder: '搜索中文名 / 表名 / 分层 / FQN…',
+      searchKeys: ['label', 'sub', 'name', 'assetCode', 'search', 'fqn', 'engine', 'layerLabel', 'domain'],
       subKey: 'sub',
-      hint: '选项来自已登记资产（gov_asset）；无列表请先在资产目录注册湖表',
+      hint: '试跑走 Trino，只能选湖表（Iceberg/Hive）。主行：业务名·表名；副行：引擎·分层·域·FQN。源端 MySQL/PG 等已过滤；无选项表示当前空间尚无湖表资产。',
       wide: true,
     },
     {
@@ -1022,7 +1023,7 @@ export const METRIC_CREATE_FORM = {
       optionsLoad: (form) => ensureMetricBindFields(form?.table),
       placeholder: '搜索列名…',
       searchKeys: ['label', 'name', 'type', 'comment'],
-      hint: '列来自资产 schema（元数据优先，目录回退）',
+      hint: '列来自湖表资产 schema（元数据优先，目录回退）',
       wide: true,
     },
     {

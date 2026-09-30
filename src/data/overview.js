@@ -1,19 +1,19 @@
 /** 总览仪表盘 · 配色、模块入口与主链路（统计由 useOverview 拉真实接口） */
 
-/** 简洁配色：主色 + 语义色 + 中性灰阶，避免彩虹色 */
+/** 总览配色：蓝强调 + 中性灰字，避免蓝叠蓝 */
 export const OV_PALETTE = {
-  primary: '#1e6fff',
-  primarySoft: '#e8f0ff',
-  success: '#00a676',
-  successSoft: '#e6faf3',
-  warning: '#fa8c16',
-  warningSoft: '#fff7e6',
-  danger: '#f5222d',
-  dangerSoft: '#fff1f0',
+  primary: '#2f6fed',
+  primarySoft: '#eef4ff',
+  success: '#059669',
+  successSoft: '#ecfdf5',
+  warning: '#d97706',
+  warningSoft: '#fffbeb',
+  danger: '#dc2626',
+  dangerSoft: '#fef2f2',
   mute: '#94a3b8',
   muteSoft: '#f1f5f9',
-  ink: '#1a2233',
-  series: ['#1e6fff', '#00a676', '#64748b', '#fa8c16', '#94a3b8'],
+  ink: '#0f172a',
+  series: ['#2f6fed', '#059669', '#64748b', '#d97706', '#94a3b8'],
 }
 
 export const OVERVIEW_MODULES = [
@@ -33,5 +33,5 @@ export const OV_PIPELINE = [
   { id: 'lake', label: '入湖加工', sub: '流 · 批', to: '/integration' },
   { id: 'asset', label: '资产治理', sub: '目录 · 标准 · 血缘', to: '/catalog' },
   { id: 'govern', label: '质量安全', sub: '规则 · 脱敏', to: '/quality' },
-  { id: 'serve', label: '服务消费', sub: 'API · 指标 · 查询', to: '/dataservice' },
+  { id: 'serve', label: '服务消费', sub: 'API · 指标 · 查询', to: '/dataservice/apis' },
 ]

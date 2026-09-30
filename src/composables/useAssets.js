@@ -12,10 +12,13 @@ import {
   updateAssetMeta as apiUpdateMeta,
 } from '@/api/catalog'
 import { domainMeta, layerMeta, levelClass } from '@/data/assetMeta'
+import { resolveWs } from '@/utils/ws'
+import { fetchAllPages } from '@/utils/pageFetch'
 
 const assets = ref([])
 const loaded = ref(false)
 const loading = ref(false)
+const loadedWs = ref('')
 let loadError = null
 let loadPromise = null
 
@@ -25,9 +28,11 @@ export function useAssets() {
     return assets.value
   })
 
-  function ensureLoaded() {
-    if (loaded.value || loading.value || loadPromise) return loadPromise
-    loadPromise = loadAssets()
+  function ensureLoaded(force = false) {
+    const ws = resolveWs()
+    if (!force && loaded.value && loadedWs.value === ws) return loadPromise
+    if (loading.value && loadPromise && !force) return loadPromise
+    loadPromise = loadAssets({ ws, scope: 'workspace' })
       .catch(() => {})
       .finally(() => {
         loadPromise = null
@@ -39,9 +44,15 @@ export function useAssets() {
     loading.value = true
     loadError = null
     try {
-      const page = await fetchAssetPage(filters, { current: 1, size: 500 })
-      assets.value = (page?.records || []).map(normalizeAsset)
+      const ws = resolveWs(filters.ws)
+      if (loadedWs.value && loadedWs.value !== ws) {
+        assets.value = []
+      }
+      const q = { ...filters, ws, scope: filters.scope || 'workspace' }
+      const records = await fetchAllPages(({ current, size }) => fetchAssetPage(q, { current, size }))
+      assets.value = records.map(normalizeAsset).filter(Boolean)
       loaded.value = true
+      loadedWs.value = ws
       return assets.value
     } catch (e) {
       loadError = e
@@ -73,7 +84,7 @@ export function useAssets() {
 
   /** 注册：调后端，返回规范化行 */
   async function addAsset(payload) {
-    const saved = await apiAddAsset(payload)
+    const saved = await apiAddAsset({ ...payload, ws: resolveWs(payload?.ws) })
     return replaceLocal(saved)
   }
 
@@ -125,16 +136,25 @@ export function useAssets() {
     return fetchAssetPreview(id, opts)
   }
 
+  function invalidateAssets() {
+    assets.value = []
+    loaded.value = false
+    loadedWs.value = ''
+    loadPromise = null
+  }
+
   return {
     assets,
     list,
     loaded,
     loading,
+    loadedWs,
     get loadError() {
       return loadError
     },
     ensureLoaded,
     loadAssets,
+    invalidateAssets,
     findAsset,
     addAsset,
     editAsset,
@@ -231,7 +251,6 @@ function buildDefaultTags(vo) {
   if (vo.status && vo.status !== 'active') {
     tags.push([vo.status, 'tag-gray'])
   }
-  // 分层已在卡片 layer 徽标展示，不再重复塞进 tags
   if (vo.assetKind && vo.assetKind !== 'table') {
     tags.push([vo.assetKind, 'tag-blue'])
   }
@@ -255,7 +274,6 @@ function mapSchemaFields(schema) {
 function avatarOf(owner) {
   const s = String(owner || '').trim()
   if (!s) return '—'
-  // 中文名取首字，避免「张三」头像整段再叠一次全名
   if (/^[\u4e00-\u9fff]/.test(s)) return s.slice(0, 1)
   const parts = s.replace(/[()（）].*$/, '').trim().split(/\s+/)
   if (parts.length >= 2) {

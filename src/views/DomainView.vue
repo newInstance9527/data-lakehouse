@@ -1,7 +1,9 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import PageHeader from '@/components/common/PageHeader.vue'
+import ListPager from '@/components/common/ListPager.vue'
 import { useToast } from '@/composables/useToast'
+import { usePager } from '@/composables/usePager'
 import { pageGuideOf } from '@/data/pageGuides'
 import {
   createDomain,
@@ -45,6 +47,19 @@ const filtered = computed(() => {
   })
 })
 
+const {
+  page,
+  pageSize,
+  total,
+  totalPages,
+  paged,
+  pageNums,
+  goPage,
+  resetPage,
+} = usePager(filtered)
+
+watch([kw, statusFilter], () => resetPage())
+
 onMounted(() => {
   loadList()
   ensureDomains(true)
@@ -55,6 +70,7 @@ async function loadList() {
   try {
     const list = await fetchDomainList({ status: statusFilter.value || undefined, q: kw.value || undefined })
     rows.value = Array.isArray(list) ? list : []
+    resetPage()
     // attach usage (best-effort)
     await Promise.all(
       rows.value.slice(0, 40).map(async (r) => {
@@ -220,12 +236,12 @@ function usageText(u) {
             </tr>
           </thead>
           <tbody>
-            <tr v-if="!filtered.length">
+            <tr v-if="!paged.length">
               <td colspan="7" class="tip" style="padding: 16px">
                 {{ loading ? '加载中…' : '暂无数据域。请点击「新建」创建业务域' }}
               </td>
             </tr>
-            <tr v-for="r in filtered" :key="r.domainCode">
+            <tr v-for="r in paged" :key="r.domainCode">
               <td><code>{{ r.domainCode }}</code></td>
               <td><b>{{ r.name }}</b></td>
               <td>{{ r.sortNo ?? '—' }}</td>
@@ -254,6 +270,15 @@ function usageText(u) {
             </tr>
           </tbody>
         </table>
+        <ListPager
+          v-model:page="page"
+          v-model:page-size="pageSize"
+          :total="total"
+          :total-pages="totalPages"
+          :page-nums="pageNums"
+          :page-count="paged.length"
+          @go="goPage"
+        />
       </div>
     </div>
 

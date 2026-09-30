@@ -27,6 +27,16 @@
   border-color: var(--primary-dark);
   color: #fff;
 }
+.btn-danger {
+  color: var(--danger, #cf1322);
+  border-color: color-mix(in srgb, var(--danger, #cf1322) 45%, transparent);
+  background: color-mix(in srgb, var(--danger, #cf1322) 8%, var(--bg-1, #fff));
+}
+.btn-danger:hover {
+  color: #fff;
+  background: var(--danger, #cf1322);
+  border-color: var(--danger, #cf1322);
+}
 .btn-sm {
   padding: 4px 10px;
   font-size: 12px;
@@ -114,38 +124,38 @@
 }
 .tag-blue {
   background: var(--primary-light);
-  color: var(--primary);
-  border-color: #bfd5ff;
+  color: var(--primary-dark);
+  border-color: #c7d7f5;
 }
 .tag-green {
   background: var(--success-light);
-  color: #00a676;
-  border-color: #b7ebd4;
+  color: #047857;
+  border-color: #a7f3d0;
 }
 .tag-orange {
   background: var(--warning-light);
-  color: #d48806;
-  border-color: #ffd591;
+  color: #b45309;
+  border-color: #fde68a;
 }
 .tag-red {
   background: var(--danger-light);
-  color: #cf1322;
-  border-color: #ffa39e;
+  color: #b91c1c;
+  border-color: #fecaca;
 }
 .tag-purple {
-  background: #f3e5ff;
-  color: #722ed1;
-  border-color: #d3adf7;
+  background: #f5f3ff;
+  color: #5b21b6;
+  border-color: #ddd6fe;
 }
 .tag-cyan {
-  background: #e6f7ff;
-  color: #08979c;
-  border-color: #91d5ff;
+  background: #ecfeff;
+  color: #0e7490;
+  border-color: #a5f3fc;
 }
 .tag-gray {
-  background: #fafafa;
-  color: #595959;
-  border-color: #d9d9d9;
+  background: #f8fafc;
+  color: #475569;
+  border-color: #e2e8f0;
 }
 
 .table,

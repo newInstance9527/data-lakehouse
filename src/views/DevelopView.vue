@@ -27,7 +27,7 @@ import { DEV_ENGINES, DEV_ENVS, lintTagClass, statusTagClass } from '@/data/deve
 const route = useRoute()
 const router = useRouter()
 const { showToast } = useToast()
-const { currentWs, showAll, listWsParams, watchListScope } = useWsListScope()
+const { currentWs, showAll, canShowAll, listWsParams, watchListScope } = useWsListScope()
 const { busy, run: runLocked } = useActionLock()
 const guide = pageGuideOf('develop')
 
@@ -379,7 +379,8 @@ onMounted(async () => {
       :guide-title="guide.title"
       :guide="guide"
     >
-      <label class="ws-mine-chk" title="默认跟随顶栏当前空间；勾选后查看全部归属">
+      <span class="acl-empty-hint" style="font-size:12px;color:var(--muted,#888);margin-right:8px">列表默认本人脚本 · 当前空间</span>
+      <label v-if="canShowAll" class="ws-mine-chk" title="默认跟随顶栏当前空间；勾选后查看全部归属">
         <input v-model="showAll" type="checkbox" />
         查看全部
       </label>

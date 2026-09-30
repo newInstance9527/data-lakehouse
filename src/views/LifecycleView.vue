@@ -1,13 +1,16 @@
 <script setup>
-import { nextTick, onMounted, ref } from 'vue'
+import { nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
 import { useToast } from '@/composables/useToast'
 import { useLifecycle } from '@/composables/useLifecycle'
 import { pageGuideOf } from '@/data/pageGuides'
 import { complianceTypeCls } from '@/data/compliance'
+import { useSession } from '@/composables/useSession'
+import { resolveWs } from '@/utils/ws'
 
 const router = useRouter()
+const { currentWs } = useSession()
 const route = useRoute()
 const { showToast } = useToast()
 const guide = pageGuideOf('lifecycle')
@@ -53,12 +56,16 @@ const policyForm = ref({
 
 const pendingDeepLink = ref(null)
 
-onMounted(async () => {
+async function reloadBoard() {
   try {
-    await loadBoard()
+    await loadBoard(resolveWs())
   } catch (e) {
     showToast(`生命周期加载失败：${e.message || e}`, 'error')
   }
+}
+
+onMounted(async () => {
+  await reloadBoard()
   // 存储趋势深链：?table=&action=&from=storage-trend&adviceId=
   const q = route.query || {}
   if (q.from === 'storage-trend' && q.table && (q.action === 'compact' || q.action === 'expire')) {
@@ -72,6 +79,10 @@ onMounted(async () => {
     await nextTick()
     archiveSectionEl.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }
+})
+
+watch(currentWs, () => {
+  reloadBoard()
 })
 
 function goExportExpire() {
@@ -104,7 +115,7 @@ function dismissDeepLink() {
 
 async function runLifecycleNow() {
   try {
-    const run = await runNow()
+    const run = await runNow(resolveWs())
     const mid = run.dsTaskId || run.runId || ''
     showToast(
       `▶ 日作业已提交 · ${run.status}${mid ? ' · ' + mid : ''}${run.errorMsg ? ' · ' + run.errorMsg : ''}`,
@@ -146,7 +157,7 @@ function goCompliance(ticket) {
 
 async function onExpireSnapshot(table, adviceId) {
   try {
-    const run = await expireTable(table, undefined, adviceId || undefined)
+    const run = await expireTable(table, resolveWs(), adviceId || undefined)
     showToast(
       `快照过期已提交 · ${table} · ${run.status} · ${run.dsTaskId || run.runId}`,
       run.status === 'failed' ? 'warning' : 'success',
@@ -167,7 +178,7 @@ async function onExpireSnapshot(table, adviceId) {
 
 async function onRunCompaction(table, adviceId) {
   try {
-    const run = await compactTable(table, undefined, adviceId || undefined)
+    const run = await compactTable(table, resolveWs(), adviceId || undefined)
     showToast(
       `⚡ 合并已提交 · ${table} · ${run.status} · ${run.dsTaskId || run.runId}`,
       run.status === 'failed' ? 'warning' : 'success',
@@ -188,7 +199,7 @@ async function onRunCompaction(table, adviceId) {
 
 async function onScanOrphans() {
   try {
-    const res = await orphanScan()
+    const res = await orphanScan(resolveWs())
     showToast(
       `🔍 孤儿扫描（预演）已提交 · ${res.processInstanceId || res.dsTaskId || res.runId}${res.degraded ? '（降级）' : ''}`,
       res.degraded ? 'warning' : 'info',
@@ -310,7 +321,6 @@ async function submitPolicy() {
             v-for="j in jobSteps"
             :key="j.step"
             class="lifecycle-job"
-            :class="lcJobStatusMeta(j.status).cls"
           >
             <div class="lj-step">{{ j.step }}</div>
             <div class="lj-main">
@@ -707,9 +717,6 @@ async function submitPolicy() {
   border: 1px solid var(--border);
   background: #fff;
 }
-.lifecycle-job.success { border-left: 3px solid var(--success); }
-.lifecycle-job.warn { border-left: 3px solid var(--warning); }
-.lifecycle-job.failed { border-left: 3px solid var(--danger); }
 .lj-step {
   width: 24px;
   height: 24px;

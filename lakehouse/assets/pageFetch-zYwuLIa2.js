@@ -1,0 +1,1 @@
+async function e(e,{pageSize:t=100,maxPages:n=10}={}){let r=[],i=1,a=1/0,o=Math.min(t,100);for(;i<=n&&r.length<a;){let t=await e({current:i,size:o}),n=t?.records||(Array.isArray(t)?t:[]);if(Array.isArray(t)){r.push(...n);break}if(a=Number(t?.total??n.length),r.push(...n),!n.length||n.length<o)break;i+=1}return r}export{e as t};

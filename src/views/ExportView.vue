@@ -19,7 +19,7 @@ const route = useRoute()
 const router = useRouter()
 const { showToast } = useToast()
 const { locale } = useLocale()
-const { user, currentWs, showAll, listWsParams, watchListScope } = useWsListScope()
+const { user, currentWs, showAll, canShowAll, listWsParams, watchListScope } = useWsListScope()
 const guide = pageGuideOf('export')
 
 const createOpen = ref(false)
@@ -84,7 +84,7 @@ onMounted(async () => {
   if (route.query.action === 'apply') {
     createOpen.value = true
   }
-  await Promise.all([loadBoard(), ensureMetricBindTables().catch(() => {})])
+  await Promise.all([loadBoard(), ensureMetricBindTables({ force: true }).catch(() => {})])
   if (route.query.focus === 'expire') {
     document.getElementById('exp-expire-anchor')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }
@@ -247,7 +247,8 @@ function goEtl(j) {
       subtitle="申请→审批→脱敏→出湖→审计→到期回收 · 独立 SA · 禁止私下灌库"
       :guide="guide"
     >
-      <label class="ws-mine-chk" :title="tt('默认跟随顶栏当前空间；勾选后查看全部归属')">
+      <span class="acl-empty-hint" style="font-size:12px;color:var(--muted,#888);margin-right:8px">默认当前空间</span>
+      <label v-if="canShowAll" class="ws-mine-chk" :title="tt('默认跟随顶栏当前空间；勾选后查看全部归属')">
         <input v-model="showAll" type="checkbox" />
         {{ tt('查看全部') }}
       </label>

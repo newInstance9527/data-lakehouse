@@ -342,10 +342,12 @@ async function onRegisterSubmit(payload) {
     if (payload.kind === 'field') {
       const row = await addField(body)
       tab.value = 'field'
+      if (!payload.editing) fieldStatus.value = ''
       showToast(payload.editing ? `已更新标准字段 ${row.name}` : `已注册标准字段 ${row.name}`, 'success')
     } else {
       const row = await addCode(body)
       tab.value = 'code'
+      if (!payload.editing) codeStatus.value = ''
       showToast(payload.editing ? `已更新标准码值 ${row.id}` : `已注册标准码值 ${row.id}`, 'success')
     }
   } catch (e) {

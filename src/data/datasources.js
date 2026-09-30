@@ -794,16 +794,18 @@ export const DATA_SOURCES = [
     "database": "",
     "user": "erp_api_user",
     "password": "******",
-    "extra": "baseURL=https://erp.corp/api/v1/;auth=Bearer+JWT",
+    "baseURL": "https://erp.corp/api/v1/",
+    "extra": "",
+    "access": "定时轮询 · 10min",
     "schema": "GET /order (OpenAPI 3.0)",
-    "lag": "每 10min 轮询",
+    "lag": "定时轮询 · 10min",
     "status": "online",
     "health": 90,
     "asset": null,
     "owner": "李明",
     "ver": "v1.0",
     "created": "2026-02-28",
-    "desc": "ERP REST API · JWT 鉴权 · 轮询模式"
+    "desc": "ERP REST API · JWT 鉴权 · 定时轮询"
   },
   {
     "id": "ds_api_map",
@@ -817,9 +819,11 @@ export const DATA_SOURCES = [
     "database": "",
     "user": "",
     "password": "sk.****************",
+    "baseURL": "https://api.mapbox.cn/",
     "extra": "",
+    "access": "按需请求",
     "schema": "GET /geocoding/v5",
-    "lag": "按需·在线请求",
+    "lag": "按需请求",
     "status": "warn",
     "health": 80,
     "asset": null,
@@ -1179,9 +1183,33 @@ export function statusMeta(status) {
   return { label: '⏸ 停用', tag: 'tag-gray', short: '停用' }
 }
 
+/** 从 Base URL 解析 hostname / port（HTTPS 默认 443，HTTP 默认 80） */
+export function parseHttpBaseUrl(raw) {
+  const s = String(raw || '').trim()
+  if (!s) return null
+  try {
+    const u = new URL(/^https?:\/\//i.test(s) ? s : `https://${s}`)
+    const port = u.port || (u.protocol === 'http:' ? '80' : '443')
+    return { host: u.hostname, port, href: u.href }
+  } catch {
+    return null
+  }
+}
+
 export function endpointOf(s) {
+  if (!s) return ''
+  const conn = s.conn && typeof s.conn === 'object' ? s.conn : {}
+  const baseURL = String(s.baseURL || conn.baseURL || conn.httpUrl || '').trim()
+  if (baseURL) return baseURL
+  // 旧样例：extra 里嵌 baseURL=...
+  const extra = String(s.extra || conn.extra || '')
+  const m = extra.match(/(?:^|;)\s*baseURL=([^;]+)/i)
+  if (m) return decodeURIComponent(m[1].trim())
   const db = s.database
     ? (String(s.database).startsWith('/') ? s.database : '/' + s.database)
     : ''
-  return s.host + ':' + s.port + db
+  const host = s.host || conn.host || ''
+  const port = s.port ?? conn.port
+  if (!host) return db || ''
+  return port != null && String(port) !== '' ? `${host}:${port}${db}` : `${host}${db}`
 }

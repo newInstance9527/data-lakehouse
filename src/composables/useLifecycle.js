@@ -20,9 +20,11 @@ import {
 import { fetchDelRequests, fetchDelSummary } from '@/api/compliance'
 import { LC_STAGES, lcJobStatusMeta } from '@/data/lifecycle'
 import { complianceTypeCls } from '@/data/compliance'
+import { resolveWs } from '@/utils/ws'
 
 const loading = ref(false)
 const loaded = ref(false)
+const loadedWs = ref('')
 const lastError = ref(null)
 const actionBusy = ref(false)
 
@@ -469,8 +471,10 @@ export function useLifecycle() {
   })
 
   function ensureLoaded() {
-    if (loaded.value || loading.value || loadPromise) return loadPromise
-    loadPromise = loadBoard()
+    const ws = resolveWs()
+    if (loaded.value && loadedWs.value === ws) return loadPromise
+    if (loading.value && loadPromise) return loadPromise
+    loadPromise = loadBoard(ws)
       .catch(() => {})
       .finally(() => {
         loadPromise = null
@@ -478,12 +482,25 @@ export function useLifecycle() {
     return loadPromise
   }
 
-  async function loadBoard(ws) {
+  async function loadBoard(wsIn) {
     loading.value = true
     lastError.value = null
+    const ws = resolveWs(wsIn)
+    if (loadedWs.value && loadedWs.value !== ws) {
+      overview.value = null
+      jobsLatest.value = null
+      policies.value = []
+      topStorage.value = []
+      orphanRows.value = []
+      storageTrend.value = null
+      compliancePreviewRows.value = []
+      archiveCandidateRows.value = []
+      loaded.value = false
+    }
     try {
       const result = await applyBoard(ws)
       loaded.value = true
+      loadedWs.value = ws
       return result
     } catch (e) {
       lastError.value = e
@@ -503,12 +520,14 @@ export function useLifecycle() {
     }
   }
 
-  async function loadTrend(ws, rangeOrDays = '30d') {
+  async function loadTrend(wsIn, rangeOrDays = '30d') {
+    const ws = resolveWs(wsIn)
     storageTrend.value = await fetchLcStorageTrend(ws, rangeOrDays)
     return storageTrend.value
   }
 
-  async function runNow(ws) {
+  async function runNow(wsIn) {
+    const ws = resolveWs(wsIn)
     actionBusy.value = true
     try {
       const run = await runLcJobsNow({ ws })
@@ -519,7 +538,8 @@ export function useLifecycle() {
     }
   }
 
-  async function compactTable(tableFqn, ws, adviceId) {
+  async function compactTable(tableFqn, wsIn, adviceId) {
+    const ws = resolveWs(wsIn)
     actionBusy.value = true
     try {
       return await triggerLcCompact({ tableFqn, ws, adviceId })
@@ -528,7 +548,8 @@ export function useLifecycle() {
     }
   }
 
-  async function expireTable(tableFqn, ws, adviceId) {
+  async function expireTable(tableFqn, wsIn, adviceId) {
+    const ws = resolveWs(wsIn)
     actionBusy.value = true
     try {
       return await triggerLcExpire({ tableFqn, ws, adviceId })
@@ -541,7 +562,8 @@ export function useLifecycle() {
     return syncLcRun(runId)
   }
 
-  async function orphanScan(ws, bucket) {
+  async function orphanScan(wsIn, bucket) {
+    const ws = resolveWs(wsIn)
     actionBusy.value = true
     try {
       const res = await scanLcOrphan({ ws, bucket, dryRun: true })
@@ -576,6 +598,7 @@ export function useLifecycle() {
   return {
     loading,
     loaded,
+    loadedWs,
     lastError,
     actionBusy,
     overview,

@@ -15,6 +15,7 @@ import { dsTypeMeta } from '@/data/dsForm'
 import { inferDsTypeCode } from '@/data/dsTypeIcons'
 import { pageGuideOf } from '@/data/pageGuides'
 import { bareDisplayUser } from '@/utils/displayUser'
+import { invalidateMetricBindTables } from '@/data/metricBindAssets'
 
 const route = useRoute()
 const router = useRouter()
@@ -120,11 +121,21 @@ watch([search, domain, layerFilter, sourceFilter], () => {
   searchTimer = setTimeout(() => reload(), 280)
 })
 
-watch(currentWs, () => reload())
+watch(currentWs, async () => {
+  try {
+    await loadSources({ ws: currentWs.value || 'default' })
+  } catch (e) {
+    showToast(`加载数据源失败：${e.message || e}`, 'error')
+  }
+  await reload()
+})
 
 onMounted(async () => {
   try {
-    await Promise.all([loadSources(), ensureDomains().catch(() => {})])
+    await Promise.all([
+      loadSources({ ws: currentWs.value || 'default' }),
+      ensureDomains().catch(() => {}),
+    ])
   } catch (e) {
     showToast(`加载数据源失败：${e.message || e}`, 'error')
   }
@@ -211,6 +222,7 @@ async function onRegisterSubmit(payload) {
     }
     showToast(`已注册资产 ${row.key} · ${payload.sourceName || ''}`, 'success')
     if (payload.sourceName) sourceFilter.value = payload.sourceName
+    invalidateMetricBindTables()
     await reload()
     await openAsset(row.id, false)
   } catch (e) {

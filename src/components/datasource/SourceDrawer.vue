@@ -27,7 +27,9 @@ const { canEditDatasource, canDeleteDatasource, refreshManageGrant } = useSessio
 
 const cat = computed(() => (props.source ? dsCategory(props.source) : ''))
 const st = computed(() => statusMeta(props.source?.status))
-const summary = computed(() => schemaSummary(props.source?.schema, 5))
+const summary = computed(() =>
+  schemaSummary(props.source?.schema, 5, { sourceType: props.source?.type }),
+)
 const testing = ref(false)
 const canEdit = computed(() => canEditDatasource(props.source))
 const canDelete = computed(() => canDeleteDatasource(props.source))

@@ -3,14 +3,30 @@ import { DEFAULT_THEME, THEMES, translate } from '@/i18n/messages'
 import { useLocale } from '@/composables/useLocale'
 
 export const THEME_STORAGE_KEY = 'lh_theme'
-export const THEME_VALUES = new Set(['default', 'light', 'dark'])
+
+/** 三种界面风格；旧值映射保留兼容 */
+export const THEME_VALUES = new Set(['minimal', 'soft', 'azure'])
+
+const LEGACY_THEME_MAP = {
+  default: 'azure',
+  studio: 'azure',
+  tech: 'azure',
+  light: 'minimal',
+  dark: 'soft',
+}
 
 const theme = ref(readTheme())
+
+function normalizeTheme(raw) {
+  if (THEME_VALUES.has(raw)) return raw
+  if (LEGACY_THEME_MAP[raw]) return LEGACY_THEME_MAP[raw]
+  return DEFAULT_THEME
+}
 
 function readTheme() {
   try {
     const v = localStorage.getItem(THEME_STORAGE_KEY)
-    if (THEME_VALUES.has(v)) return v
+    return normalizeTheme(v)
   } catch {
     /* ignore */
   }
@@ -19,14 +35,20 @@ function readTheme() {
 
 function applyDocumentTheme(value) {
   const html = document.documentElement
-  html.setAttribute('data-theme', value)
-  html.classList.toggle('theme-dark', value === 'dark')
-  html.classList.toggle('theme-light', value === 'light')
-  html.classList.toggle('theme-default', value === 'default')
+  const v = normalizeTheme(value)
+  html.setAttribute('data-theme', v)
+  html.classList.toggle('theme-minimal', v === 'minimal')
+  html.classList.toggle('theme-soft', v === 'soft')
+  html.classList.toggle('theme-azure', v === 'azure')
+  html.classList.toggle('theme-tech', false)
+  html.classList.toggle('theme-studio', false)
+  html.classList.toggle('theme-dark', false)
+  html.classList.toggle('theme-light', v === 'minimal')
+  html.classList.toggle('theme-default', v === 'soft')
 }
 
 export function setTheme(next) {
-  const value = THEME_VALUES.has(next) ? next : DEFAULT_THEME
+  const value = normalizeTheme(next)
   theme.value = value
   try {
     localStorage.setItem(THEME_STORAGE_KEY, value)

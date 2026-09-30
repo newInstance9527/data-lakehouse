@@ -1,0 +1,1 @@
+import{Ft as e}from"./index-ADld4-WJ.js";function t(t){let n=t!=null&&String(t).trim()!==``?String(t).trim():``;if(n)return n;try{let{currentWs:t}=e();return t.value||`default`}catch{return`default`}}export{t};

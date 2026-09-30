@@ -18,7 +18,8 @@ import {
   runStdLandingDetect,
 } from '@/api/standard'
 import { parseCodeValues } from '@/data/standards'
-import { useSession } from '@/composables/useSession'
+import { resolveWs } from '@/utils/ws'
+import { fetchAllPages } from '@/utils/pageFetch'
 
 const fields = ref([])
 const codes = ref([])
@@ -30,6 +31,7 @@ const metaOptions = ref(null)
 
 const loaded = ref(false)
 const loading = ref(false)
+const loadedWs = ref('')
 let loadError = null
 let loadPromise = null
 
@@ -55,9 +57,11 @@ export function useStandards() {
     return detects.value
   })
 
-  function ensureLoaded() {
-    if (loaded.value || loading.value || loadPromise) return loadPromise
-    loadPromise = loadAll()
+  function ensureLoaded(force = false) {
+    const ws = resolveWs()
+    if (!force && loaded.value && loadedWs.value === ws) return loadPromise
+    if (loading.value && loadPromise && !force) return loadPromise
+    loadPromise = loadAll({ ws })
       .catch(() => {})
       .finally(() => {
         loadPromise = null
@@ -69,26 +73,36 @@ export function useStandards() {
     loading.value = true
     loadError = null
     try {
-      const { currentWs } = useSession()
-      const ws = filters.ws || currentWs.value || 'default'
+      const ws = resolveWs(filters.ws)
+      if (loadedWs.value && loadedWs.value !== ws) {
+        fields.value = []
+        codes.value = []
+        namings.value = []
+        mappings.value = []
+        detects.value = []
+        overview.value = null
+      }
       const q = { ws }
-      const [fieldPage, codePage, namingPage, mappingPage, detectPage, ov, meta] = await Promise.all([
-        fetchStdFields(q, { current: 1, size: 500 }),
-        fetchStdCodes(q, { current: 1, size: 500 }),
-        fetchStdNamings(q, { current: 1, size: 500 }),
-        fetchStdMappings(q, { current: 1, size: 500 }),
-        fetchStdDetects(q, { current: 1, size: 500 }),
-        fetchStdOverview(ws).catch(() => null),
-        fetchStdMetaOptions().catch(() => null),
-      ])
-      fields.value = (fieldPage?.records || []).map(normalizeField)
-      codes.value = (codePage?.records || []).map(normalizeCode)
-      namings.value = (namingPage?.records || []).map(normalizeNaming)
-      mappings.value = (mappingPage?.records || []).map(normalizeMapping)
-      detects.value = (detectPage?.records || []).map(normalizeDetect)
+      const pageFetch = (api) => fetchAllPages(({ current, size }) => api(q, { current, size }))
+      const [fieldRecords, codeRecords, namingRecords, mappingRecords, detectRecords, ov, meta] =
+        await Promise.all([
+          pageFetch(fetchStdFields),
+          pageFetch(fetchStdCodes),
+          pageFetch(fetchStdNamings),
+          pageFetch(fetchStdMappings),
+          pageFetch(fetchStdDetects),
+          fetchStdOverview(ws).catch(() => null),
+          fetchStdMetaOptions().catch(() => null),
+        ])
+      fields.value = fieldRecords.map(normalizeField)
+      codes.value = codeRecords.map(normalizeCode)
+      namings.value = namingRecords.map(normalizeNaming)
+      mappings.value = mappingRecords.map(normalizeMapping)
+      detects.value = detectRecords.map(normalizeDetect)
       overview.value = ov
       metaOptions.value = meta
       loaded.value = true
+      loadedWs.value = ws
       return {
         fields: fields.value,
         codes: codes.value,
@@ -181,9 +195,12 @@ export function useStandards() {
   }
 
   async function runDetect(ws) {
-    const r = await runStdLandingDetect(ws)
-    const detectPage = await fetchStdDetects({}, { current: 1, size: 500 })
-    detects.value = (detectPage?.records || []).map(normalizeDetect)
+    const w = resolveWs(ws)
+    const r = await runStdLandingDetect(w)
+    const detectRecords = await fetchAllPages(({ current, size }) =>
+      fetchStdDetects({ ws: w }, { current, size }),
+    )
+    detects.value = detectRecords.map(normalizeDetect)
     await refreshOverview()
     return r
   }

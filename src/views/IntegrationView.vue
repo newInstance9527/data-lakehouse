@@ -582,7 +582,10 @@ async function applyDeepLink() {
 onMounted(async () => {
   window.addEventListener('keydown', onKey)
   try {
-    await Promise.all([reloadEtlList(), loadSources().catch(() => {})])
+    await Promise.all([
+      reloadEtlList(),
+      loadSources({ ws: currentWs.value || 'default' }).catch(() => {}),
+    ])
     if (lastError.value) {
       showToast(lastError.value.message || 'ETL 列表加载失败', 'warning')
     }
@@ -598,6 +601,7 @@ watch(
   },
 )
 watch(currentWs, () => {
+  loadSources({ ws: currentWs.value || 'default' }).catch(() => {})
   reloadEtlList()
     .then(() => applyDeepLink())
     .catch(() => {})

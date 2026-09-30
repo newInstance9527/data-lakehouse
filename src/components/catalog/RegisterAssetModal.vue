@@ -13,6 +13,8 @@ import { useDatasources } from '@/composables/useDatasources'
 import { useSession } from '@/composables/useSession'
 import { resolveTables } from '@/utils/schemaList'
 import { useToast } from '@/composables/useToast'
+import { resolveWs } from '@/utils/ws'
+import { fetchAllPages } from '@/utils/pageFetch'
 
 const props = defineProps({
   open: { type: Boolean, default: false },
@@ -138,12 +140,12 @@ async function loadRegisteredObjects(dsId) {
   seedRegisteredFromSource(dsId)
   registeredLoading.value = true
   try {
-    const page = await fetchAssetPage(
-      { dsId, ws: currentWs.value || 'default', scope: 'workspace' },
-      { current: 1, size: 500 },
+    const ws = resolveWs(currentWs.value)
+    const records = await fetchAllPages(({ current, size }) =>
+      fetchAssetPage({ dsId, ws, scope: 'workspace' }, { current, size }),
     )
     const names = new Set(registeredNames.value)
-    ;(page?.records || []).forEach((row) => {
+    records.forEach((row) => {
       const n = String(row?.objectName || row?.tableName || '').trim()
       if (n) names.add(n.toLowerCase())
     })

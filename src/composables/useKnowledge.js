@@ -12,11 +12,14 @@ import {
   uploadKbEntry,
 } from '@/api/ai'
 import { resolveKbCat } from '@/data/knowledge'
+import { resolveWs } from '@/utils/ws'
+import { fetchAllPages } from '@/utils/pageFetch'
 
 const items = ref([])
 const overview = ref(null)
 const loading = ref(false)
 const loaded = ref(false)
+const loadedWs = ref('')
 const lastError = ref(null)
 let loadPromise = null
 
@@ -92,8 +95,10 @@ function linkLabel(to) {
 
 export function useKnowledge() {
   function ensureLoaded() {
-    if (loaded.value || loading.value || loadPromise) return loadPromise
-    loadPromise = loadAll()
+    const ws = resolveWs()
+    if (loaded.value && loadedWs.value === ws) return loadPromise
+    if (loading.value && loadPromise) return loadPromise
+    loadPromise = loadAll({ ws, scope: 'workspace' })
       .catch(() => {})
       .finally(() => {
         loadPromise = null
@@ -104,14 +109,23 @@ export function useKnowledge() {
   async function loadAll(filters = {}) {
     loading.value = true
     lastError.value = null
+    const ws = resolveWs(filters.ws)
+    const scope = filters.scope || 'workspace'
+    if (loadedWs.value && loadedWs.value !== ws) {
+      items.value = []
+      overview.value = null
+      loaded.value = false
+    }
+    const q = { ...filters, ws, scope }
     try {
-      const [page, ov] = await Promise.all([
-        fetchKbEntries(filters, { current: 1, size: 500 }),
-        fetchKbOverview(filters.ws, filters.scope).catch(() => null),
+      const [records, ov] = await Promise.all([
+        fetchAllPages((p) => fetchKbEntries(q, p)),
+        fetchKbOverview(ws, scope).catch(() => null),
       ])
-      items.value = (page?.records || []).map(normalizeKbEntry).filter(Boolean)
+      items.value = records.map(normalizeKbEntry).filter(Boolean)
       overview.value = ov
       loaded.value = true
+      loadedWs.value = ws
       return items.value
     } catch (e) {
       lastError.value = e
@@ -134,7 +148,7 @@ export function useKnowledge() {
         separator: payload.separator === 'custom' ? payload.customSep : payload.separator,
         embedModelId: payload.embedModel,
         refsJson: payload.rel ? JSON.stringify({ note: payload.rel }) : undefined,
-        ws: payload.ws,
+        ws: resolveWs(payload.ws),
         scope: 'workspace',
         entryId: payload.id || undefined,
       })
@@ -160,7 +174,7 @@ export function useKnowledge() {
       separator: payload.separator === 'custom' ? payload.customSep : payload.separator,
       embedModelId: payload.embedModel,
       refsJson: payload.rel ? JSON.stringify({ note: payload.rel }) : undefined,
-      ws: payload.ws,
+      ws: resolveWs(payload.ws),
       scope: 'workspace',
     })
     const n = normalizeKbEntry(saved)
@@ -185,7 +199,7 @@ export function useKnowledge() {
       separator: payload.separator === 'custom' ? payload.customSep : payload.separator,
       embedModelId: payload.embedModel,
       refsJson: payload.rel ? JSON.stringify({ note: payload.rel }) : undefined,
-      ws: payload.ws,
+      ws: resolveWs(payload.ws),
       scope: payload.scope || 'workspace',
     }
     if (payload.id) {
@@ -223,6 +237,7 @@ export function useKnowledge() {
     overview: computed(() => overview.value),
     loading,
     loaded,
+    loadedWs,
     lastError,
     loadAll,
     ensureLoaded,

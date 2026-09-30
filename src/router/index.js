@@ -41,8 +41,51 @@ const routes = [
   { path: '/quality', name: 'quality', component: () => import('@/views/QualityView.vue'), meta: { id: 'quality' } },
   { path: '/security', name: 'security', component: () => import('@/views/SecurityView.vue'), meta: { id: 'security' } },
   { path: '/contract', name: 'contract', component: () => import('@/views/ContractView.vue'), meta: { id: 'contract' } },
-  { path: '/dataservice', name: 'dataservice', component: () => import('@/views/DataserviceView.vue'), meta: { id: 'dataservice' } },
-  { path: '/metrics', name: 'metrics', component: () => import('@/views/MetricsView.vue'), meta: { id: 'metrics' } },
+  {
+    path: '/dataservice',
+    name: 'dataservice',
+    component: () => import('@/views/DataserviceOverviewView.vue'),
+    meta: { id: 'dataservice' },
+  },
+  {
+    path: '/dataservice/apis',
+    name: 'dataservice-apis',
+    component: () => import('@/views/DataserviceApisView.vue'),
+    meta: { id: 'dataservice-apis' },
+  },
+  {
+    path: '/dataservice/build/:id?',
+    name: 'dataservice-build',
+    component: () => import('@/views/DataserviceBuildView.vue'),
+    meta: { id: 'dataservice-build' },
+  },
+  {
+    path: '/dataservice/runtime',
+    name: 'dataservice-runtime',
+    component: () => import('@/views/DataserviceRuntimeView.vue'),
+    meta: { id: 'dataservice-runtime' },
+  },
+  {
+    path: '/metrics',
+    name: 'metrics',
+    component: () => import('@/views/MetricsOverviewView.vue'),
+    meta: { id: 'metrics' },
+  },
+  {
+    path: '/metrics/catalog',
+    name: 'metrics-catalog',
+    component: () => import('@/views/MetricsCatalogView.vue'),
+    meta: { id: 'metrics-catalog' },
+  },
+  {
+    path: '/metrics/define/:id?',
+    redirect: (to) => ({
+      path: '/metrics/catalog',
+      query: to.params.id
+        ? { edit: String(to.params.id) }
+        : { create: '1' },
+    }),
+  },
   { path: '/export', name: 'export', component: () => import('@/views/ExportView.vue'), meta: { id: 'export' } },
   { path: '/apply', name: 'apply', component: () => import('@/views/ApplyView.vue'), meta: { id: 'apply' } },
   { path: '/ops', name: 'ops', component: () => import('@/views/OpsView.vue'), meta: { id: 'ops' } },

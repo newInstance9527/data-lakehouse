@@ -107,6 +107,15 @@ export function useSession() {
   const user = computed(() => currentUser.value)
   const isLoggedIn = computed(() => Boolean(getToken() && currentUser.value))
   const isSuperAdmin = computed(() => isSuperAdminUser(currentUser.value))
+  /** 跨空间列表巡检：超管 / dataOps / bizAdmin */
+  const canScopeAll = computed(() => {
+    if (isSuperAdmin.value) return true
+    const roles = currentUser.value?.roles || []
+    return roles.some((r) => {
+      const c = typeof r === 'string' ? r : r?.code || r?.roleCode || ''
+      return ['dataOps', 'bizAdmin', 'superAdmin'].includes(c)
+    })
+  })
   /** 当前协作工作空间（软上下文，非 Catalog 隔离） */
   const currentWs = computed(() => currentUser.value?.ws || 'default')
 
@@ -133,7 +142,13 @@ export function useSession() {
     if (allow == null) return NAV_GROUPS
     return NAV_GROUPS.map((g) => ({
       ...g,
-      items: g.items.filter((item) => allow.has(item.id)),
+      items: g.items.filter((item) => {
+        if (allow.has(item.id)) return true
+        // 数据服务 / 指标中心子页：有父权限即可见
+        if (String(item.id).startsWith('dataservice-') && allow.has('dataservice')) return true
+        if (String(item.id).startsWith('metrics-') && allow.has('metrics')) return true
+        return false
+      }),
     })).filter((g) => g.items.length)
   })
 
@@ -145,7 +160,10 @@ export function useSession() {
     if (!navId) return true
     if (isSuperAdmin.value) return true
     if (menuNavIds.value == null) return true
-    return menuNavIds.value.has(navId)
+    if (menuNavIds.value.has(navId)) return true
+    if (String(navId).startsWith('dataservice-') && menuNavIds.value.has('dataservice')) return true
+    if (String(navId).startsWith('metrics-') && menuNavIds.value.has('metrics')) return true
+    return false
   }
 
   function canPreviewAsset(asset) {
@@ -378,6 +396,7 @@ export function useSession() {
     setCurrentWs,
     isLoggedIn,
     isSuperAdmin,
+    canScopeAll,
     ready: readonly(ready),
     filteredNavGroups,
     canAccessNav,

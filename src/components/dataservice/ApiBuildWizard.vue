@@ -20,6 +20,7 @@ import {
   syncSqlTemplate,
 } from '@/data/apiBuild'
 import { useAssets } from '@/composables/useAssets'
+import { resolveWs } from '@/utils/ws'
 
 const props = defineProps({
   open: { type: Boolean, default: false },
@@ -274,7 +275,7 @@ async function publish() {
   }
   publishing.value = true
   try {
-    const result = await runBuildAndPublish(form)
+    const result = await runBuildAndPublish({ ...form, ws: resolveWs() })
     const row =
       result?.binding ||
       buildApiFromWizard({

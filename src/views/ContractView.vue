@@ -29,7 +29,7 @@ import {
 
 const router = useRouter()
 const { showToast } = useToast()
-const { currentWs, showAll, listWsParams, watchListScope } = useWsListScope()
+const { currentWs, showAll, canShowAll, listWsParams, watchListScope } = useWsListScope()
 const guide = pageGuideOf('contract')
 
 const createOpen = ref(false)
@@ -39,6 +39,16 @@ const versions = ref([])
 const changes = ref([])
 const overview = ref(null)
 const { page, pageSize, total, totalPages, paged, pageNums, goPage, resetPage } = usePager(schemas)
+const {
+  page: changePage,
+  pageSize: changePageSize,
+  total: changeTotal,
+  totalPages: changeTotalPages,
+  paged: changePaged,
+  pageNums: changePageNums,
+  goPage: goChangePage,
+  resetPage: resetChangePage,
+} = usePager(changes)
 
 const kpis = computed(() => {
   const o = overview.value || {}
@@ -62,9 +72,18 @@ async function loadBoard() {
       fetchContractChanges(base),
     ])
     overview.value = ov || {}
-    schemas.value = Array.isArray(list?.records) ? list.records : []
-    changes.value = Array.isArray(ch?.records) ? ch.records : []
+    schemas.value = Array.isArray(list?.records)
+      ? list.records
+      : Array.isArray(list)
+        ? list
+        : []
+    changes.value = Array.isArray(ch?.records)
+      ? ch.records
+      : Array.isArray(ch)
+        ? ch
+        : []
     resetPage()
+    resetChangePage()
     if (schemas.value[0]?.name) {
       versions.value = (await fetchSchemaVersions(schemas.value[0].name, base)) || []
     } else {
@@ -76,6 +95,8 @@ async function loadBoard() {
     schemas.value = []
     changes.value = []
     versions.value = []
+    resetPage()
+    resetChangePage()
   } finally {
     loading.value = false
   }
@@ -162,7 +183,8 @@ watchListScope(() => loadBoard())
       subtitle="Schema 变更 · 兼容性 · 同步语义 · 湖表演进约定"
       :guide="guide"
     >
-      <label class="ws-mine-chk" title="默认跟随顶栏当前空间；勾选后查看全部归属">
+      <span class="acl-empty-hint" style="font-size:12px;color:var(--muted,#888);margin-right:8px">默认当前空间</span>
+      <label v-if="canShowAll" class="ws-mine-chk" title="默认跟随顶栏当前空间；勾选后查看全部归属">
         <input v-model="showAll" type="checkbox" />
         查看全部
       </label>
@@ -196,7 +218,7 @@ watchListScope(() => loadBoard())
 
     <div class="card">
       <div class="card-header">
-        <div class="card-title">📋 Schema Registry</div>
+        <div class="card-title">📋 Schema Registry <span class="tip">· 共 {{ total }} 条</span></div>
       </div>
       <div class="card-body" style="padding: 0">
         <table class="table">
@@ -213,7 +235,9 @@ watchListScope(() => loadBoard())
           </thead>
           <tbody>
             <tr v-if="!paged.length">
-              <td colspan="7" style="text-align: center; color: var(--text-3); padding: 24px">暂无 Schema</td>
+              <td colspan="7" style="text-align: center; color: var(--text-3); padding: 24px">
+                {{ loading ? '加载中…' : '暂无 Schema' }}
+              </td>
             </tr>
             <tr v-for="(s, si) in paged" :key="`${s.name}-${si}`">
               <td>
@@ -286,7 +310,7 @@ watchListScope(() => loadBoard())
 
     <div class="card">
       <div class="card-header">
-        <div class="card-title">📋 变更单</div>
+        <div class="card-title">📋 变更单 <span class="tip">· 共 {{ changeTotal }} 条</span></div>
       </div>
       <div class="card-body" style="padding: 0">
         <table class="table">
@@ -299,10 +323,10 @@ watchListScope(() => loadBoard())
             </tr>
           </thead>
           <tbody>
-            <tr v-if="!changes.length">
+            <tr v-if="!changePaged.length">
               <td colspan="4" style="text-align: center; color: var(--text-3); padding: 24px">暂无变更单</td>
             </tr>
-            <tr v-for="c in changes" :key="c.id">
+            <tr v-for="c in changePaged" :key="c.id">
               <td>{{ c.title || '—' }}</td>
               <td><code>{{ c.schemaName }}</code></td>
               <td>{{ c.status }}</td>
@@ -310,6 +334,15 @@ watchListScope(() => loadBoard())
             </tr>
           </tbody>
         </table>
+        <ListPager
+          v-model:page="changePage"
+          v-model:page-size="changePageSize"
+          :total="changeTotal"
+          :total-pages="changeTotalPages"
+          :page-nums="changePageNums"
+          :page-count="changePaged.length"
+          @go="goChangePage"
+        />
       </div>
     </div>
 

@@ -24,6 +24,8 @@ import {
 } from '@/data/etl'
 import { formatNow } from '@/utils/etlRuns'
 import { useSession } from '@/composables/useSession'
+import { resolveWs } from '@/utils/ws'
+import { fetchAllPages } from '@/utils/pageFetch'
 const tasks = ref([])
 const currentId = ref('')
 const selNodeId = ref(null)
@@ -32,6 +34,7 @@ const connectFrom = ref(null)
 const forceCfgTab = ref(null)
 const loading = ref(false)
 const loaded = ref(false)
+const loadedWs = ref('')
 const lastError = ref(null)
 const saving = ref(false)
 let loadPromise = null
@@ -185,8 +188,13 @@ export function useEtl() {
     loading.value = true
     lastError.value = null
     try {
-      const page = await fetchEtlDags(filters, { current: 1, size: 100 })
-      const records = (page?.records || []).map(normalizeDag).filter(Boolean)
+      const ws = resolveWs(filters.ws)
+      if (loadedWs.value && loadedWs.value !== ws) {
+        tasks.value = []
+      }
+      const q = { ...filters, ws, scope: filters.scope || 'workspace' }
+      const rawRecords = await fetchAllPages(({ current, size }) => fetchEtlDags(q, { current, size }))
+      const records = rawRecords.map(normalizeDag).filter(Boolean)
       const prevId = currentId.value
       const byId = new Map(tasks.value.map((t) => [t.id, t]))
       tasks.value = records.map((r) => {
@@ -202,6 +210,7 @@ export function useEtl() {
         }
       })
       loaded.value = true
+      loadedWs.value = ws
       const prefer = tasks.value.find((t) => t.id === prevId) || tasks.value[0]
       if (prefer) {
         await selectTask(prefer.id, { force: !prefer.nodes?.length })
@@ -218,9 +227,11 @@ export function useEtl() {
     }
   }
 
-  function ensureLoaded() {
-    if (loaded.value || loading.value || loadPromise) return loadPromise
-    loadPromise = loadList()
+  function ensureLoaded(force = false) {
+    const ws = resolveWs()
+    if (!force && loaded.value && loadedWs.value === ws) return loadPromise
+    if (loading.value && loadPromise && !force) return loadPromise
+    loadPromise = loadList({ ws, scope: 'workspace' })
       .catch(() => {})
       .finally(() => {
         loadPromise = null

@@ -2,6 +2,7 @@
  * 资产目录 API（对齐 /lh/catalog）
  */
 import { http } from './http.js'
+import { resolveWs } from '@/utils/ws'
 
 const CAT = '/lh/catalog'
 
@@ -16,14 +17,19 @@ export function fetchAssetPage(filters = {}, { current = 1, size = 200 } = {}) {
     source: filters.source,
     kind: filters.kind ?? filters.assetKind,
     status: filters.status,
-    ws: filters.ws,
+    ws: resolveWs(filters.ws),
     scope: filters.scope,
   })
 }
 
 /** 登记前查重（本空间） */
 export function checkAssetDuplicate({ ws, dsId, objectName, assetCode } = {}) {
-  return http.get(`${CAT}/assets/checkDuplicate`, { ws, dsId, objectName, assetCode })
+  return http.get(`${CAT}/assets/checkDuplicate`, {
+    ws: resolveWs(ws),
+    dsId,
+    objectName,
+    assetCode,
+  })
 }
 
 export function fetchAssetDetail(id) {
@@ -58,7 +64,7 @@ export function addAsset(payload) {
     sensitivity: payload.sensitivity || levelToSensitivity(payload.level),
     assetKind: payload.assetKind,
     engine: payload.engine,
-    ws: payload.ws,
+    ws: resolveWs(payload.ws),
     remark: payload.remark,
   })
 }

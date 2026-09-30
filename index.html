@@ -1,22 +1,36 @@
 <!doctype html>
-<html lang="zh-CN" data-theme="default">
+<html lang="zh-CN" data-theme="soft">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>DataLakeHub · 全栈湖仓一体数据治理平台</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Newsreader:opsz,wght@6..72,500;600;700&family=Noto+Sans+SC:wght@400;500;600;700&family=Noto+Serif+SC:wght@500;600;700&family=Outfit:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Source+Sans+3:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
     <script>
       (function () {
         try {
+          var map = { default: 'azure', studio: 'azure', tech: 'azure', light: 'minimal', dark: 'soft' }
           var theme = localStorage.getItem('lh_theme')
-          if (theme === 'light' || theme === 'dark' || theme === 'default') {
-            document.documentElement.setAttribute('data-theme', theme)
-          }
+          var next = map[theme] || theme
+          if (next !== 'minimal' && next !== 'soft' && next !== 'azure') next = 'soft'
+          document.documentElement.setAttribute('data-theme', next)
+          if (theme !== next) localStorage.setItem('lh_theme', next)
+
           var locale = localStorage.getItem('lh_locale')
-          if (locale === 'en' || locale === 'zh') {
-            document.documentElement.lang = locale === 'en' ? 'en' : 'zh-CN'
+          if (locale !== 'en' && locale !== 'zh') {
+            locale = 'zh'
+            localStorage.setItem('lh_locale', 'zh')
           }
-        } catch (e) {}
+          document.documentElement.lang = locale === 'en' ? 'en' : 'zh-CN'
+        } catch (e) {
+          document.documentElement.setAttribute('data-theme', 'soft')
+          document.documentElement.lang = 'zh-CN'
+        }
       })()
     </script>
   </head>
