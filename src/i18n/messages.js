@@ -153,6 +153,8 @@ const zh = {
   'login.fail': '登录失败',
   'login.title': 'DataLakeHub · 全栈湖仓一体数据治理平台',
 
+  'app.update.message': '检测到前端有新版本。确认后再刷新，避免打断当前操作。',
+  'app.update.apply': '立即刷新',
   'common.ok': '知道了',
   'common.cancel': '取消',
   'common.submit': '提交',
@@ -310,6 +312,8 @@ const en = {
   'login.fail': 'Sign-in failed',
   'login.title': 'DataLakeHub · Lakehouse Governance Platform',
 
+  'app.update.message': 'A new frontend build is available. Refresh when you are ready.',
+  'app.update.apply': 'Refresh now',
   'common.ok': 'Got it',
   'common.cancel': 'Cancel',
   'common.submit': 'Submit',

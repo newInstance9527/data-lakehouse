@@ -8,6 +8,7 @@ import { switchWsWithMemberGuard } from '@/composables/useWsSwitch'
 import { useLocale, t } from '@/composables/useLocale'
 import { beginRouteLoading, useRouteLoading } from '@/composables/useRouteLoading'
 import AppToast from '@/components/common/AppToast.vue'
+import AppVersionUpdate from '@/components/common/AppVersionUpdate.vue'
 import ConfirmDeleteModal from '@/components/common/ConfirmDeleteModal.vue'
 import GlobalAiAssistant from '@/components/ai/GlobalAiAssistant.vue'
 import UiPrefsMenu from '@/components/common/UiPrefsMenu.vue'
@@ -259,6 +260,7 @@ onMounted(() => {
     </div>
 
     <AppToast />
+    <AppVersionUpdate />
     <ConfirmDeleteModal />
     <GlobalAiAssistant />
   </div>
