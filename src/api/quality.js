@@ -106,3 +106,21 @@ export function fetchQualityRuns(ruleId, params = {}) {
     size: params.size ?? 20,
   })
 }
+
+/** 门户真探数执行（Trino/JDBC）；写 gov_dq_rule_run，刷新 KPI */
+export function evaluateQualityRules(payload = {}) {
+  const ruleIds = Array.isArray(payload.ruleIds)
+    ? payload.ruleIds.filter(Boolean)
+    : payload.ruleId
+      ? [payload.ruleId]
+      : []
+  return http.post(`${Q}/rules/evaluate`, {
+    ws: resolveWs(payload.ws),
+    ruleIds,
+    probe: payload.probe !== false,
+    // 页面手动执行默认不按门禁硬阻断（仍写 blocked 标记供历史查看）
+    blockOnFail: payload.blockOnFail === true,
+    nodeKey: payload.nodeKey || 'portal-ui',
+    jobRunId: payload.jobRunId,
+  })
+}

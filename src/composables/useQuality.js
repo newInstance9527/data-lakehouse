@@ -5,6 +5,7 @@ import { computed, ref } from 'vue'
 import {
   createQualityTicket,
   deleteQualityGate,
+  evaluateQualityRules,
   fetchQualityGates,
   fetchQualityGold,
   fetchQualityOverview,
@@ -188,24 +189,6 @@ function normalizeGold(rows) {
 
 export function useQuality() {
   const metrics = computed(() => buildMetrics(overview.value))
-  const omSummary = computed(() => {
-    const om = overview.value?.om
-    if (!om || typeof om !== 'object') {
-      return { available: false, hint: '暂无 OM 摘要' }
-    }
-    return {
-      available: !!om.available,
-      health: om.health || '',
-      sampledTables: Number(om.sampledTables ?? 0),
-      profileOk: Number(om.profileOk ?? 0),
-      testTotal: Number(om.testTotal ?? 0),
-      testPass: Number(om.testPass ?? 0),
-      testFail: Number(om.testFail ?? 0),
-      testPassRate: om.testPassRate != null ? Number(om.testPassRate) : null,
-      hint: om.hint || '',
-      notes: Array.isArray(om.notes) ? om.notes : [],
-    }
-  })
   const streamSummary = computed(() => {
     const s = overview.value?.stream
     if (!s || typeof s !== 'object') {
@@ -373,10 +356,37 @@ export function useQuality() {
     return r
   }
 
+  /** 门户真探数：写 runs 并刷新 overview / 规则列表 */
+  async function evaluateRules(ruleIds, opts = {}) {
+    const ids = (Array.isArray(ruleIds) ? ruleIds : [ruleIds]).filter(Boolean)
+    if (!ids.length) {
+      throw new Error('请选择要执行的规则')
+    }
+    const workspace = resolveWs(opts.ws)
+    const result = await evaluateQualityRules({
+      ws: workspace,
+      ruleIds: ids,
+      probe: opts.probe !== false,
+      blockOnFail: opts.blockOnFail === true,
+      nodeKey: opts.nodeKey || 'portal-ui',
+    })
+    try {
+      overview.value = await fetchQualityOverview({ ws: workspace, range: opts.range || '30' })
+      const ruleRecords = await fetchAllPages(({ current, size }) =>
+        fetchQualityRules({ ws: workspace }, { current, size }),
+      )
+      rules.value = ruleRecords.map(normalizeRule).filter(Boolean)
+      gold.value = (await fetchQualityGold({ ws: workspace, limit: 5 })) || []
+      trend.value = (await fetchQualityTrend({ ws: workspace, range: opts.range || '30' })) || []
+    } catch {
+      /* ignore refresh */
+    }
+    return result
+  }
+
   return {
     overview,
     metrics,
-    omSummary,
     streamSummary,
     trendPoints,
     typeDistView,
@@ -396,5 +406,6 @@ export function useQuality() {
     loadRuleRuns,
     openTicket,
     syncOm,
+    evaluateRules,
   }
 }

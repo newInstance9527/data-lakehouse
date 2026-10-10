@@ -10,6 +10,7 @@ import AppToast from '@/components/common/AppToast.vue'
 import ConfirmDeleteModal from '@/components/common/ConfirmDeleteModal.vue'
 import GlobalAiAssistant from '@/components/ai/GlobalAiAssistant.vue'
 import UiPrefsMenu from '@/components/common/UiPrefsMenu.vue'
+import InboxPopover from '@/components/common/InboxPopover.vue'
 import NavIcon from '@/components/common/NavIcon.vue'
 
 const route = useRoute()
@@ -38,6 +39,9 @@ const navGroups = computed(() => {
 const crumbs = computed(() => {
   void locale.value
   const id = activeId.value
+  if (id === 'usercenter') {
+    return [t('nav.g.workbench'), t('usercenter.title')]
+  }
   const group = filteredNavGroups.value.find((g) => g.items.some((i) => i.id === id))
   const item = group?.items.find((i) => i.id === id)
   if (!group || !item) {
@@ -45,6 +49,21 @@ const crumbs = computed(() => {
   }
   return [t(`nav.g.${group.key}`, group.title), t(`nav.${item.id}`, item.label)]
 })
+
+const userMenuOpen = ref(false)
+
+function toggleUserMenu() {
+  userMenuOpen.value = !userMenuOpen.value
+}
+
+function closeUserMenu() {
+  userMenuOpen.value = false
+}
+
+function goUserCenter(tab) {
+  closeUserMenu()
+  router.push(tab ? { path: '/usercenter', query: { tab } } : '/usercenter')
+}
 
 const avatarText = computed(() => {
   const n = user.value?.name || user.value?.account || '?'
@@ -180,13 +199,33 @@ onMounted(() => {
             style="background: var(--primary-light); color: var(--primary)"
           >{{ t('app.superAdmin') }}</span>
           <UiPrefsMenu />
-          <button class="icon-btn" :title="t('app.notify')" type="button" @click="router.push('/ops')">
-            <NavIcon name="notify" :size="16" />
-          </button>
-          <div class="user-avatar" :title="userTitle">{{ avatarText }}</div>
-          <button class="icon-btn" :title="t('app.logout')" type="button" @click="onLogout">
-            <NavIcon name="logout" :size="16" />
-          </button>
+          <InboxPopover />
+          <div class="user-menu-wrap">
+            <button
+              type="button"
+              class="user-avatar user-avatar-btn"
+              :title="userTitle"
+              @click="toggleUserMenu"
+            >
+              {{ avatarText }}
+            </button>
+            <div v-if="userMenuOpen" class="user-menu-mask" @click="closeUserMenu" />
+            <div v-if="userMenuOpen" class="user-menu" role="menu">
+              <div class="user-menu-meta">
+                <div class="user-menu-name">{{ user?.name || user?.account }}</div>
+                <div class="user-menu-account">{{ user?.account }}</div>
+              </div>
+              <button type="button" class="user-menu-item" role="menuitem" @click="goUserCenter()">
+                {{ t('usercenter.title') }}
+              </button>
+              <button type="button" class="user-menu-item" role="menuitem" @click="goUserCenter('messages')">
+                {{ t('inbox.title') }}
+              </button>
+              <button type="button" class="user-menu-item danger" role="menuitem" @click="onLogout(); closeUserMenu()">
+                {{ t('app.logout') }}
+              </button>
+            </div>
+          </div>
         </div>
       </header>
 

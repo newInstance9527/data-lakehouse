@@ -17,13 +17,16 @@ import {
   fetchDelRequests,
   fetchDelSubjectMaps,
   fetchDelSummary,
+  fetchDelSuppressions,
   holdDelRequest,
+  registerDelExportReceipt,
   releaseDelHold,
   restrictDelRequest,
   revealDelSubjectPlain,
   scheduleDelRequest,
   submitDelRequest,
   upsertDelSubjectMap,
+  upsertDelSuppression,
   verifyDelRequest,
 } from '@/api/compliance'
 import { DEL_STATUS_META } from '@/data/compliance'
@@ -43,6 +46,7 @@ const detail = ref(null)
 const evidence = ref(null)
 const lastDryRun = ref(null)
 const subjectMaps = ref([])
+const suppressions = ref([])
 
 function n(v, d = 0) {
   const x = Number(v)
@@ -255,6 +259,28 @@ export function useCompliance() {
     }
   }
 
+  async function loadSuppressions(filters = {}) {
+    suppressions.value = (await fetchDelSuppressions(filters)) || []
+    return suppressions.value
+  }
+
+  async function saveSuppression(payload) {
+    actionBusy.value = true
+    try {
+      const saved = await upsertDelSuppression(payload)
+      const idx = suppressions.value.findIndex((m) => m.id === saved.id)
+      if (idx >= 0) suppressions.value[idx] = saved
+      else suppressions.value.unshift(saved)
+      return saved
+    } finally {
+      actionBusy.value = false
+    }
+  }
+
+  function registerExportReceipt(payload) {
+    return run(() => registerDelExportReceipt(payload), { reqId: payload?.reqId })
+  }
+
   return {
     loading,
     loaded,
@@ -269,6 +295,7 @@ export function useCompliance() {
     evidence,
     lastDryRun,
     subjectMaps,
+    suppressions,
     kpis,
     overdueCount,
     dueSoonCount,
@@ -292,5 +319,8 @@ export function useCompliance() {
     downloadEvidencePackage,
     loadSubjectMaps,
     saveSubjectMap,
+    loadSuppressions,
+    saveSuppression,
+    registerExportReceipt,
   }
 }

@@ -108,6 +108,12 @@ const routes = [
   { path: '/sys/users', name: 'sys-users', component: () => import('@/views/SysUserView.vue'), meta: { id: 'sys-users' } },
   { path: '/sys/roles', name: 'sys-roles', component: () => import('@/views/SysRoleView.vue'), meta: { id: 'sys-roles' } },
   { path: '/sys/menus', name: 'sys-menus', component: () => import('@/views/SysMenuView.vue'), meta: { id: 'sys-menus' } },
+  {
+    path: '/usercenter',
+    name: 'usercenter',
+    component: () => import('@/views/UserCenterView.vue'),
+    meta: { id: 'usercenter' },
+  },
 ]
 
 const router = createRouter({

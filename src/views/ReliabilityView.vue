@@ -273,12 +273,15 @@ async function forceReimport() {
 }
 
 async function goldenDelist() {
+  const blocked = boardCards.value.find((c) => !c.ready)
+  const failRow = reconRows.value.find((r) => r.status !== 'pass') || reconRows.value[0]
   const table =
-    boardCards.value.find((c) => !c.ready)?.metricCode ||
-    reconRows.value.find((r) => r.status !== 'pass')?.ckTable ||
-    reconRows.value[0]?.ckTable
+    blocked?.lakeTable ||
+    failRow?.lakeTable ||
+    blocked?.targetTable ||
+    failRow?.ckTable
   if (!table) {
-    showToast('暂无可摘牌对象', 'warning')
+    showToast('暂无可摘牌对象（需 lakeTable / targetTable）', 'warning')
     return
   }
   try {

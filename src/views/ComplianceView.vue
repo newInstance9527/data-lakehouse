@@ -34,6 +34,7 @@ const {
   evidence,
   lastDryRun,
   subjectMaps,
+  suppressions,
   kpis,
   overdueCount,
   dueSoonCount,
@@ -54,6 +55,9 @@ const {
   loadEvidence,
   loadSubjectMaps,
   saveSubjectMap,
+  loadSuppressions,
+  saveSuppression,
+  registerExportReceipt,
   revealSubjectPlain,
   downloadEvidencePackage,
 } = useCompliance()
@@ -72,6 +76,24 @@ const excludeReason = ref('')
 const restrictReason = ref('法定保存期未届满')
 const holdReason = ref('')
 const abortReason = ref('')
+
+/** 出湖回执登记 */
+const receiptTargetId = ref('')
+const receiptOutcome = ref('received')
+const receiptRef = ref('')
+const receiptPartner = ref('')
+const receiptNote = ref('')
+
+/** 抑制名单手工登记 */
+const suppReqId = ref('')
+const suppObjectFqn = ref('*')
+const suppRemark = ref('')
+
+/** 计划页手工补充载体 */
+const addCarrier = ref('iceberg')
+const addObjectFqn = ref('')
+const addScope = ref('')
+const addMode = ref('')
 
 /** 明文二次授权弹窗 */
 const revealOpen = ref(false)
@@ -156,6 +178,9 @@ function applyDeepLink() {
 watch(view, (v) => {
   if (v === 'maps' && !subjectMaps.value.length) {
     loadSubjectMaps().catch((e) => showToast(`主体索引加载失败：${e.message}`, 'warning'))
+  }
+  if (v === 'suppressions') {
+    loadSuppressions().catch((e) => showToast(`抑制名单加载失败：${e.message}`, 'warning'))
   }
 })
 
@@ -357,6 +382,47 @@ function doConfirmLineage(t) {
   )
 }
 
+function doAddCarrier() {
+  const fqn = addObjectFqn.value.trim()
+  if (!fqn) {
+    showToast('✕ 请填写对象 FQN', 'warning')
+    return
+  }
+  const item = {
+    carrier: addCarrier.value || 'iceberg',
+    objectFqn: fqn,
+    scopeExpr: addScope.value.trim() || undefined,
+    mode: addMode.value.trim() || undefined,
+  }
+  guarded(async () => {
+    const r = await editPlan({ reqId: detail.value.id, add: [item] })
+    addObjectFqn.value = ''
+    addScope.value = ''
+    addMode.value = ''
+    showToast(`✅ 已补充载体 ${fqn}`, 'success')
+    return r
+  })
+}
+
+function nudgeGapOwner(g) {
+  const fqn = typeof g === 'string' ? g : g?.fqn
+  if (!fqn) return
+  const tech = typeof g === 'object' ? g.techOwner : ''
+  const biz = typeof g === 'object' ? g.bizOwner : ''
+  const owner = [tech, biz].filter(Boolean).join(' / ') || '（未填 Owner）'
+  const text = `【合规主体索引催办】高敏表 ${fqn} 尚未登记主体定位列，请 Owner（${owner}）尽快在合规删除「主体索引」登记。`
+  if (navigator?.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).then(
+      () => showToast('已复制催办文案', 'success'),
+      () => showToast(text, 'info'),
+    )
+  } else {
+    showToast(text, 'info')
+  }
+  router.push({ path: '/compliance', query: { tab: 'subject', table: fqn } })
+  mapOpen.value = true
+}
+
 async function doDryRun() {
   const res = await guarded(() => dryRun(detail.value.id))
   if (res) {
@@ -407,8 +473,57 @@ function doRestrict(targetIds) {
   }
   guarded(
     () => restrict({ reqId: detail.value.id, targetIds, reason: restrictReason.value.trim() }),
-    '🚫 已转限制处理 · 撤 ACL + 强制脱敏 + 禁出湖/API/训练',
+    '🚫 已转限制处理 · 撤 ACL/Grav + 强制脱敏 + 禁出湖/API/训练',
   )
+}
+
+function openReceipt(t) {
+  receiptTargetId.value = t.id
+  receiptOutcome.value = 'received'
+  receiptRef.value = ''
+  receiptPartner.value = ''
+  receiptNote.value = ''
+}
+
+function doReceipt() {
+  if (!detail.value || !receiptTargetId.value) return
+  if (receiptOutcome.value === 'residual_statement' && !receiptNote.value.trim()) {
+    showToast('书面残留声明须填写说明', 'warning')
+    return
+  }
+  guarded(
+    () =>
+      registerExportReceipt({
+        reqId: detail.value.id,
+        targetId: receiptTargetId.value,
+        outcome: receiptOutcome.value,
+        receiptRef: receiptRef.value.trim() || undefined,
+        partner: receiptPartner.value.trim() || undefined,
+        note: receiptNote.value.trim() || undefined,
+      }),
+    '📩 出湖回执已登记',
+  ).then((r) => {
+    if (r) receiptTargetId.value = ''
+  })
+}
+
+async function doSaveSupp() {
+  if (!suppReqId.value.trim()) {
+    showToast('请填写合规请求号或 id', 'warning')
+    return
+  }
+  try {
+    await saveSuppression({
+      reqId: suppReqId.value.trim(),
+      objectFqn: suppObjectFqn.value.trim() || '*',
+      remark: suppRemark.value.trim() || undefined,
+      source: 'manual',
+    })
+    showToast('抑制名单已登记', 'success')
+    suppRemark.value = ''
+  } catch (e) {
+    showToast(e?.message || '抑制名单登记失败', 'error')
+  }
 }
 
 function doExclude(t) {
@@ -515,8 +630,8 @@ function exportList() {
           <span class="tip">· 受理评估 → 审批 → 排期 → 执行 → 验证 → 归档销毁</span>
         </div>
         <div v-if="overdueCount || dueSoonCount" class="cp-sla-chips">
-          <span v-if="overdueCount" class="tag tag-red">超期 {{ overdueCount }}</span>
-          <span v-if="dueSoonCount" class="tag tag-orange">3 日内到期 {{ dueSoonCount }}</span>
+          <span v-if="overdueCount" class="tag tag-red">SLA 红 · 超期 {{ overdueCount }}</span>
+          <span v-if="dueSoonCount" class="tag tag-orange">SLA 黄 · ≤1/3 剩 {{ dueSoonCount }}</span>
         </div>
       </div>
       <div class="card-body cp-stages">
@@ -542,6 +657,10 @@ function exportList() {
       <button type="button" class="cp-tab" :class="{ active: view === 'maps' }" @click="view = 'maps'">
         主体索引
         <span v-if="coverage?.gapCount" class="tag tag-orange">缺口 {{ coverage.gapCount }}</span>
+      </button>
+      <button type="button" class="cp-tab" :class="{ active: view === 'suppressions' }" @click="view = 'suppressions'">
+        抑制名单
+        <span v-if="suppressions.length" class="tag tag-blue">{{ suppressions.length }}</span>
       </button>
     </div>
 
@@ -631,7 +750,7 @@ function exportList() {
     </div>
 
     <!-- 主体索引 -->
-    <div v-else class="card cp-list-card">
+    <div v-else-if="view === 'maps'" class="card cp-list-card">
       <div class="card-header cp-list-hd">
         <div class="card-title">
           主体索引
@@ -644,16 +763,20 @@ function exportList() {
           <button type="button" class="btn btn-sm btn-primary" @click="mapOpen = true">＋ 登记</button>
         </div>
       </div>
-      <div v-if="coverage?.gapTables?.length" class="cp-gap">
+      <div v-if="(coverage?.gapItems || coverage?.gapTables)?.length" class="cp-gap">
         未登记的高敏资产：
         <button
-          v-for="g in coverage.gapTables"
-          :key="g"
+          v-for="g in (coverage.gapItems?.length
+            ? coverage.gapItems
+            : (coverage.gapTables || []).map((fqn) => ({ fqn })))"
+          :key="g.fqn || g"
           type="button"
           class="tag tag-orange cp-table-tag"
-          @click="goLineage(g)"
+          :title="[g.techOwner, g.bizOwner].filter(Boolean).join(' / ') || '催办登记'"
+          @click="nudgeGapOwner(g)"
         >
-          {{ g }}
+          {{ g.fqn || g }}
+          <span v-if="g.techOwner || g.bizOwner" class="tip"> · {{ g.techOwner || g.bizOwner }}</span>
         </button>
       </div>
       <div class="card-body" style="padding: 0">
@@ -685,6 +808,52 @@ function exportList() {
             </tr>
             <tr v-if="!subjectMaps.length">
               <td colspan="8" class="cp-empty">暂无主体索引</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- 抑制名单 -->
+    <div v-else class="card cp-list-card">
+      <div class="card-header cp-list-hd">
+        <div class="card-title">
+          抑制名单
+          <span class="tip">· 防 CDC / 回算把已删主体带回；湖内载体 done 后自动登记</span>
+        </div>
+        <button type="button" class="btn btn-sm" @click="loadSuppressions().catch(() => {})">刷新</button>
+      </div>
+      <div class="card-body">
+        <div class="cp-inline-form" style="margin-bottom: 12px; flex-wrap: wrap">
+          <input v-model="suppReqId" class="input input-sm" placeholder="合规请求号 DEL-… 或 id" />
+          <input v-model="suppObjectFqn" class="input input-sm" placeholder="表 FQN 或 *" style="min-width: 180px" />
+          <input v-model="suppRemark" class="input input-sm" placeholder="备注（可选）" />
+          <button type="button" class="btn btn-sm btn-primary" :disabled="actionBusy" @click="doSaveSupp">＋ 登记</button>
+        </div>
+        <table class="table">
+          <thead>
+            <tr>
+              <th>主体 hash</th>
+              <th>对象</th>
+              <th>生效</th>
+              <th>失效</th>
+              <th>来源</th>
+              <th>状态</th>
+              <th>备注</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="s in suppressions" :key="s.id">
+              <td><code class="cp-mask">{{ (s.subjectIdHash || '').slice(0, 12) }}…</code></td>
+              <td style="font-size: 12px"><code>{{ s.objectFqn }}</code></td>
+              <td style="font-size: 11px">{{ fmt(s.effectiveAt) }}</td>
+              <td style="font-size: 11px">{{ s.expiresAt ? fmt(s.expiresAt) : '长期' }}</td>
+              <td style="font-size: 11px">{{ s.source || '—' }}</td>
+              <td><span class="tag" :class="s.status === 'active' ? 'tag-green' : 'tag-gray'">{{ s.status }}</span></td>
+              <td style="font-size: 11px">{{ s.remark || '—' }}</td>
+            </tr>
+            <tr v-if="!suppressions.length">
+              <td colspan="7" class="cp-empty">暂无抑制记录；执行湖内删除完成后会自动写入</td>
             </tr>
           </tbody>
         </table>
@@ -807,6 +976,25 @@ function exportList() {
           <div v-if="plan.pendingConfirm" class="cp-warn">
             推断血缘 {{ plan.pendingConfirm }} 项标灰，须人工确认后才能提交审批。
           </div>
+          <div
+            v-if="detail && !['done', 'archived', 'aborted'].includes(detail.status)"
+            class="cp-inline-form"
+            style="margin-bottom: 10px; flex-wrap: wrap; gap: 6px"
+          >
+            <select v-model="addCarrier" class="select input-sm">
+              <option value="iceberg">iceberg</option>
+              <option value="ck">ck</option>
+              <option value="source">source</option>
+              <option value="sink">sink</option>
+              <option value="export">export</option>
+              <option value="object">object</option>
+              <option value="crypto">crypto</option>
+            </select>
+            <input v-model="addObjectFqn" class="input input-sm" style="min-width: 180px" placeholder="对象 FQN（必填）" />
+            <input v-model="addScope" class="input input-sm" placeholder="范围表达式（可选）" />
+            <input v-model="addMode" class="input input-sm" placeholder="方式（可选）" />
+            <button type="button" class="btn btn-sm" :disabled="actionBusy" @click="doAddCarrier">＋ 补充载体</button>
+          </div>
           <table class="table cp-mini">
             <thead>
               <tr>
@@ -876,9 +1064,27 @@ function exportList() {
                     class="btn-link"
                     @click="doRestrict([t.id])"
                   >限制</button>
+                  <button
+                    v-if="t.carrier === 'export' && t.status === 'pending_receipt'"
+                    type="button"
+                    class="btn-link"
+                    @click="openReceipt(t)"
+                  >回执</button>
                   <div v-if="excludeId === t.id" class="cp-inline-form">
                     <input v-model="excludeReason" class="input input-sm" placeholder="排除理由（必填）" />
                     <button type="button" class="btn btn-sm" :disabled="actionBusy" @click="doExclude(t)">确认排除</button>
+                  </div>
+                  <div v-if="receiptTargetId === t.id" class="cp-inline-form" style="flex-wrap: wrap">
+                    <select v-model="receiptOutcome" class="input input-sm">
+                      <option value="received">已收回执</option>
+                      <option value="residual_statement">书面残留声明</option>
+                      <option value="timeout_statement">超期无回执声明</option>
+                    </select>
+                    <input v-model="receiptRef" class="input input-sm" placeholder="回执编号" />
+                    <input v-model="receiptPartner" class="input input-sm" placeholder="合作方" />
+                    <input v-model="receiptNote" class="input input-sm" placeholder="说明（残留必填）" />
+                    <button type="button" class="btn btn-sm btn-primary" :disabled="actionBusy" @click="doReceipt">登记</button>
+                    <button type="button" class="btn btn-sm" @click="receiptTargetId = ''">取消</button>
                   </div>
                 </td>
               </tr>
@@ -973,7 +1179,7 @@ function exportList() {
         <div v-else>
           <div class="cp-sec-title">限制处理（个保法 §47）</div>
           <div class="tip">
-            删不掉或法定保存期未届满时：停止除存储与必要安全保护之外的处理 —— 撤 ACL + 强制脱敏 + 禁出湖 / 禁 API / 禁训练 + 到期复查。
+            删不掉或法定保存期未届满时：停止除存储与必要安全保护之外的处理 —— 撤门户 ACL + Grav 软撤权 + 强制脱敏 + 禁出湖 / 禁 API / 禁训练 + 到期复查。
           </div>
           <div class="cp-inline-form">
             <input v-model="restrictReason" class="input input-sm" placeholder="依据，如 法定保存期未届满" />

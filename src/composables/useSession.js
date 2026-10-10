@@ -166,6 +166,8 @@ export function useSession() {
 
   function canAccessNav(navId) {
     if (!navId) return true
+    // 个人中心 / 站内信：登录即可，不依赖侧栏菜单授权
+    if (navId === 'usercenter') return true
     if (isSuperAdmin.value) return true
     if (menuNavIds.value == null) return true
     if (menuNavIds.value.has(navId)) return true

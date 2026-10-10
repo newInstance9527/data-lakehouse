@@ -84,6 +84,16 @@ function clampDepth(n) {
   return Math.min(99, Math.floor(v))
 }
 
+/** 血缘焦点 → 合规删除创建（主体索引种子表） */
+function goComplianceDelete() {
+  const seed = String(focusId.value || focusMeta.value?.tableKey || '').trim()
+  if (!seed) {
+    showToast('请先选择焦点表', 'warning')
+    return
+  }
+  router.push({ path: '/compliance', query: { create: '1', seed } })
+}
+
 function pageNums(cur, total) {
   if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1)
   const set = new Set([1, total, cur, cur - 1, cur + 1].filter((n) => n >= 1 && n <= total))
@@ -540,6 +550,13 @@ watch(currentWs, async () => {
         <option value="table">表级</option>
       </select>
       <button class="btn btn-sm" @click="exportSvg">⬇ 导出 SVG</button>
+      <button
+        type="button"
+        class="btn btn-sm"
+        :disabled="!focusId"
+        title="以当前焦点表创建合规删除工单并预填种子表"
+        @click="goComplianceDelete"
+      >按主体展开删除</button>
     </PageHeader>
 
     <div class="lin-layout">

@@ -50,7 +50,6 @@ function onGateTableChange(v) {
 
 const {
   metrics,
-  omSummary,
   streamSummary,
   trendPoints,
   typeDistView,
@@ -65,8 +64,11 @@ const {
   removeGate,
   loadRuleRuns,
   openTicket,
-  syncOm,
+  evaluateRules,
 } = useQuality()
+
+const evalBusy = ref(false)
+const evalRuleId = ref('')
 
 const { currentWs } = useSession()
 
@@ -170,23 +172,36 @@ async function onOpenTicket() {
   }
 }
 
-async function onSyncOm() {
-  busy.value = true
-  try {
-    const r = await syncOm()
-    const synced = r?.testSynced ?? 0
-    const fail = r?.failed ?? 0
-    const tip = r?.hint || '已同步'
-    if (r?.ok === false) {
-      showToast(`元数据同步降级：${tip}`, 'warning')
-    } else {
-      showToast(`元数据同步完成 · 投影 ${synced} · 失败 ${fail} · ${tip}`, 'success')
-    }
-  } catch (e) {
-    showToast(`元数据同步失败：${e.message || e}`, 'error')
-  } finally {
-    busy.value = false
+async function runEvaluate(ids, label) {
+  const list = (Array.isArray(ids) ? ids : [ids]).filter(Boolean)
+  if (!list.length) {
+    showToast('没有可执行的规则', 'warning')
+    return
   }
+  evalBusy.value = true
+  if (list.length === 1) evalRuleId.value = list[0]
+  try {
+    const r = await evaluateRules(list, { range: range.value })
+    const pass = Number(r?.pass ?? 0)
+    const fail = Number(r?.fail ?? 0)
+    const notes = Array.isArray(r?.notes) && r.notes.length ? ` · ${r.notes[0]}` : ''
+    const tip = `${label || '执行完成'}：通过 ${pass} · 失败 ${fail}${notes}`
+    showToast(tip, fail > 0 ? 'warning' : 'success')
+  } catch (e) {
+    showToast(`执行失败：${e.message || e}`, 'error')
+  } finally {
+    evalBusy.value = false
+    evalRuleId.value = ''
+  }
+}
+
+function onRunRule(r) {
+  return runEvaluate(r?.id, r?.ruleCode || r?.displayId || '规则')
+}
+
+function onRunFiltered() {
+  const ids = filteredRules.value.map((r) => r.id).filter(Boolean)
+  return runEvaluate(ids, `筛选 ${ids.length} 条`)
 }
 
 function editGate(g) {
@@ -333,16 +348,25 @@ const trendAxisLabels = computed(() => {
       subtitle="流批双模校验 · 质量门禁阻断 DAG · 结果回写资产目录"
       :guide="guide"
     >
-      <select v-model="range" class="select input-sm" :disabled="busy || loading">
+      <select v-model="range" class="select input-sm" :disabled="busy || loading || evalBusy">
         <option value="30">近30天</option>
         <option value="7">近7天</option>
         <option value="1">今日</option>
       </select>
-      <button type="button" class="btn btn-sm" :disabled="busy || loading" @click="onSyncOm">同步元数据</button>
-      <button type="button" class="btn btn-sm btn-primary" @click="newRule">+ 新建规则</button>
+      <button
+        type="button"
+        class="btn btn-sm"
+        :disabled="busy || loading || evalBusy || !filteredRules.length"
+        @click="onRunFiltered"
+      >
+        {{ evalBusy && !evalRuleId ? '执行中…' : '执行筛选规则' }}
+      </button>
+      <button type="button" class="btn btn-sm btn-primary" :disabled="evalBusy" @click="newRule">+ 新建规则</button>
     </PageHeader>
 
-    <p class="tip qual-banner">KPI / 规则 / 门禁接质量服务；无数据为空态，不加载演示行。新建规则绑表来自资产目录。</p>
+    <p class="tip qual-banner">
+      KPI 仅统计门户规则运行（Trino/JDBC 探数）；无运行显示「暂无」。新建后点「执行」或挂 ETL/DS 质量节点才会出分。
+    </p>
 
     <CreateFormModal
       :open="createOpen"
@@ -381,22 +405,6 @@ const trendAxisLabels = computed(() => {
           </div>
           <div class="qmc-sub" :class="{ danger: m.subDanger, success: m.subSuccess }">{{ m.sub }}</div>
         </div>
-      </div>
-    </div>
-
-    <div class="qual-om-strip" :class="{ down: !omSummary.available }">
-      <div class="qual-om-title">外部质量画像 · Profiler / Test</div>
-      <div class="qual-om-body">
-        <template v-if="omSummary.available">
-          <span>抽样表 {{ omSummary.sampledTables }}</span>
-          <span>Profile 可达 {{ omSummary.profileOk }}</span>
-          <span>Test {{ omSummary.testPass }}/{{ omSummary.testTotal }}
-            <template v-if="omSummary.testPassRate != null">（{{ omSummary.testPassRate }}%）</template>
-          </span>
-          <span v-if="omSummary.testFail">失败 {{ omSummary.testFail }}</span>
-        </template>
-        <span v-else class="qual-om-hint">{{ omSummary.hint || '外部质量不可达，仅门户运行记录' }}</span>
-        <span v-if="omSummary.available && omSummary.hint" class="qual-om-hint">{{ omSummary.hint }}</span>
       </div>
     </div>
 
@@ -585,6 +593,14 @@ const trendAxisLabels = computed(() => {
               <span class="rule-fail-count">✗ {{ r.failRows }}</span>
             </div>
             <div class="rule-result-actions">
+              <button
+                type="button"
+                class="btn btn-sm btn-primary"
+                :disabled="evalBusy"
+                @click="onRunRule(r)"
+              >
+                {{ evalBusy && evalRuleId === r.id ? '执行中…' : '执行' }}
+              </button>
               <button type="button" class="btn btn-sm" @click="viewTable(r)">查看表 →</button>
               <button type="button" class="btn btn-sm" @click="openRuns(r)">运行历史</button>
               <button

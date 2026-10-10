@@ -108,3 +108,30 @@ export function checkBackfillGate({ tables, markKey, markValue }) {
 export function checkExportGate(exportTable) {
   return http.post(`${C}/gate/export-check`, { exportTable })
 }
+
+/** 抑制名单（ETL/CDC 拉取；仅 hash） */
+export function fetchDelSuppressions({ ws, subjectIdHash, objectFqn, activeOnly = true } = {}) {
+  return http.get(`${C}/suppression`, {
+    ws: resolveWs(ws),
+    subjectIdHash,
+    objectFqn,
+    activeOnly,
+  })
+}
+
+/** 抑制名单登记 / 更新 */
+export function upsertDelSuppression(payload) {
+  return http.post(`${C}/suppression`, { ...payload, ws: resolveWs(payload?.ws) })
+}
+
+/**
+ * 出湖回执：outcome = received | residual_statement | timeout_statement
+ */
+export function registerDelExportReceipt(payload) {
+  return http.post(`${C}/export/receipt`, payload)
+}
+
+/** SLA 黄/红扫描推夜莺 */
+export function scanDelSla(ws) {
+  return http.post(`${C}/sla/scan`, {}, { params: { ws: resolveWs(ws) } })
+}

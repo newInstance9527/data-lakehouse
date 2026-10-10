@@ -244,22 +244,22 @@ export const PAGE_GUIDES_EN = {
     'Compliance Delete',
     sections4({
       about: [
-        'Handles irreversible deletes for right-to-be-forgotten, bad loads, regulatory orders, and contract expiry.',
-        'Flow: create → impact review → approve → execute → archive → physical destroy. Confirm scope carefully; rollback windows are limited.',
+        'Subject-level erase loop: subject map + carrier matrix + hard-delete sequence + restrict fallback (revoke grants, force mask, block export/API).',
+        'Iceberg path: DELETE → rewrite_data_files → targeted expire_snapshots (not the daily DAG order). SLA: intake ≤3 workdays · execute ≤15 · reply ≤30 days.',
       ],
       ops: [
-        'Create a ticket with subject, type, scope, and approvers.',
-        'Filter by status and open details for timeline and impacted tables.',
-        'Approve or reject; execute when ready.',
-        'Destroy after the archive period; jump to Lineage for impact tables.',
+        'Create (HMAC subject) → assess (maps / lineage.expand / approved lake_export) → confirm inferred edges → dry-run → submit CD- ticket.',
+        'Plan tab can manually add carriers; gap tags nudge Owner to register subject maps.',
+        'After approval: schedule → confirm reqNo → execute → verify → evidence pack; use Restrict when hard delete is impossible.',
+        'Deep links: ?status= · ?tab=subject&table= · ?create=1&seed=; Lineage action “Expand delete by subject”.',
       ],
       example:
-        'Scenario: right to be forgotten\n1. Create a ticket with subject and scope\n2. Review impacted tables and lineage\n3. Complete security / legal / owner approval\n4. Execute, retain evidence, then destroy when due',
+        'Scenario: right to be forgotten\n1. Create and assess (lineage + export copies)\n2. Confirm inferred edges and submit\n3. Run Iceberg hard-delete sequence; verify COUNT=0\n4. Archive evidence; restrict carriers that cannot be deleted',
       next: [
-        'Re-check impact in Lineage.',
-        'Review retention policies in Lifecycle.',
-        'Confirm execution window jobs in Job Ops.',
-        'Review related approvals in Apply Center.',
+        'From Lineage, open compliance with seed table.',
+        'Check compliance KPI and retention in Lifecycle (PII snapshots ≤7 days).',
+        'Track CD- approvals under Apply Center compliance tab.',
+        'ETL backfill / lake export hit processing gates—do not bypass.',
       ],
     }),
   ),
