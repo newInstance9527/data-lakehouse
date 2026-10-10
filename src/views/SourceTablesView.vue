@@ -46,6 +46,20 @@ function goApplyManage() {
   })
 }
 
+/** 跳转 ETL 编排，带数据源/表提示（预填尽力而为） */
+function goIngestEtl(tableName) {
+  const s = source.value
+  if (!s) return
+  router.push({
+    path: '/integration',
+    query: {
+      dsId: s.id,
+      table: tableName || undefined,
+      intent: 'ingest',
+    },
+  })
+}
+
 function assertEditOrGuide(action) {
   if (canEdit.value) return true
   showToast(`无${action}权，请申请操作权限`, 'warning')
@@ -342,7 +356,7 @@ function fmtRows(n) {
                 <th style="width: 10%">引擎</th>
                 <th style="width: 9%">行数</th>
                 <th style="width: 12%">同步时间</th>
-                <th style="width: 7%">操作</th>
+                <th style="width: 12%">操作</th>
               </tr>
             </thead>
             <tbody>
@@ -388,14 +402,16 @@ function fmtRows(n) {
                 </td>
                 <td style="color: var(--text-2)">{{ fmtRows(row.rowCount) }}</td>
                 <td style="font-size: 11px; color: var(--text-3)">{{ row.syncedAt || '—' }}</td>
-                <td>
+                <td class="met-acts" style="gap: 8px">
+                  <button type="button" class="btn-link btn-sm" @click="goIngestEtl(row.name)">
+                    入湖作业
+                  </button>
                   <button
                     v-if="canDelete"
                     class="btn-link btn-sm"
                     style="color: var(--danger)"
                     @click="onRemove(row.name)"
                   >删除</button>
-                  <span v-else style="color: var(--text-3)">—</span>
                 </td>
               </tr>
             </tbody>

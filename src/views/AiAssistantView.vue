@@ -74,19 +74,23 @@ const activeModelLabel = computed(() => {
   return routeModelLabel.value || assistant.lastMeta.value?.modelName || '路由默认'
 })
 
-/** 流式进行中：最后一条助手消息已有正文或工具引用时，不再额外挂「思考中」空泡 */
+/** 流式进行中：展示 ReAct 思考 / 工具进度；已有最终正文则收起 */
 const streamStatusLabel = computed(() => {
   if (!sending.value) return ''
   const last = messages.value[messages.value.length - 1]
   if (!last || last.role !== 'assistant') return '思考中…'
-  const tools = (last.citations || []).filter((c) => c.type === 'tool' || c.tool)
   if (last.text) return ''
+  if (last.thinkingLatest) {
+    const t = String(last.thinkingLatest)
+    return t.length > 120 ? `${t.slice(0, 120)}…` : t
+  }
+  const tools = (last.citations || []).filter((c) => c.type === 'tool' || c.tool)
   if (tools.length) {
     const name = tools[tools.length - 1].title || tools[tools.length - 1].tool || '工具'
     return `已调用 ${tools.length} 个工具 · 最近 ${name}`
   }
   if (assistant.lastMeta.value?.mode === 'agent' || assistant.lastMeta.value?.status === 'exploring') {
-    return '探索中…'
+    return '探索中（ReAct）…'
   }
   return '思考中…'
 })
@@ -103,12 +107,12 @@ function applyContext(s, ws) {
   const space = s?.ws || ws || currentWs.value || 'default'
   const modelName = s?.routeModelName || s?.routeModelId || ''
   routeModelLabel.value = modelName || routeModelLabel.value
-  headSub.value = `只读探索智能体 · 空间 ${space} · 模型 ${activeModelLabel.value} · 登记表 ${s?.assetCount ?? '—'} · 可查 ${s?.myAssetCount ?? '—'} · 指标 ${s?.metricCount ?? '—'}`
+  headSub.value = `探索智能体 · 空间 ${space} · 模型 ${activeModelLabel.value} · 登记表 ${s?.assetCount ?? '—'} · 可查 ${s?.myAssetCount ?? '—'} · 指标 ${s?.metricCount ?? '—'}`
   const preferHint = s?.softPrefer ? '（软偏好）' : ''
   contextItems.value = [
     { icon: '🗂️', label: `空间：${space}${preferHint}` },
     { icon: '🧠', label: `模型：${activeModelLabel.value}` },
-    { icon: '🤖', label: '默认：只读智能体（生成 SQL 请点芯片）' },
+    { icon: '🤖', label: '默认：ReAct 智能体（生成 SQL 请点芯片）' },
     { icon: '📋', label: `目录表：${s?.assetCount ?? '—'}`, to: '/catalog' },
     { icon: '✅', label: `我可查：${s?.myAssetCount ?? '—'}`, to: '/catalog' },
     { icon: '🎯', label: `指标：${s?.metricCount ?? '—'}`, to: '/metrics' },
@@ -484,7 +488,6 @@ function onBubbleClick(e, msg) {
             <div class="ai-head-title">{{ activeSessionTitle }}</div>
             <div class="ai-head-sub">{{ headSub }}</div>
           </div>
-          <div class="ai-online">● 在线</div>
         </div>
 
         <div ref="chatBody" class="ai-chat-body">
@@ -522,6 +525,41 @@ function onBubbleClick(e, msg) {
                 </div>
               </details>
               <AiMarkdownBody :role="msg.role" :text="msg.text" :html="msg.html" />
+              <div
+                v-if="msg.role === 'assistant' && msg.statusFlags?.length"
+                class="ai-status-flags"
+              >
+                <div
+                  v-for="(sf, si) in msg.statusFlags"
+                  :key="si"
+                  class="ai-status-flag"
+                  :class="'is-' + (sf.level || 'warn')"
+                >
+                  <strong>{{ sf.label || '状态' }}</strong>
+                  <span>{{ sf.message }}</span>
+                  <button
+                    v-if="sf.href"
+                    type="button"
+                    class="btn btn-sm"
+                    @click.stop="navContext(sf.href)"
+                  >
+                    处理
+                  </button>
+                </div>
+              </div>
+              <details
+                v-if="msg.role === 'assistant' && msg.thinking?.length"
+                class="ai-react-trace"
+                :open="sending && !msg.text"
+              >
+                <summary>思考过程（{{ msg.thinking.length }}）</summary>
+                <ol>
+                  <li v-for="(th, ti) in msg.thinking" :key="ti">
+                    <span v-if="th.phase" class="ai-react-phase">{{ th.phase }}</span>
+                    {{ th.text }}
+                  </li>
+                </ol>
+              </details>
               <div
                 v-if="msg.role === 'assistant' && msg.citations?.length"
                 class="ai-cite-footer"
@@ -928,10 +966,73 @@ function onBubbleClick(e, msg) {
 .ai-online {
   margin-left: auto;
   font-size: 11px;
-  opacity: 0.85;
+  opacity: 0.95;
   background: rgba(255, 255, 255, 0.15);
   padding: 2px 8px;
   border-radius: 10px;
+  white-space: nowrap;
+}
+.ai-online.is-ok {
+  background: color-mix(in srgb, var(--success) 22%, transparent);
+  color: #d9f7be;
+}
+.ai-online.is-degraded {
+  background: color-mix(in srgb, var(--warning) 35%, transparent);
+  color: #fff7e6;
+}
+.ai-online.is-down {
+  background: color-mix(in srgb, var(--danger) 40%, transparent);
+  color: #fff1f0;
+}
+.ai-model-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 8px 14px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.ai-model-banner.is-error {
+  background: color-mix(in srgb, var(--danger) 10%, var(--bg-1));
+  color: var(--danger);
+}
+.ai-model-banner.is-warn {
+  background: color-mix(in srgb, var(--warning) 12%, var(--bg-1));
+  color: var(--warning);
+}
+.ai-model-banner span {
+  flex: 1 1 200px;
+  color: var(--text-2);
+}
+.ai-status-flags {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 8px;
+}
+.ai-status-flag {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+.ai-status-flag.is-error {
+  background: color-mix(in srgb, var(--danger) 10%, var(--bg-1));
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
+  color: var(--danger);
+}
+.ai-status-flag.is-warn {
+  background: color-mix(in srgb, var(--warning) 12%, var(--bg-1));
+  border: 1px solid color-mix(in srgb, var(--warning) 35%, transparent);
+  color: var(--warning);
+}
+.ai-status-flag span {
+  flex: 1 1 160px;
+  color: var(--text-2);
 }
 .ai-chat-body {
   flex: 1;
@@ -1069,6 +1170,38 @@ function onBubbleClick(e, msg) {
 .ai-thinking {
   color: var(--text-3);
   font-style: italic;
+}
+.ai-react-trace {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--primary) 6%, var(--bg-1));
+  border: 1px solid color-mix(in srgb, var(--primary) 18%, transparent);
+  font-size: 12px;
+  color: var(--text-2);
+}
+.ai-react-trace summary {
+  cursor: pointer;
+  font-weight: 500;
+  color: var(--primary);
+}
+.ai-react-trace ol {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+.ai-react-trace li {
+  margin: 4px 0;
+  line-height: 1.45;
+}
+.ai-react-phase {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 5px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+  color: var(--primary);
 }
 .ai-msg-bubble :deep(.ai-inline-btn) {
   margin-top: 6px;

@@ -558,11 +558,33 @@ async function onPublish() {
       const dqN = se.qualityRunOk != null ? `质量${se.qualityRunOk}` : ''
       const vaultN = se.vault?.injected != null ? `Vault${se.vault.injected}` : ''
       const sinkN = se.sinkTarget?.created != null ? `建表${se.sinkTarget.created}` : ''
-      const side = [mapN, linN, dqN, vaultN, sinkN].filter(Boolean).join('·')
+      const regPlans = Array.isArray(se.sinkTarget?.plans) ? se.sinkTarget.plans : []
+      const regOk = regPlans.filter((p) => p?.create?.registered).length
+      const regFail = regPlans.filter((p) => p?.create?.registerError || p?.create?.registered === false).length
+      const regN =
+        regOk || regFail
+          ? `资产登记${regOk}${regFail ? `失败${regFail}` : ''}`
+          : ''
+      const side = [mapN, linN, dqN, vaultN, sinkN, regN].filter(Boolean).join('·')
       const tip = resp?.degraded
         ? `（调度降级，已登记 ${wf}）`
         : [wf && `→ ${wf}`, side, se.qualityGateBlocked ? '⚠质量阻断' : ''].filter(Boolean).join(' ')
-      showToast(`🚀 已发布 ${current.value.name} ${current.value.ver} ${tip}`.trim(), se.qualityGateBlocked ? 'warning' : 'success')
+      const toastType =
+        se.qualityGateBlocked || regFail > 0 ? 'warning' : 'success'
+      showToast(`🚀 已发布 ${current.value.name} ${current.value.ver} ${tip}`.trim(), toastType)
+      if (regFail > 0) {
+        const err = regPlans.find((p) => p?.create?.registerError)?.create?.registerError
+        showToast(
+          `建表后资产登记失败：${err || '请到资产目录手工登记湖表'} · /catalog`,
+          'warning',
+        )
+      } else if (regOk > 0) {
+        const fqn = regPlans.find((p) => p?.create?.omFqn)?.create?.omFqn
+        showToast(
+          fqn ? `已登记湖表资产 ${fqn}，可在资产目录查看` : '已登记湖表资产，可在资产目录查看',
+          'success',
+        )
+      }
     } catch (e) {
       if (!toastNeedApply(e)) showToast(e.message || '发布失败', 'error')
     }
@@ -620,6 +642,8 @@ function onKey(e) {
   }
 }
 
+const ingestHint = ref('')
+
 async function applyDeepLink() {
   const dagId = String(route.query.dagId || '').trim()
   const dag = String(route.query.dag || '').trim()
@@ -634,6 +658,21 @@ async function applyDeepLink() {
   }
 }
 
+function applyIngestHint() {
+  const dsId = String(route.query.dsId || '').trim()
+  const table = String(route.query.table || '').trim()
+  const intent = String(route.query.intent || '').trim()
+  if (!dsId && !table && intent !== 'ingest') {
+    ingestHint.value = ''
+    return
+  }
+  const ds = dsId ? getSource(dsId) : null
+  const dsLabel = ds?.name || dsId || '（未指定源）'
+  ingestHint.value = table
+    ? `入湖提示：请新建/打开任务，配置源「${dsLabel}」表「${table}」→ sink Iceberg（catalog=iceberg，schema 如 ods），并开启建表后登记资产。`
+    : `入湖提示：请新建/打开任务，配置源「${dsLabel}」→ sink Iceberg，落点 iceberg.<schema>.<table>。`
+}
+
 onMounted(async () => {
   window.addEventListener('keydown', onKey)
   try {
@@ -645,6 +684,7 @@ onMounted(async () => {
       showToast(lastError.value.message || 'ETL 列表加载失败', 'warning')
     }
     await applyDeepLink()
+    applyIngestHint()
   } catch (e) {
     showToast(e.message || 'ETL 列表加载失败', 'error')
   }
@@ -654,6 +694,10 @@ watch(
   () => {
     applyDeepLink().catch(() => {})
   },
+)
+watch(
+  () => [route.query.dsId, route.query.table, route.query.intent],
+  () => applyIngestHint(),
 )
 watch(currentWs, () => {
   loadSources({ ws: currentWs.value || 'default' }).catch(() => {})
@@ -683,6 +727,13 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
       <button v-if="needApplyOps" class="btn btn-sm" @click="goApplyManageEtl">🔐 申请操作权限</button>
       <button class="btn btn-sm btn-primary" :disabled="saving || actionBusy" @click="onNewTask">＋ 新建任务</button>
     </PageHeader>
+
+    <div v-if="ingestHint" class="etl-validate-banner" style="border-color: var(--primary); background: var(--primary-light)">
+      <div class="etl-validate-banner__title">从数据源表清单带入</div>
+      <ul class="etl-validate-banner__list">
+        <li>{{ ingestHint }}</li>
+      </ul>
+    </div>
 
     <div
       v-if="current?.lastValidate && current.lastValidate.ok === false"

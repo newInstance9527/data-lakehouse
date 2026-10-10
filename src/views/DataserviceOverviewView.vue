@@ -1,15 +1,18 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
 import ListPager from '@/components/common/ListPager.vue'
 import ProjectSyncListModal from '@/components/dataservice/ProjectSyncListModal.vue'
+import DeferredRefreshBar from '@/components/common/DeferredRefreshBar.vue'
 import { useToast } from '@/composables/useToast'
 import { useDataservice } from '@/composables/useDataservice'
 import { useActionLock } from '@/composables/useActionLock'
 import { useSession } from '@/composables/useSession'
 import { usePager } from '@/composables/usePager'
+import { useDeferredRefresh } from '@/composables/useDeferredRefresh'
 import { pageGuideOf } from '@/data/pageGuides'
+import { fetchDataapiOverview } from '@/api/dataapi'
 import '@/styles/dataservice-page.css'
 
 const router = useRouter()
@@ -28,9 +31,51 @@ const {
 } = useDataservice()
 
 const { currentWs } = useSession()
-onMounted(() => ensureLoaded(true))
+const {
+  hasPending: hasDsPending,
+  offer: offerDsSnap,
+  applyPending: applyDsPending,
+  discardPending: discardDsPending,
+  reset: resetDsDefer,
+} = useDeferredRefresh()
+let dsSoftTimer = null
+
+async function softCheckDs() {
+  try {
+    const ov = await fetchDataapiOverview(currentWs.value)
+    const snap = { ov, pending: pendingPublish.value?.length, sqlrest: sqlrestDs.value?.length }
+    const result = offerDsSnap(snap, { force: false })
+    if (result === 'applied') {
+      /* 首次指纹 */
+    }
+  } catch {
+    /* soft */
+  }
+}
+
+async function confirmDsRefresh() {
+  applyDsPending()
+  await ensureLoaded(true)
+  await softCheckDs()
+  showToast('服务概览已更新', 'success')
+}
+
+onMounted(async () => {
+  await ensureLoaded(true)
+  await softCheckDs()
+  dsSoftTimer = setInterval(() => softCheckDs(), 90_000)
+})
+onUnmounted(() => {
+  if (dsSoftTimer) {
+    clearInterval(dsSoftTimer)
+    dsSoftTimer = null
+  }
+})
 watch(currentWs, () => {
-  ensureLoaded(true).catch(() => {})
+  resetDsDefer()
+  ensureLoaded(true)
+    .then(() => softCheckDs())
+    .catch(() => {})
 })
 
 const pendingListOpen = ref(false)
@@ -130,6 +175,14 @@ function goApplyTicket(ticketNo) {
       <button type="button" class="btn btn-sm" @click="goApis()">API 目录</button>
       <button type="button" class="btn btn-sm" @click="goRuntime()">运行与网关</button>
     </PageHeader>
+
+    <DeferredRefreshBar
+      :show="hasDsPending"
+      message="服务概览有更新。确认后刷新，避免打断当前操作。"
+      apply-label="更新概览"
+      @apply="confirmDsRefresh"
+      @dismiss="discardDsPending"
+    />
 
     <ProjectSyncListModal
       :open="pendingListOpen"

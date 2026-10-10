@@ -74,6 +74,16 @@ export const NAV_GROUPS = [
     items: [
       { id: 'metrics', label: '指标概览', icon: 'metrics', path: '/metrics' },
       { id: 'metrics-catalog', label: '指标目录', icon: 'metrics-catalog', path: '/metrics/catalog' },
+      { id: 'metric-qualifiers', label: '修饰词库', icon: 'metric-qualifiers', path: '/metrics/qualifiers' },
+      { id: 'metric-dims', label: '维度库', icon: 'metric-dims', path: '/metrics/dims' },
+    ],
+  },
+  {
+    key: 'bi',
+    title: 'BI',
+    items: [
+      { id: 'bi', label: '看板', icon: 'bi', path: '/bi' },
+      { id: 'bi-studio', label: '制作台', icon: 'bi-studio', path: '/bi/studio' },
     ],
   },
   {

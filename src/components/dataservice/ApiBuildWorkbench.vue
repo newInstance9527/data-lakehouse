@@ -3044,7 +3044,7 @@ async function applyTpl() {
                 </p>
                 <p class="field-hint">
                   <strong>调用鉴权</strong>：边缘仅 <strong>统一网关</strong>；调用方持订阅签发的 API Key（密钥库 +
-                  <code>dataapi_api_key_meta</code>）。本平台<strong>不做 APISIX</strong>，无独立网关路由配置页。
+                  <code>dataapi_api_key_meta</code>）。边缘为 <strong>SQLREST Gateway</strong>（已删减 APISIX 双写），无独立网关路由配置页。
                 </p>
                 <p class="field-hint tip">订阅 Key：申请中心 →「API 订阅」工单审批通过后签发；可在数据服务 Key 列表查看元数据。</p>
               </div>

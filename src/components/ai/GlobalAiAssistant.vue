@@ -54,13 +54,17 @@ const streamStatusLabel = computed(() => {
   if (!sending.value) return ''
   const last = messages.value[messages.value.length - 1]
   if (!last || last.role !== 'assistant') return '思考中…'
-  const tools = (last.citations || []).filter((c) => c.type === 'tool' || c.tool)
   if (last.text) return ''
+  if (last.thinkingLatest) {
+    const t = String(last.thinkingLatest)
+    return t.length > 100 ? `${t.slice(0, 100)}…` : t
+  }
+  const tools = (last.citations || []).filter((c) => c.type === 'tool' || c.tool)
   if (tools.length) {
     const name = tools[tools.length - 1].title || tools[tools.length - 1].tool || '工具'
     return `已调用 ${tools.length} 个工具 · 最近 ${name}`
   }
-  return '思考中…'
+  return '探索中（ReAct）…'
 })
 const showThinkingBubble = computed(() => sending.value && !!streamStatusLabel.value)
 

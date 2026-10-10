@@ -136,14 +136,14 @@ const delistHint = computed(() => {
   if (!fails.length) {
     return {
       title: '当前无摘牌指标',
-      desc: boardCards.value.length ? '核心看板分区对账均通过' : '暂无看板数据',
+      desc: boardCards.value.length ? '就绪指标分区对账均通过' : '暂无看板数据',
       tone: 'ok',
     }
   }
   const first = fails[0]
   return {
     title: `数据未就绪：${first.metricCode}`,
-    desc: first.reason || '分区对账未通过，禁止进核心看板热路径',
+    desc: first.reason || '分区对账未通过，禁止进就绪指标热路径',
     tone: 'warn',
   }
 })

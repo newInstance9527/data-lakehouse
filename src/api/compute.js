@@ -23,6 +23,11 @@ export function commitScript(body) {
   return http.post(`${C}/scripts/commit`, body)
 }
 
+/** 删除开发脚本（索引软删 + Git rm；在途发布单会拒绝） */
+export function deleteScript(id) {
+  return http.post(`${C}/scripts/delete`, { id })
+}
+
 export function runScript(body) {
   return http.post(`${C}/scripts/run-stg`, body)
 }

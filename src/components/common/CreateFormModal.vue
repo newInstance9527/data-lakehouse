@@ -339,16 +339,9 @@ watch(
 watch(
   () => props.initialValues,
   async () => {
-    if (props.open) {
-      resetForm()
-      hydrating = true
-      try {
-        await refreshAsyncOptions()
-        applyInitialValues()
-      } finally {
-        hydrating = false
-      }
-    }
+    // 弹窗已打开时禁止整表 reset：父级 computed 每次新对象会冲掉用户正在选的绑定表等字段。
+    // 切换编辑对象请用 :key 重挂载；打开瞬间的预填由 open watch 负责。
+    if (!props.open) return
   },
 )
 

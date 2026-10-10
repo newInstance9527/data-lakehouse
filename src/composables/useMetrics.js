@@ -93,6 +93,9 @@ export function normalizeMetric(row) {
     table: row.table || '',
     field: row.field || '',
     unit: row.unit || '',
+    valueType: row.valueType || '',
+    valuePrecision: row.valuePrecision ?? '',
+    tags: Array.isArray(row.tags) ? row.tags : [],
     latest: row.latest || '待计算',
     vol: row.vol || '—',
     volCls: row.volCls || 'warn',
@@ -206,6 +209,22 @@ export function useMetrics() {
     }
   }
 
+  /** 用已拉取的列表替换本地目录（延迟刷新确认后调用，避免抽屉打开时被刷掉） */
+  function replaceCatalog(records) {
+    catalog.value = sortMetricCatalog(
+      (Array.isArray(records) ? records : []).map(normalizeMetric).filter(Boolean),
+    )
+    loaded.value = true
+  }
+
+  /** 仅拉取、不写入（供延迟刷新比对） */
+  async function fetchCatalogSnapshot(filters = {}) {
+    const ws = resolveWs(filters.ws)
+    const q = { ...filters, ws, scope: filters.scope || 'workspace' }
+    const records = await fetchAllMetricRecords(q)
+    return sortMetricCatalog(records.map(normalizeMetric).filter(Boolean))
+  }
+
   async function reloadDetail(code, ws) {
     const raw = await fetchMetricDetail(code, resolveWs(ws))
     return upsertLocal(raw)
@@ -234,6 +253,11 @@ export function useMetrics() {
     const home = resolveWs(ws)
     const out = await deleteMetric(code, home)
     catalog.value = catalog.value.filter((r) => r.id !== code && r.metricCode !== code)
+    try {
+      await loadAll({ ws: home, scope: 'workspace' })
+    } catch {
+      /* 本地已剔除；列表刷新失败不阻断删除成功 */
+    }
     await refreshOverview(home)
     return out
   }
@@ -335,6 +359,8 @@ export function useMetrics() {
     lastError,
     ensureLoaded,
     loadAll,
+    fetchCatalogSnapshot,
+    replaceCatalog,
     refreshOverview,
     reloadDetail,
     addMetric,

@@ -6,6 +6,7 @@ import { useToast } from '@/composables/useToast'
 import { useWorkspace } from '@/composables/useWorkspace'
 import { switchWsWithMemberGuard } from '@/composables/useWsSwitch'
 import { useLocale, t } from '@/composables/useLocale'
+import { beginRouteLoading, useRouteLoading } from '@/composables/useRouteLoading'
 import AppToast from '@/components/common/AppToast.vue'
 import ConfirmDeleteModal from '@/components/common/ConfirmDeleteModal.vue'
 import GlobalAiAssistant from '@/components/ai/GlobalAiAssistant.vue'
@@ -17,11 +18,13 @@ const route = useRoute()
 const router = useRouter()
 const { showToast } = useToast()
 const { locale } = useLocale()
+const { navigating, pendingNavId } = useRouteLoading()
 const { user, filteredNavGroups, logout, isSuperAdmin, currentWs, setCurrentWs } = useSession()
 /** 与 WorkspaceView 共用 spaces，创建/删除后顶栏自动刷新 */
 const { spaces: wsSpaces, ensureLoaded: ensureWsSpaces } = useWorkspace()
 
 const activeId = computed(() => route.meta?.id || 'overview')
+const highlightId = computed(() => pendingNavId.value || activeId.value)
 const appEnv = computed(() => String(import.meta.env.VITE_APP_ENV || 'DEV').toUpperCase())
 
 const navGroups = computed(() => {
@@ -62,6 +65,8 @@ function closeUserMenu() {
 
 function goUserCenter(tab) {
   closeUserMenu()
+  if (route.path === '/usercenter' && !tab) return
+  beginRouteLoading('usercenter')
   router.push(tab ? { path: '/usercenter', query: { tab } } : '/usercenter')
 }
 
@@ -101,7 +106,12 @@ async function onSwitchWs(e) {
 }
 
 function go(path) {
-  router.push(path)
+  const target = String(path || '').trim()
+  if (!target) return
+  if (target === route.path || target === route.fullPath) return
+  const hit = filteredNavGroups.value.flatMap((g) => g.items).find((i) => i.path === target)
+  beginRouteLoading(hit?.id || route.meta?.id)
+  router.push(target)
 }
 
 function onSearch(e) {
@@ -146,7 +156,11 @@ onMounted(() => {
             v-for="item in group.items"
             :key="item.id"
             class="nav-item"
-            :class="{ active: activeId === item.id }"
+            :class="{
+              active: highlightId === item.id,
+              pending: navigating && pendingNavId === item.id && activeId !== item.id,
+            }"
+            :aria-busy="navigating && pendingNavId === item.id ? 'true' : undefined"
             @click="go(item.path)"
           >
             <span class="nav-icon"><NavIcon :name="item.icon || item.id" /></span>
@@ -229,7 +243,17 @@ onMounted(() => {
         </div>
       </header>
 
-      <main class="content">
+      <div
+        v-if="navigating"
+        class="route-progress"
+        role="progressbar"
+        :aria-label="t('common.loading')"
+      >
+        <div class="route-progress-bar" />
+      </div>
+
+      <main class="content" :class="{ 'content--navigating': navigating }" :aria-busy="navigating ? 'true' : undefined">
+        <div v-if="navigating" class="route-loading-hint">{{ t('common.loading') }}</div>
         <router-view :key="currentWs || 'default'" />
       </main>
     </div>

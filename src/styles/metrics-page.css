@@ -73,6 +73,65 @@
   background: #fff7e6;
   border-color: #ffd591;
 }
+.met-banner-cta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 14px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--text-2);
+  background: var(--bg-2);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  line-height: 1.5;
+}
+.met-banner-cta .met-cta-links {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.met-banner-cta a {
+  color: var(--primary);
+  text-decoration: none;
+  font-weight: 600;
+}
+.met-banner-cta a:hover {
+  text-decoration: underline;
+}
+.met-exec-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.met-exec-item {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  background: #fff;
+}
+.met-exec-item summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.met-exec-item .ok,
+.met-timeline .ok,
+.met-trial-meta .ok {
+  color: var(--success);
+}
+.met-exec-item .warn,
+.met-timeline .warn,
+.met-trial-meta .warn {
+  color: var(--warning, #c27803);
+}
+.met-exec-item .error,
+.met-timeline .error,
+.met-trial-meta .error {
+  color: var(--danger);
+}
 .met-pending-empty {
   margin: 0;
   padding: 16px 18px;

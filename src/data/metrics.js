@@ -1,6 +1,10 @@
 /** 指标中心 · 口径与目录 · 生命周期状态机 */
 
 import { metricBindFieldOptions } from '@/data/metricBindAssets'
+import {
+  metricDimMasterOptions,
+  metricQualifierMasterOptions,
+} from '@/data/metricOntology'
 
 /** 表单选项默认读此提供者（useMetrics 接入后指向远端目录） */
 let metricCatalogProvider = null
@@ -250,28 +254,67 @@ export function dimOptionsFromTable(tableKey) {
   return []
 }
 
-/** 衍生：依赖原子指标 → 其绑定表可作统计粒度的字段 */
+/** 衍生：依赖原子指标 → 主数据维度 ∪ 绑表字段启发式 */
 export function metricDimOptionsForAtom(atomId, list = getMetricCatalogForForms()) {
   const row = list.find((r) => r.id === atomId && (r.type === '原子' || r.kind === '原子'))
     || list.find((r) => r.id === atomId)
-  if (!row) return []
-  return dimOptionsFromTable(resolveMetricTableKey(row))
+  const fromTable = row ? dimOptionsFromTable(resolveMetricTableKey(row)) : []
+  const master = metricDimMasterOptions() || []
+  const map = new Map()
+  for (const o of master) {
+    map.set(o.value, { ...o, group: o.group || '主数据' })
+  }
+  for (const o of fromTable) {
+    if (!map.has(o.value)) map.set(o.value, { ...o, group: o.group || '表字段' })
+  }
+  return [...map.values()]
 }
 
-/** 表字段常见业务限定预设（空：禁止演示 WHERE；用户可手写或后续按码值集扩展） */
-const QUALIFIER_PRESETS_BY_TABLE = {}
-
-/** 衍生：业务限定选项（随原子绑定表） */
+/** 衍生：业务限定选项（主数据；无演示预设） */
 export function metricQualifierOptionsForAtom(atomId, list = getMetricCatalogForForms()) {
-  const row = list.find((r) => r.id === atomId) || null
-  const tableKey = resolveMetricTableKey(row)
-  const key = TABLE_KEY_ALIASES[tableKey] || tableKey
-  return QUALIFIER_PRESETS_BY_TABLE[key] || QUALIFIER_PRESETS_BY_TABLE[tableKey] || []
+  void atomId
+  void list
+  return metricQualifierMasterOptions() || []
 }
 
 export function formatMetricQualifier(keys) {
   const arr = refsToArray(keys)
   return arr.length ? arr.join(' AND ') : '无限定'
+}
+
+/**
+ * 复合依赖粒度预检（对齐后端 intersectGrains）。
+ * @returns {string} 空=通过；否则错误文案
+ */
+export function validateCompositeGrain(refs, list = getMetricCatalogForForms()) {
+  const ids = refsToArray(refs)
+  if (ids.length < 2) return ''
+  const grains = []
+  for (const id of ids) {
+    const row = list.find((r) => r.id === id || r.metricCode === id)
+    if (!row) return `依赖指标不存在: ${id}`
+    const kind = row.kind || row.type
+    if (kind === '复合') return `复合暂不支持嵌套复合依赖: ${id}`
+    if (kind === '原子') {
+      grains.push([])
+      continue
+    }
+    const keys = refsToArray(row.dimKeys || row.dim).filter(
+      (k) => k && k !== '全表' && k !== '无（全站汇总）',
+    )
+    grains.push(keys)
+  }
+  if (grains.every((g) => !g.length)) return ''
+  if (grains.some((g) => !g.length)) {
+    return '依赖粒度不一致：部分为全表汇总、部分带 GROUP BY'
+  }
+  let inter = new Set(grains[0])
+  for (let i = 1; i < grains.length; i++) {
+    const s = new Set(grains[i])
+    inter = new Set([...inter].filter((v) => s.has(v)))
+  }
+  if (!inter.size) return '复合依赖无公共统计粒度，无法对齐'
+  return ''
 }
 
 /** 复合：多依赖指标可选粒度的交集 */
@@ -332,7 +375,7 @@ export function parseMetricFormula(formula) {
   const raw = String(formula || '').trim()
   if (!raw) return { ok: false, error: '公式为空' }
   if (/[·•]/.test(raw) || /按[天周月]/.test(raw)) {
-    return { ok: false, error: '维度/时间窗请用独立字段，勿写入公式' }
+    return { ok: false, error: '维度/时间窗请用独立字段或 WHERE 白名单，勿写入「·/按天」文案' }
   }
   let expr = raw
   let filter = ''
@@ -610,13 +653,23 @@ export function metricToFormPayload(row) {
     }
     return byLabel[label] || 'trade'
   })()
+  const tableKey = resolveMetricTableKey(row) || row.table || ''
+  const fieldKey = (() => {
+    if (row.field) return row.field
+    const bind = String(row.bind || '')
+    if (!bind || !bind.includes('.')) return ''
+    return bind.split('.').pop() || ''
+  })()
   return {
     kind: row.kind || row.type || '原子',
     name: row.name,
     domain: domainCode,
     unit: row.unit || '个',
-    table: row.table || '',
-    field: row.field || '',
+    valueType: row.valueType || 'number',
+    valuePrecision: row.valuePrecision ?? '',
+    tags: Array.isArray(row.tags) ? row.tags.join(',') : row.tags || '',
+    table: tableKey,
+    field: fieldKey,
     agg: row.agg || 'COUNT',
     gravAssetId: row.gravAssetId || '',
     atomRef: refsToArray(row.atomRef || (row.type === '衍生' ? row.bind : '')).slice(0, 1)[0] || '',

@@ -164,7 +164,7 @@ export function useAiAssistant() {
     sending.value = true
     lastError.value = null
 
-    const assistantMsg = { role: 'assistant', text: '', html: '', citations: [], actions: [] }
+    const assistantMsg = { role: 'assistant', text: '', html: '', citations: [], actions: [], thinking: [] }
     messages.value.push(assistantMsg)
     const idx = messages.value.length - 1
 
@@ -188,6 +188,26 @@ export function useAiAssistant() {
             lastMeta.value = data
             if (data?.modelId) msg.modelId = data.modelId
             messages.value[idx] = { ...msg }
+          }
+          if (event === 'status') {
+            const level = data?.level || 'warn'
+            const label = data?.label || '状态'
+            const message = data?.message || data?.text || ''
+            msg.statusFlags = [
+              ...(msg.statusFlags || []),
+              { level, code: data?.code, label, message, href: data?.href },
+            ]
+            messages.value[idx] = { ...msg }
+          }
+          if (event === 'thinking') {
+            const t = typeof data === 'string' ? data : data?.text || ''
+            const phase = typeof data === 'object' && data ? data.phase : ''
+            const step = typeof data === 'object' && data ? data.step : undefined
+            if (t) {
+              msg.thinking = [...(msg.thinking || []), { text: String(t), phase, step }]
+              msg.thinkingLatest = String(t)
+              messages.value[idx] = { ...msg }
+            }
           }
           if (event === 'token') {
             const t = typeof data === 'string' ? data : data?.text || data?.token || ''

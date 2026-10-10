@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
 import AppDrawer from '@/components/common/AppDrawer.vue'
@@ -12,6 +12,11 @@ import {
   enrichMetricBindPayload,
   invalidateMetricBindTables,
   warmMetricBindAssets,
+  METRIC_LAKE_LANDING_HINT,
+  METRIC_LAKE_PREP_LINKS,
+  metricBindRev,
+  metricBindSkippedSource,
+  metricBindTableOptions,
 } from '@/data/metricBindAssets'
 import { METRIC_CREATE_FORM } from '@/data/createForms'
 import { pageGuideOf } from '@/data/pageGuides'
@@ -25,9 +30,25 @@ import {
 import { metricActionsFor, canApplyQueryMetric } from '@/data/metricAcl'
 import { useDomains } from '@/composables/useDomains'
 import { createApplyTicket, pageMyTickets } from '@/api/apply'
-import { fetchMetricLineage } from '@/api/metric'
+import {
+  fetchMetricLineage,
+  fetchMetricExecs,
+  fetchMetricMaterialize,
+  fetchMetricAnomaly,
+  filtersToQueryParams,
+  rerunMetricSample,
+} from '@/api/metric'
+import { publishMetricDataset } from '@/api/bi'
+import MetricDimFilterBar from '@/components/metrics/MetricDimFilterBar.vue'
+import {
+  ensureMetricDimOptions,
+  ensureMetricQualifierOptions,
+  metricDimMasterOptions,
+} from '@/data/metricOntology'
 import { useSession } from '@/composables/useSession'
 import { useActionLock } from '@/composables/useActionLock'
+import { useDeferredRefresh } from '@/composables/useDeferredRefresh'
+import DeferredRefreshBar from '@/components/common/DeferredRefreshBar.vue'
 import {
   ensureWorkspaceUserOptions,
   resolveWorkspaceUserId,
@@ -55,14 +76,33 @@ const {
   loading,
   lastError,
   loadAll,
+  fetchCatalogSnapshot,
+  replaceCatalog,
   reloadDetail,
   runTransition,
   removeMetric,
   runTrial,
+  runCompile,
+  runQuery,
   runMaterialize,
   addMetric,
   saveMetric,
 } = useMetrics()
+const {
+  hasPending: hasCatalogPending,
+  offer: offerCatalogSnap,
+  applyPending: applyCatalogPending,
+  discardPending: discardCatalogPending,
+  data: pendingCatalogSnap,
+  reset: resetCatalogDefer,
+} = useDeferredRefresh()
+let catalogSoftTimer = null
+const compileBusy = computed(() => busy('compile'))
+const publishBiBusy = computed(() => busy('publishBi'))
+const queryBusy = computed(() => busy('query'))
+/** 正式查询路由：trino | hot */
+const queryPrefer = ref('trino')
+const execOpenId = ref('')
 
 const { domainTabs, ensureDomains } = useDomains()
 
@@ -79,8 +119,59 @@ const saving = computed(() => busy('save') || busy('publish') || busy('transitio
 const trialBusy = computed(() => busy('trial'))
 const trialResult = ref(null)
 const trialDt = ref('')
+/** 试算/查询维筛选（与看板 filters.dims 同形） */
+const trialFilters = ref({ dims: {} })
+const TIME_GRAIN = new Set(['dt', 'stat_date', 'biz_date'])
 /** 详情抽屉：下游指标 + API 绑定 */
 const detailLineage = ref(null)
+/** 详情抽屉：试跑/查询执行审计（无历史行集） */
+const detailExecs = ref(null)
+const execsLoading = ref(false)
+const detailMaterialize = ref([])
+const detailAnomaly = ref(null)
+
+/** 指标业务 grain 列（供 FilterBar 过滤） */
+const trialGrainCols = computed(() => {
+  const row = active.value
+  if (!row) return []
+  return (Array.isArray(row.dimKeys) ? row.dimKeys : [])
+    .map((k) => String(k || '').trim())
+    .filter((c) => c && !TIME_GRAIN.has(c.toLowerCase()))
+})
+
+/** grain 中有业务维但未挂接 DIM → 提示去本体绑定 */
+const trialDimUnboundHint = computed(() => {
+  void metricDimMasterOptions()
+  const keys = trialGrainCols.value
+  if (!keys.length) return ''
+  const opts = metricDimMasterOptions() || []
+  const bound = new Set(
+    opts
+      .filter((o) => o.dimStatus === 'bound' && o.dimTable)
+      .map((o) => String(o.value || o.columnName || '')),
+  )
+  const missing = keys.filter((k) => !bound.has(k))
+  if (!missing.length) return ''
+  return `粒度含 ${missing.join('、')}，尚未挂接 DIM 层表；可在「维度库」挂接 DIM 后按成员切片。`
+})
+
+/** 衍生或显式时间窗时展示 dt；原子/复合无时间窗则隐藏避免误导 */
+const showTrialDt = computed(() => {
+  const row = active.value
+  if (!row) return false
+  const kind = row.kind || row.type
+  if (kind === '衍生') return true
+  if (row.time) return true
+  const keys = Array.isArray(row.dimKeys) ? row.dimKeys : []
+  return keys.some((k) => TIME_GRAIN.has(String(k || '').toLowerCase()))
+})
+
+const canFormalQuery = computed(() => active.value?.status === 'active')
+const tagFilter = ref('')
+const bindLakeEmpty = computed(() => {
+  void metricBindRev.value
+  return !metricBindTableOptions().length
+})
 /** metricCode → 最近发布单 { ticketNo, status, remark } */
 const publishTickets = ref({})
 const createOpen = ref(false)
@@ -88,6 +179,8 @@ const editingId = ref('')
 const formKey = ref(0)
 
 const editing = computed(() => catalog.value.find((r) => r.id === editingId.value) || null)
+/** 打开编辑时快照预填，避免 catalog 刷新导致 initialValues 抖动冲表单 */
+const editPrefill = ref(null)
 
 const formBind = computed(() => {
   if (editingId.value) {
@@ -110,6 +203,7 @@ const initialValues = computed(() => {
   if (!editingId.value) {
     return { owner: String(user.value?.id || '') }
   }
+  if (editPrefill.value) return editPrefill.value
   if (!editing.value) return { owner: String(user.value?.id || '') }
   const payload = metricToFormPayload(editing.value)
   payload.owner = resolveWorkspaceUserId(payload.owner, user.value?.id || '')
@@ -119,6 +213,31 @@ const initialValues = computed(() => {
 
 async function reloadMetrics() {
   await loadAll({ ws: currentWs.value || 'default', scope: 'workspace' })
+  offerCatalogSnap(catalog.value, { force: true })
+  discardCatalogPending()
+}
+
+/** 详情抽屉打开时后台只暂存；关闭抽屉或确认后才替换列表 */
+async function softCheckCatalog() {
+  try {
+    const snap = await fetchCatalogSnapshot({
+      ws: currentWs.value || 'default',
+      scope: 'workspace',
+    })
+    const force = !detailOpen.value
+    const result = offerCatalogSnap(snap, { force })
+    if (result === 'applied') {
+      replaceCatalog(snap)
+    }
+  } catch {
+    /* soft */
+  }
+}
+
+function confirmCatalogRefresh() {
+  if (!applyCatalogPending()) return
+  replaceCatalog(pendingCatalogSnap.value || [])
+  showToast('目录已更新', 'success')
 }
 
 const TYPE_TABS = [
@@ -133,12 +252,19 @@ const filteredCatalog = computed(() => {
   if (domainTab.value !== 'all') rows = rows.filter((r) => r.domain === domainTab.value)
   if (typeTab.value !== 'all') rows = rows.filter((r) => r.type === typeTab.value)
   if (statusTab.value !== 'all') rows = rows.filter((r) => r.status === statusTab.value)
+  const tag = tagFilter.value.trim().toLowerCase()
+  if (tag) {
+    rows = rows.filter((r) => {
+      const tags = Array.isArray(r.tags) ? r.tags : []
+      return tags.some((t) => String(t).toLowerCase().includes(tag))
+    })
+  }
   return sortMetricCatalog(rows)
 })
 
 const { page, pageSize, total, totalPages, paged, pageNums, goPage, resetPage } = usePager(filteredCatalog)
 
-watch([domainTab, typeTab, statusTab], () => resetPage())
+watch([domainTab, typeTab, statusTab, tagFilter], () => resetPage())
 
 watch(
   () => route.query.status,
@@ -232,6 +358,8 @@ onMounted(async () => {
     await Promise.all([
       reloadMetrics(),
       warmMetricBindAssets().catch(() => {}),
+      ensureMetricQualifierOptions({ force: true }).catch(() => {}),
+      ensureMetricDimOptions({ force: true }).catch(() => {}),
       refreshPublishTickets(),
       ensureWorkspaceUserOptions().catch(() => {}),
       ensureDomains().catch(() => {}),
@@ -244,15 +372,31 @@ onMounted(async () => {
   } catch (e) {
     showToast(e?.message || '加载指标目录失败', 'error')
   }
+  catalogSoftTimer = setInterval(() => {
+    softCheckCatalog().catch(() => {})
+  }, 90_000)
+})
+onUnmounted(() => {
+  if (catalogSoftTimer) {
+    clearInterval(catalogSoftTimer)
+    catalogSoftTimer = null
+  }
 })
 
 watch(currentWs, () => {
   invalidateMetricBindTables()
+  resetCatalogDefer()
   Promise.all([
     reloadMetrics(),
     refreshPublishTickets(),
     warmMetricBindAssets().catch(() => {}),
   ]).catch(() => {})
+})
+
+watch(detailOpen, (open) => {
+  if (!open && hasCatalogPending.value) {
+    /* 关抽屉后仍保留提示，由用户确认；不自动灌入以免突兀 */
+  }
 })
 
 function clearCreateQuery() {
@@ -264,6 +408,7 @@ function clearCreateQuery() {
 
 function newMetric() {
   editingId.value = ''
+  editPrefill.value = null
   formKey.value += 1
   createOpen.value = true
 }
@@ -271,6 +416,7 @@ function newMetric() {
 function closeCreate() {
   createOpen.value = false
   editingId.value = ''
+  editPrefill.value = null
   if (route.query.create || route.query.edit) clearCreateQuery()
 }
 
@@ -301,11 +447,31 @@ async function onSubmitCreate(payload) {
   })
 }
 
+async function loadDetailExecs(id) {
+  execsLoading.value = true
+  try {
+    detailExecs.value = await fetchMetricExecs(id, {
+      ws: currentWs.value || 'default',
+      limit: 20,
+    })
+  } catch {
+    detailExecs.value = null
+  } finally {
+    execsLoading.value = false
+  }
+}
+
 async function openDetail(id) {
   activeId.value = id
   detailOpen.value = true
   trialResult.value = null
+  trialFilters.value = { dims: {} }
+  execOpenId.value = ''
+  queryPrefer.value = 'trino'
   detailLineage.value = null
+  detailExecs.value = null
+  detailMaterialize.value = []
+  detailAnomaly.value = null
   const ws = currentWs.value || 'default'
   try {
     await reloadDetail(id, ws)
@@ -317,12 +483,60 @@ async function openDetail(id) {
   } catch {
     detailLineage.value = null
   }
+  try {
+    const mats = await fetchMetricMaterialize(id, ws)
+    detailMaterialize.value = Array.isArray(mats) ? mats : mats?.records || []
+  } catch {
+    detailMaterialize.value = []
+  }
+  await loadDetailAnomaly(id)
+  await loadDetailExecs(id)
+  await ensureMetricDimOptions({ force: false }).catch(() => {})
+}
+
+async function loadDetailAnomaly(id) {
+  const code = id || activeId.value
+  if (!code) return
+  const ws = currentWs.value || 'default'
+  try {
+    detailAnomaly.value = await fetchMetricAnomaly(code, { ws, days: 14 })
+  } catch {
+    detailAnomaly.value = { summary: '波动摘要暂不可用', series: [] }
+  }
+}
+
+const sampleRerunBusy = computed(() => busy('sampleRerun'))
+
+async function rerunSampleForActive() {
+  const code = activeId.value
+  if (!code) return
+  await runLocked('sampleRerun', async () => {
+    try {
+      const r = await rerunMetricSample(currentWs.value || 'default')
+      const ok = r?.ok ?? r?.total
+      const failed = r?.failed
+      showToast(
+        `采样补跑完成${ok != null ? ` · 成功 ${ok}` : ''}${failed ? ` · 失败 ${failed}` : ''}，已刷新摘要`,
+        failed > 0 ? 'warning' : 'success',
+      )
+      await loadDetailAnomaly(code)
+    } catch (e) {
+      showToast(e?.message || '采样补跑失败', 'warning')
+    }
+  })
 }
 
 function closeDetail() {
   detailOpen.value = false
   trialResult.value = null
   detailLineage.value = null
+  detailExecs.value = null
+  detailMaterialize.value = []
+  detailAnomaly.value = null
+}
+
+function catalogQ(q) {
+  return { path: '/catalog', query: q ? { q } : {} }
 }
 
 async function confirmDeprecate(row) {
@@ -359,16 +573,64 @@ async function confirmDelete(row) {
   )
 }
 
+function buildTrialParams() {
+  const params = { ...filtersToQueryParams(trialFilters.value) }
+  if (trialDt.value?.trim()) params.dt = trialDt.value.trim()
+  return params
+}
+
+async function doCompileOnly() {
+  const row = active.value
+  if (!row) return
+  await runLocked('compile', async () => {
+    trialResult.value = null
+    try {
+      const res = await runCompile({
+        metricCode: row.id,
+        params: buildTrialParams(),
+        persist: false,
+      })
+      trialResult.value = {
+        executed: false,
+        statusLabel: '仅编译',
+        message: res?.message || '未执行引擎，仅预览 SQL',
+        sqlText: res?.sqlText || res?.compiledSql || res?.sql || '',
+        steps: res?.steps || [{ name: 'compile', status: 'ok', detail: 'persist=false' }],
+        rowCount: 0,
+        rows: [],
+        columns: [],
+        durMs: res?.durMs,
+      }
+      showToast('编译完成（未执行）', 'success')
+    } catch (e) {
+      trialResult.value = {
+        executed: false,
+        statusLabel: '编译失败',
+        message: e?.message || String(e),
+        rows: [],
+        columns: [],
+      }
+      showToast(e?.message || '编译失败', 'warning')
+    }
+  })
+}
+
+function applyResultPanel(res, fallbackLabel) {
+  trialResult.value = {
+    ...res,
+    statusLabel: res?.statusLabel || fallbackLabel,
+  }
+}
+
 async function doTrial() {
   const row = active.value
   if (!row) return
   await runLocked('trial', async () => {
     trialResult.value = null
     try {
-      const params = {}
-      if (trialDt.value?.trim()) params.dt = trialDt.value.trim()
-      const res = await runTrial(row.id, { params, maxRows: 200 })
-      trialResult.value = res
+      const res = await runTrial(row.id, { params: buildTrialParams(), maxRows: 200 })
+      applyResultPanel(res, '试跑')
+      await loadDetailExecs(row.id)
       if (res?.executed) {
         showToast(`试跑完成 · ${res.rowCount ?? 0} 行 · ${res.durMs ?? 0}ms`, 'success')
       } else if (res?.blocked || res?.status === 'blocked') {
@@ -383,6 +645,44 @@ async function doTrial() {
   })
 }
 
+async function doFormalQuery() {
+  const row = active.value
+  if (!row || row.status !== 'active') {
+    showToast('仅已启用指标可正式查询', 'warning')
+    return
+  }
+  await runLocked('query', async () => {
+    trialResult.value = null
+    try {
+      const res = await runQuery({
+        metricCode: row.id,
+        params: buildTrialParams(),
+        prefer: queryPrefer.value || 'trino',
+        maxRows: 200,
+        ws: currentWs.value || 'default',
+      })
+      applyResultPanel(res, `查询 · ${queryPrefer.value || 'trino'}`)
+      await loadDetailExecs(row.id)
+      if (res?.executed) {
+        showToast(`查询完成 · ${res.rowCount ?? 0} 行 · ${res.durMs ?? 0}ms`, 'success')
+      } else if (res?.blocked || res?.status === 'blocked') {
+        showToast(res.message || res.statusLabel || '查询被阻断（对账/物化）', 'warning')
+      } else {
+        showToast(res?.message || '查询未执行', 'warning')
+      }
+    } catch (e) {
+      trialResult.value = {
+        executed: false,
+        statusLabel: '查询失败',
+        message: e?.message || String(e),
+        rows: [],
+        columns: [],
+      }
+      showToast(e?.message || '查询失败', 'warning')
+    }
+  })
+}
+
 async function doMaterialize() {
   const row = active.value
   if (!row) return
@@ -392,13 +692,67 @@ async function doMaterialize() {
   }
   try {
     const res = await runMaterialize(row.id, { engine: 'clickhouse', launch: true })
-    showToast(
-      `物化已登记 · job_ref=${res?.jobRef || '—'} · recon_ok=${res?.reconOk ? 1 : 0}`,
-      res?.launch?.degraded ? 'warning' : 'success',
-    )
+    const jobRef = res?.jobRef || res?.launch?.jobRef || ''
+    if (jobRef) {
+      showToast(
+        `物化已登记 · job_ref=${jobRef} · recon_ok=${res?.reconOk ? 1 : 0}`,
+        res?.launch?.degraded ? 'warning' : 'success',
+      )
+    } else {
+      showToast(
+        `物化已登记（仅登记未调度，无 job_ref）· recon_ok=${res?.reconOk ? 1 : 0} · 可稍后在任务运维查看`,
+        'warning',
+      )
+    }
+    try {
+      const mats = await fetchMetricMaterialize(row.id, currentWs.value || 'default')
+      detailMaterialize.value = Array.isArray(mats) ? mats : mats?.records || []
+    } catch {
+      /* soft */
+    }
   } catch (e) {
     showToast(e?.message || '物化登记失败', 'warning')
   }
+}
+
+async function doPublishBi() {
+  const row = active.value
+  if (!row) return
+  if (row.status !== 'active') {
+    showToast('仅已启用指标可发布到 BI', 'warning')
+    return
+  }
+  await runLocked('publishBi', async () => {
+    try {
+      const res = await publishMetricDataset({
+        metricCode: row.id || row.metricCode,
+        ver: row.ver,
+        ws: currentWs.value || 'default',
+        params: filtersToQueryParams(trialFilters.value),
+      })
+      showToast(`已发布「${res?.datasetName || row.id || ''}」，正在打开 BI`, 'success')
+      const dims = trialFilters.value?.dims || {}
+      router.push({
+        path: '/bi/studio',
+        query: {
+          openDataset: '1',
+          metricCode: row.id || row.metricCode,
+          ...(Object.keys(dims).length ? { dims: JSON.stringify(dims) } : {}),
+        },
+      })
+    } catch (e) {
+      showToast(e?.message || '发布 BI 失败', 'warning')
+    }
+  })
+}
+
+function goOpsJob(jobRef) {
+  if (!jobRef) {
+    showToast('无 job_ref：仅登记未调度，请到任务运维自行排查或重新触发物化', 'warning')
+    router.push('/ops')
+    return
+  }
+  router.push({ path: '/ops', query: { q: jobRef, jobRef } })
 }
 
 async function openEdit(row) {
@@ -412,10 +766,14 @@ async function openEdit(row) {
   } catch {
     /* 列表行仍可预填 */
   }
+  const fresh = catalog.value.find((r) => r.id === row.id) || row
+  const payload = metricToFormPayload(fresh)
+  payload.owner = resolveWorkspaceUserId(payload.owner, user.value?.id || '')
+  editPrefill.value = payload
   formKey.value += 1
   createOpen.value = true
-  const fresh = catalog.value.find((r) => r.id === row.id) || row
-  if (fresh.table) warmMetricBindAssets(fresh.table).catch(() => {})
+  const tableKey = payload.table || fresh.table
+  if (tableKey) warmMetricBindAssets(tableKey).catch(() => {})
 }
 
 function goApplyMetric(row, kind = 'query') {
@@ -611,12 +969,29 @@ async function refresh() {
       </button>
     </PageHeader>
 
-    <p class="tip met-banner">
-      原子指标绑定<strong>湖表</strong>（Iceberg/Hive），试跑/查询经 <strong>Trino</strong> 执行；源端 MySQL
-      等不会出现在绑定表下拉里。请先入湖并在资产目录登记湖表后再建指标。
-    </p>
+    <DeferredRefreshBar
+      :show="hasCatalogPending"
+      message="指标目录有更新。确认后刷新列表，避免打断正在查看的详情。"
+      apply-label="更新列表"
+      @apply="confirmCatalogRefresh"
+      @dismiss="discardCatalogPending"
+    />
+
+    <div class="met-banner-cta">
+      <span>
+        原子指标绑定<strong>湖表</strong>（Iceberg/Hive），试跑/查询经 <strong>Trino</strong> 执行；源端 MySQL
+        等不会出现在绑定表下拉里。{{ METRIC_LAKE_LANDING_HINT }}
+        <template v-if="bindLakeEmpty && metricBindSkippedSource > 0">
+          已过滤 {{ metricBindSkippedSource }} 个源端表资产。
+        </template>
+        <template v-else-if="bindLakeEmpty">当前空间尚无可绑湖表。</template>
+      </span>
+      <span class="met-cta-links">
+        <router-link v-for="l in METRIC_LAKE_PREP_LINKS" :key="l.to" :to="l.to">{{ l.label }}</router-link>
+      </span>
+    </div>
     <p v-if="lastError && !catalog.length" class="met-banner warn">
-      加载失败：{{ lastError.message || lastError }} · 请确认后端已迁移（含 V72 下线演示种子）且已登录
+      加载失败：{{ lastError.message || lastError }} · 请确认后端已迁移且已登录
     </p>
     <p v-else-if="loading && !catalog.length" class="met-banner">正在加载指标目录…</p>
 
@@ -637,6 +1012,12 @@ async function refresh() {
       <div class="card-header met-catalog-hd">
         <div class="card-title">📋 指标目录 <span class="tip">· 已废弃禁止新引用</span></div>
         <div class="met-filters">
+          <input
+            v-model="tagFilter"
+            class="input input-sm"
+            style="width: 140px"
+            placeholder="标签/主题/管家…"
+          />
           <div class="met-type-tabs">
             <button
               v-for="t in TYPE_TABS"
@@ -767,6 +1148,89 @@ async function refresh() {
             <div class="pending">{{ active.pendingCaliber }}</div>
           </div>
           <div class="met-kv-row"><span>绑定 / 依赖</span><div><code>{{ active.bind }}</code></div></div>
+          <div class="met-kv-row">
+            <span>物理落点</span>
+            <div>
+              <div v-if="detailLineage?.physical?.bindTable">
+                绑表
+                <router-link class="btn-link" :to="catalogQ(detailLineage.physical.bindTable)">
+                  <code>{{ detailLineage.physical.bindTable }}</code>
+                </router-link>
+                <template v-if="detailLineage.physical.bindField">
+                  · 字段 <code>{{ detailLineage.physical.bindField }}</code>
+                </template>
+                <template v-if="detailLineage.physical.agg">
+                  · {{ detailLineage.physical.agg }}
+                </template>
+              </div>
+              <div v-else-if="active.bind" class="tip">见绑定 / 依赖</div>
+              <div v-else class="tip">未绑定湖表</div>
+              <div v-if="detailMaterialize.length" style="margin-top: 4px">
+                <div v-for="(m, i) in detailMaterialize" :key="m.id || i" style="margin: 2px 0">
+                  物化 {{ m.engine || '—' }}
+                  <router-link
+                    v-if="m.targetTable"
+                    class="btn-link"
+                    :to="catalogQ(m.targetTable)"
+                  >
+                    <code>{{ m.targetTable }}</code>
+                  </router-link>
+                  <code v-else>—</code>
+                  <span class="tip">
+                    · recon {{ m.reconOk === 1 || m.reconOk === true ? 'ok' : '—' }}
+                  </span>
+                  <button
+                    type="button"
+                    class="btn-link"
+                    style="margin-left: 6px"
+                    @click="goOpsJob(m.jobRef)"
+                  >
+                    {{ m.jobRef ? `运维 · ${m.jobRef}` : '仅登记未调度' }}
+                  </button>
+                </div>
+              </div>
+              <div v-else class="tip" style="margin-top: 2px">未登记物化目标</div>
+            </div>
+          </div>
+          <div class="met-kv-row">
+            <span>波动摘要</span>
+            <div>
+              <template v-if="detailAnomaly">
+                <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px">
+                  <span :class="detailAnomaly.anomaly ? 'error' : 'tip'">
+                    {{ detailAnomaly.summary || (detailAnomaly.anomaly ? '疑似异常' : '正常/无采样') }}
+                  </span>
+                  <button
+                    type="button"
+                    class="btn btn-sm"
+                    :disabled="sampleRerunBusy"
+                    title="手动触发日采样补跑（全空间 active 指标）"
+                    @click="rerunSampleForActive"
+                  >
+                    {{ sampleRerunBusy ? '补跑中…' : '补跑采样' }}
+                  </button>
+                  <button
+                    type="button"
+                    class="btn btn-sm"
+                    :disabled="sampleRerunBusy"
+                    @click="loadDetailAnomaly(activeId)"
+                  >
+                    刷新摘要
+                  </button>
+                </div>
+                <div v-if="detailAnomaly.series?.length" class="tip" style="margin-top: 4px">
+                  近 {{ detailAnomaly.series.length }} 点：
+                  <template v-for="(s, i) in detailAnomaly.series.slice(0, 5)" :key="i">
+                    {{ s.sampleDt }}={{ s.metricValue ?? '—' }}{{ i < Math.min(4, detailAnomaly.series.length - 1) ? ' · ' : '' }}
+                  </template>
+                </div>
+                <div v-else class="tip" style="margin-top: 4px">
+                  尚无采样点。可点「补跑采样」，或由运维开启每日自动采样（sample-daily-enabled）。
+                </div>
+              </template>
+              <span v-else class="tip">加载中…</span>
+            </div>
+          </div>
           <div v-if="active.formula" class="met-kv-row"><span>计算公式</span><div><code>{{ active.formula }}</code></div></div>
           <div
             v-if="active.type === '衍生' || active.kind === '衍生' || active.formula || active.dim || active.time"
@@ -836,6 +1300,70 @@ async function refresh() {
           </div>
         </div>
 
+        <div class="met-sec-title" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span>执行记录</span>
+          <button
+            type="button"
+            class="btn btn-sm"
+            style="margin-left: auto"
+            :disabled="execsLoading || !active"
+            @click="loadDetailExecs(active.id)"
+          >
+            {{ execsLoading ? '刷新中…' : '刷新' }}
+          </button>
+        </div>
+        <p class="tip" style="margin: 0 0 8px">
+          试跑/正式查询审计（SQL · 耗时 · 错误）。历史不回放结果行集；行集看下方当次结果。
+        </p>
+        <div v-if="execsLoading" class="tip" style="padding: 8px 0">加载执行记录…</div>
+        <div v-else-if="detailExecs?.items?.length" class="met-timeline">
+          <div
+            v-for="(ex, i) in detailExecs.items"
+            :key="ex.id || ex.queryId || i"
+            class="met-tl-item"
+            :class="{ current: i === 0 }"
+          >
+            <div class="met-tl-dot" />
+            <div style="flex:1;min-width:0">
+              <div class="met-tl-name">
+                <span
+                  :class="
+                    ex.status === 'ok' || ex.status === 'success'
+                      ? 'ok'
+                      : ex.status === 'blocked'
+                        ? 'warn'
+                        : 'error'
+                  "
+                >
+                  {{ ex.statusLabel || ex.status || '—' }}
+                </span>
+                · {{ ex.source || '—' }}
+                · {{ ex.ver || '—' }}
+                · {{ ex.rowCount ?? 0 }} 行
+                · {{ ex.durMs ?? '—' }} ms
+                <span class="met-tl-time">{{ ex.createTime || '' }}</span>
+              </div>
+              <button
+                type="button"
+                class="btn-link"
+                style="font-size: 11px"
+                @click="execOpenId = execOpenId === (ex.id || ex.queryId) ? '' : ex.id || ex.queryId"
+              >
+                {{ execOpenId === (ex.id || ex.queryId) ? '收起 SQL' : '查看 SQL' }}
+              </button>
+              <div v-if="execOpenId === (ex.id || ex.queryId)" style="margin-top: 4px">
+                <p v-if="ex.error" class="met-trial-msg">{{ ex.error }}</p>
+                <pre v-if="ex.sqlText" class="met-sql">{{ ex.sqlText }}</pre>
+                <div v-if="ex.trinoQueryId || ex.queryId" class="tip" style="margin-top: 4px">
+                  <template v-if="ex.queryId">queryId {{ ex.queryId }}</template>
+                  <template v-if="ex.trinoQueryId"> · trino {{ ex.trinoQueryId }}</template>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div v-else class="tip" style="padding: 8px 0">暂无试跑/查询记录</div>
+
         <div class="met-sec-title">状态流转记录</div>
         <div class="met-timeline">
           <div
@@ -859,12 +1387,37 @@ async function refresh() {
         <div class="met-drawer-acts">
           <button
             type="button"
+            class="btn btn-sm"
+            :disabled="compileBusy || trialBusy || queryBusy || saving"
+            @click="doCompileOnly"
+          >
+            {{ compileBusy ? '编译中…' : '仅编译' }}
+          </button>
+          <button
+            type="button"
             class="btn btn-sm btn-primary"
-            :disabled="trialBusy || saving"
+            :disabled="trialBusy || compileBusy || queryBusy || saving"
             @click="doTrial"
           >
             {{ trialBusy ? '试跑中…' : '▶ 试跑' }}
           </button>
+          <template v-if="canFormalQuery">
+            <label class="met-trial-dt tip">
+              路由
+              <select v-model="queryPrefer" class="input input-sm met-dt-input">
+                <option value="trino">trino</option>
+                <option value="hot">hot（物化）</option>
+              </select>
+            </label>
+            <button
+              type="button"
+              class="btn btn-sm"
+              :disabled="queryBusy || trialBusy || compileBusy || saving"
+              @click="doFormalQuery"
+            >
+              {{ queryBusy ? '查询中…' : '正式查询' }}
+            </button>
+          </template>
           <button
             v-if="active.status === 'active' || active.status === 'review'"
             type="button"
@@ -874,7 +1427,16 @@ async function refresh() {
           >
             📦 物化作业
           </button>
-          <label class="met-trial-dt tip">
+          <button
+            v-if="active.status === 'active'"
+            type="button"
+            class="btn btn-sm"
+            :disabled="publishBiBusy || saving"
+            @click="doPublishBi"
+          >
+            {{ publishBiBusy ? '发布中…' : '发布到 BI' }}
+          </button>
+          <label v-if="showTrialDt" class="met-trial-dt tip">
             dt
             <input v-model="trialDt" type="date" class="met-dt-input" />
           </label>
@@ -909,8 +1471,27 @@ async function refresh() {
           流程：① 保存草稿 → ② 申请发布 → ③ 待审核 → ④ 通过后<strong>自动启用</strong> / 驳回按意见重改。查询权限另走申请中心。
         </p>
 
+        <div v-if="trialGrainCols.length" style="margin-top: 10px">
+          <MetricDimFilterBar
+            v-model="trialFilters"
+            :ws="currentWs || 'default'"
+            :column-filter="trialGrainCols"
+          />
+        </div>
+        <p v-if="trialDimUnboundHint" class="tip" style="margin: 4px 0 0">{{ trialDimUnboundHint }}</p>
+        <div v-if="!trialResult" class="tip" style="padding: 8px 0">
+          尚未试跑/编译/查询。可「仅编译」预览 SQL；草稿用「试跑」；已启用可「正式查询」（prefer=trino|hot）。结果行集仅当次展示。
+        </div>
         <div v-if="trialResult" class="met-trial-box">
-          <div class="met-sec-title">试跑结果</div>
+          <div class="met-sec-title">
+            {{
+              trialResult.statusLabel === '仅编译'
+                ? '编译预览'
+                : String(trialResult.statusLabel || '').startsWith('查询')
+                  ? '查询结果'
+                  : '试跑结果'
+            }}
+          </div>
           <div class="met-trial-meta tip">
             <span :class="trialResult.executed ? 'ok' : 'warn'">
               {{ trialResult.statusLabel || (trialResult.executed ? '已执行' : '未执行') }}
@@ -918,6 +1499,26 @@ async function refresh() {
             · {{ trialResult.rowCount ?? 0 }} 行
             · {{ trialResult.durMs ?? '—' }} ms
             <template v-if="trialResult.queryId"> · {{ trialResult.queryId }}</template>
+          </div>
+          <div v-if="trialResult.steps?.length" class="met-timeline" style="margin: 8px 0">
+            <div
+              v-for="(st, i) in trialResult.steps"
+              :key="i"
+              class="met-tl-item"
+              :class="{ current: st.status === 'ok' }"
+            >
+              <div class="met-tl-dot" />
+              <div>
+                <div class="met-tl-name">
+                  {{ st.name }}
+                  <span :class="st.status === 'ok' ? 'ok' : st.status === 'error' ? 'error' : 'tip'">
+                    {{ st.status }}
+                  </span>
+                  <span class="met-tl-time">{{ st.durMs ?? 0 }} ms</span>
+                </div>
+                <div v-if="st.detail" class="met-tl-note">{{ st.detail }}</div>
+              </div>
+            </div>
           </div>
           <p v-if="trialResult.message" class="met-trial-msg">{{ trialResult.message }}</p>
           <pre v-if="trialResult.sqlText" class="met-sql">{{ trialResult.sqlText }}</pre>
@@ -950,6 +1551,7 @@ async function refresh() {
       @close="closeCreate"
       @submit="onSubmitCreate"
     />
+
   </div>
 </template>
 

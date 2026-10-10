@@ -10,6 +10,9 @@ import {
   ADHOC_SCAN_LIMIT_BYTES,
   HARD_SCAN_LIMIT_BYTES,
   cancelQuery,
+  clearQueryHistory,
+  deleteQueryHistory,
+  deleteQueryScript,
   detectParamNamesLocal,
   execQuery,
   execQueryStream,
@@ -24,6 +27,7 @@ import {
   saveQueryDataset,
   saveQueryScript,
 } from '@/api/query'
+import { confirmDelete } from '@/composables/useConfirmDelete'
 import { useSession } from '@/composables/useSession'
 import { RESULT_COLUMNS } from '@/data/query'
 
@@ -39,6 +43,10 @@ const catalogDegraded = ref(false)
 const catalogQuery = ref('')
 const catWidth = ref(Number(localStorage.getItem('lh.query.catWidth')) || 300)
 const catResizing = ref(false)
+/** 左栏切页：catalog | scripts | history */
+const asideTab = ref('catalog')
+const scriptQuery = ref('')
+const historyQuery = ref('')
 const savedScripts = ref([])
 function blankQueryTab() {
   return {
@@ -661,7 +669,8 @@ function onSaveSql() {
       tab.name = row?.name || name
       tab.savedId = row?.id || tab.savedId
       tab.savedAt = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
-      showToast(row?.message || `已保存脚本 ${tab.name}`, 'success')
+      showToast(row?.message || `已保存脚本 ${tab.name}（可在左侧·脚本查看）`, 'success')
+      if (asideTab.value !== 'scripts') asideTab.value = 'scripts'
       return loadSavedScripts()
     })
     .catch((e) => showToast(e?.message || '保存脚本失败', 'warning'))
@@ -675,8 +684,32 @@ async function loadSavedScripts() {
   }
 }
 
+const filteredScripts = computed(() => {
+  const q = scriptQuery.value.trim().toLowerCase()
+  if (!q) return savedScripts.value
+  return savedScripts.value.filter((s) => {
+    const blob = `${s.name || ''} ${s.sqlSummary || ''}`.toLowerCase()
+    return blob.includes(q)
+  })
+})
+
+const filteredHistory = computed(() => {
+  const q = historyQuery.value.trim().toLowerCase()
+  if (!q) return history.value
+  return history.value.filter((h) => {
+    const blob = `${h.summary || ''} ${h.statusLabel || ''} ${h.user || ''} ${h.time || ''}`.toLowerCase()
+    return blob.includes(q)
+  })
+})
+
 function openSavedScript(row) {
   if (!row?.sql) return
+  const existing = tabs.value.find((t) => t.savedId && t.savedId === row.id)
+  if (existing) {
+    activeTabId.value = existing.id
+    showToast(`已切换到 ${row.name}`, 'success')
+    return
+  }
   const id = `tab_saved_${row.id || Date.now()}`
   tabs.value.push({
     id,
@@ -687,6 +720,66 @@ function openSavedScript(row) {
   })
   activeTabId.value = id
   showToast(`已打开 ${row.name}`, 'success')
+}
+
+async function onDeleteScript(row, ev) {
+  ev?.stopPropagation?.()
+  if (!row?.id) return
+  const ok = await confirmDelete({
+    title: `删除脚本「${row.name || row.id}」`,
+    message: '仅从本人已保存脚本列表移除（软删），当前编辑器草稿不受影响。',
+    confirmLabel: '确认删除',
+  })
+  if (!ok) return
+  try {
+    await deleteQueryScript(row.id)
+    for (const t of tabs.value) {
+      if (t.savedId === row.id) t.savedId = ''
+    }
+    await loadSavedScripts()
+    showToast('已删除脚本', 'success')
+  } catch (e) {
+    showToast(e?.message || '删除脚本失败', 'error')
+  }
+}
+
+async function onDeleteHistory(row, ev) {
+  ev?.stopPropagation?.()
+  const id = row?.id
+  if (!id) return
+  const ok = await confirmDelete({
+    title: '删除这条查询历史',
+    message: '仅从本人历史列表移除，不撤销已执行记录在治理侧的审计用途以外展示。',
+    confirmLabel: '确认删除',
+  })
+  if (!ok) return
+  try {
+    await deleteQueryHistory(id)
+    await loadHistory()
+    showToast('已删除历史', 'success')
+  } catch (e) {
+    showToast(e?.message || '删除历史失败', 'error')
+  }
+}
+
+async function onClearHistory() {
+  if (!history.value.length) {
+    showToast('暂无历史可清空', 'info')
+    return
+  }
+  const ok = await confirmDelete({
+    title: '清空本人查询历史',
+    message: `将从本人列表移除当前工作空间下可见的 ${history.value.length} 条历史（软删）。`,
+    confirmLabel: '确认清空',
+  })
+  if (!ok) return
+  try {
+    const resp = await clearQueryHistory(currentWs.value || 'default')
+    await loadHistory()
+    showToast(resp?.message || '已清空历史', 'success')
+  } catch (e) {
+    showToast(e?.message || '清空失败', 'error')
+  }
 }
 
 function summarize(sql) {
@@ -997,6 +1090,12 @@ function loadHistoryRow(h) {
   showToast('已加载历史 SQL 到编辑器', 'success')
 }
 
+function switchAsideTab(tab) {
+  asideTab.value = tab
+  if (tab === 'scripts') loadSavedScripts()
+  if (tab === 'history') loadHistory()
+}
+
 function cellClass(col, row) {
   if (col.masked) return 'masked'
   const v = row[col.key]
@@ -1052,108 +1151,237 @@ function cellClass(col, row) {
 
     <div class="query-layout" :class="{ resizing: catResizing }" :style="{ '--cat-w': catWidth + 'px' }">
       <aside class="card query-cat">
-        <div class="card-header cat-head">
-          <div class="card-title">目录</div>
-          <span class="cat-count">{{ visibleTableCount }} 表</span>
+        <div class="aside-tabs" role="tablist">
+          <button
+            type="button"
+            class="aside-tab"
+            role="tab"
+            :class="{ active: asideTab === 'catalog' }"
+            :aria-selected="asideTab === 'catalog'"
+            @click="switchAsideTab('catalog')"
+          >目录</button>
+          <button
+            type="button"
+            class="aside-tab"
+            role="tab"
+            :class="{ active: asideTab === 'scripts' }"
+            :aria-selected="asideTab === 'scripts'"
+            @click="switchAsideTab('scripts')"
+          >脚本{{ savedScripts.length ? ` ${savedScripts.length}` : '' }}</button>
+          <button
+            type="button"
+            class="aside-tab"
+            role="tab"
+            :class="{ active: asideTab === 'history' }"
+            :aria-selected="asideTab === 'history'"
+            @click="switchAsideTab('history')"
+          >历史{{ history.length ? ` ${history.length}` : '' }}</button>
         </div>
-        <div class="cat-search">
-          <input
-            v-model="catalogQuery"
-            type="search"
-            class="cat-search-input"
-            placeholder="搜索数据源、schema、表、列"
-            aria-label="搜索目录"
-          />
-        </div>
-        <div class="cat-body">
-          <div v-if="apiOnline && !catalog.length" class="cat-empty">
-            暂无可用表：需为资产拥有者（或已获 SELECT），且已挂接元数据指针并进入查询面（默认仅
-            <code>iceberg</code>）。关系库等登记 catalog <code>ds_*</code> 不会出现在即席目录——请登记湖表资产。
+
+        <!-- 目录 -->
+        <template v-if="asideTab === 'catalog'">
+          <div class="card-header cat-head">
+            <div class="card-title">目录</div>
+            <span class="cat-count">{{ visibleTableCount }} 表</span>
           </div>
-          <template v-for="ds in catalog" :key="ds.id">
-            <button
-              v-if="showNode(ds, false)"
-              type="button"
-              class="cat-node datasource"
-              :class="{ open: isOpen(ds) }"
-              @click="toggleNode(ds)"
-            >
-              <span class="cat-chev" :class="{ open: isOpen(ds) }" aria-hidden="true" />
-              <span class="cat-mark cat">源</span>
-              <span class="cat-label">
-                <span class="cat-name">{{ ds.name }}</span>
-              </span>
-              <span v-if="ds.engine" class="cat-engine">{{ ds.engine }}</span>
-              <span class="cat-rows">{{ ds.tableCount ?? 0 }}</span>
-            </button>
-            <template v-if="isOpen(ds)">
-              <template v-for="sch in ds.children || []" :key="sch.id">
-                <button
-                  v-if="showNode(sch, ancestorHit(ds))"
-                  type="button"
-                  class="cat-node schema"
-                  :class="{ open: isOpen(sch) }"
-                  @click="toggleNode(sch)"
-                >
-                  <span class="cat-chev" :class="{ open: isOpen(sch) }" aria-hidden="true" />
-                  <span class="cat-label">
-                    <span class="cat-name">{{ sch.name }}</span>
-                  </span>
-                  <span class="cat-rows">{{ sch.tableCount ?? (sch.children || []).length }}</span>
-                </button>
-                <template v-if="isOpen(sch)">
-                  <div
-                    v-for="tb in listedTables(sch, ancestorHit(ds) || ancestorHit(sch))"
-                    :key="tb.id"
-                    class="cat-table-block"
-                    :class="{ active: tb.id === activeTableId }"
-                  >
-                    <div class="cat-node table">
-                      <button type="button" class="cat-chev-btn" :aria-expanded="!!isOpen(tb)" @click="toggleTableCols(tb, $event)">
-                        <span class="cat-chev" :class="{ open: isOpen(tb) }" aria-hidden="true" />
-                      </button>
-                      <button type="button" class="cat-table-main" @click="insertTable(tb)">
-                        <span v-if="tb.star" class="cat-star" title="常用">★</span>
-                        <span class="cat-name">{{ tb.name }}</span>
-                        <span v-if="tb.hint" class="cat-hint">{{ tb.hint }}</span>
-                      </button>
-                    </div>
-                    <div v-if="isOpen(tb)" class="cat-cols">
-                      <div v-if="tb.columnsLoading" class="cat-col empty">读取列…</div>
-                      <div v-else-if="tb.columnsError && !(tb.columns || []).length" class="cat-col empty">列信息暂不可用</div>
-                      <div v-else-if="!(tb.columns || []).length" class="cat-col empty">无列</div>
-                      <button
-                        v-for="col in tb.columns || []"
-                        :key="col.name"
-                        type="button"
-                        class="cat-col"
-                        :title="col.comment || col.type"
-                        @click="insertColumn(tb, col)"
-                      >
-                        <span class="cat-col-name" :class="{ masked: col.masked }">{{ col.name }}</span>
-                        <span class="cat-col-type">{{ col.type }}</span>
-                        <span v-if="col.partition" class="col-flag part">分区</span>
-                        <span v-if="col.masked" class="col-flag mask">脱敏</span>
-                      </button>
-                    </div>
-                  </div>
+          <div class="cat-search">
+            <input
+              v-model="catalogQuery"
+              type="search"
+              class="cat-search-input"
+              placeholder="搜索数据源、schema、表、列"
+              aria-label="搜索目录"
+            />
+          </div>
+          <div class="cat-body">
+            <div v-if="apiOnline && !catalog.length" class="cat-empty">
+              暂无可用表：需为资产拥有者（或已获 SELECT），且已挂接元数据指针并进入查询面（默认仅
+              <code>iceberg</code>）。关系库等登记 catalog <code>ds_*</code> 不会出现在即席目录——请登记湖表资产。
+            </div>
+            <template v-for="ds in catalog" :key="ds.id">
+              <button
+                v-if="showNode(ds, false)"
+                type="button"
+                class="cat-node datasource"
+                :class="{ open: isOpen(ds) }"
+                @click="toggleNode(ds)"
+              >
+                <span class="cat-chev" :class="{ open: isOpen(ds) }" aria-hidden="true" />
+                <span class="cat-mark cat">源</span>
+                <span class="cat-label">
+                  <span class="cat-name">{{ ds.name }}</span>
+                </span>
+                <span v-if="ds.engine" class="cat-engine">{{ ds.engine }}</span>
+                <span class="cat-rows">{{ ds.tableCount ?? 0 }}</span>
+              </button>
+              <template v-if="isOpen(ds)">
+                <template v-for="sch in ds.children || []" :key="sch.id">
                   <button
-                    v-if="hiddenTableCount(sch, ancestorHit(ds) || ancestorHit(sch))"
+                    v-if="showNode(sch, ancestorHit(ds))"
                     type="button"
-                    class="cat-more"
-                    @click="sch.showAll = true"
+                    class="cat-node schema"
+                    :class="{ open: isOpen(sch) }"
+                    @click="toggleNode(sch)"
                   >
-                    还有 {{ hiddenTableCount(sch, ancestorHit(ds) || ancestorHit(sch)) }} 张表
+                    <span class="cat-chev" :class="{ open: isOpen(sch) }" aria-hidden="true" />
+                    <span class="cat-label">
+                      <span class="cat-name">{{ sch.name }}</span>
+                    </span>
+                    <span class="cat-rows">{{ sch.tableCount ?? (sch.children || []).length }}</span>
                   </button>
+                  <template v-if="isOpen(sch)">
+                    <div
+                      v-for="tb in listedTables(sch, ancestorHit(ds) || ancestorHit(sch))"
+                      :key="tb.id"
+                      class="cat-table-block"
+                      :class="{ active: tb.id === activeTableId }"
+                    >
+                      <div class="cat-node table">
+                        <button type="button" class="cat-chev-btn" :aria-expanded="!!isOpen(tb)" @click="toggleTableCols(tb, $event)">
+                          <span class="cat-chev" :class="{ open: isOpen(tb) }" aria-hidden="true" />
+                        </button>
+                        <button type="button" class="cat-table-main" @click="insertTable(tb)">
+                          <span v-if="tb.star" class="cat-star" title="常用">★</span>
+                          <span class="cat-name">{{ tb.name }}</span>
+                          <span v-if="tb.hint" class="cat-hint">{{ tb.hint }}</span>
+                        </button>
+                      </div>
+                      <div v-if="isOpen(tb)" class="cat-cols">
+                        <div v-if="tb.columnsLoading" class="cat-col empty">读取列…</div>
+                        <div v-else-if="tb.columnsError && !(tb.columns || []).length" class="cat-col empty">列信息暂不可用</div>
+                        <div v-else-if="!(tb.columns || []).length" class="cat-col empty">无列</div>
+                        <button
+                          v-for="col in tb.columns || []"
+                          :key="col.name"
+                          type="button"
+                          class="cat-col"
+                          :title="col.comment || col.type"
+                          @click="insertColumn(tb, col)"
+                        >
+                          <span class="cat-col-name" :class="{ masked: col.masked }">{{ col.name }}</span>
+                          <span class="cat-col-type">{{ col.type }}</span>
+                          <span v-if="col.partition" class="col-flag part">分区</span>
+                          <span v-if="col.masked" class="col-flag mask">脱敏</span>
+                        </button>
+                      </div>
+                    </div>
+                    <button
+                      v-if="hiddenTableCount(sch, ancestorHit(ds) || ancestorHit(sch))"
+                      type="button"
+                      class="cat-more"
+                      @click="sch.showAll = true"
+                    >
+                      还有 {{ hiddenTableCount(sch, ancestorHit(ds) || ancestorHit(sch)) }} 张表
+                    </button>
+                  </template>
                 </template>
               </template>
             </template>
-          </template>
-          <div v-if="catalogQuery.trim() && !visibleTableCount" class="cat-empty">
-            没有匹配「{{ catalogQuery.trim() }}」的库表
+            <div v-if="catalogQuery.trim() && !visibleTableCount" class="cat-empty">
+              没有匹配「{{ catalogQuery.trim() }}」的库表
+            </div>
           </div>
-        </div>
-        <div class="cat-foot">仅展示已授权 / 拥有者可用表 · 点表插入 SQL · 展开看列</div>
+          <div class="cat-foot">仅展示已授权 / 拥有者可用表 · 点表插入 SQL · 展开看列</div>
+        </template>
+
+        <!-- 已保存脚本 -->
+        <template v-else-if="asideTab === 'scripts'">
+          <div class="card-header cat-head">
+            <div class="card-title">已保存脚本</div>
+            <button type="button" class="btn btn-sm" @click="loadSavedScripts">刷新</button>
+          </div>
+          <div class="cat-search">
+            <input
+              v-model="scriptQuery"
+              type="search"
+              class="cat-search-input"
+              placeholder="搜索脚本名 / 摘要"
+              aria-label="搜索脚本"
+            />
+          </div>
+          <div class="cat-body aside-list">
+            <div v-if="!filteredScripts.length" class="cat-empty">
+              {{ savedScripts.length ? '无匹配脚本' : '暂无保存脚本 · 点「保存脚本」写入' }}
+            </div>
+            <div
+              v-for="s in filteredScripts"
+              :key="s.id"
+              class="aside-row"
+              role="button"
+              tabindex="0"
+              @click="openSavedScript(s)"
+              @keydown.enter.prevent="openSavedScript(s)"
+            >
+              <div class="aside-row-main">
+                <div class="aside-row-title">{{ s.name }}</div>
+                <div class="aside-row-sub"><code>{{ s.sqlSummary || '—' }}</code></div>
+                <div class="aside-row-meta">{{ s.updateTime || '—' }}</div>
+              </div>
+              <button
+                type="button"
+                class="aside-row-del"
+                title="删除脚本"
+                @click="onDeleteScript(s, $event)"
+              >删除</button>
+            </div>
+          </div>
+          <div class="cat-foot">点击打开到新 Tab · 删除仅移除本人列表</div>
+        </template>
+
+        <!-- 查询历史 -->
+        <template v-else>
+          <div class="card-header cat-head">
+            <div class="card-title">查询历史</div>
+            <div class="aside-head-acts">
+              <button type="button" class="btn btn-sm" :disabled="!history.length" @click="onClearHistory">清空</button>
+              <button type="button" class="btn btn-sm" @click="loadHistory">刷新</button>
+            </div>
+          </div>
+          <div class="cat-search">
+            <input
+              v-model="historyQuery"
+              type="search"
+              class="cat-search-input"
+              placeholder="搜索 SQL / 状态 / 时间"
+              aria-label="搜索历史"
+            />
+          </div>
+          <div class="cat-body aside-list">
+            <div v-if="!filteredHistory.length" class="cat-empty">
+              {{ history.length ? '无匹配历史' : '暂无查询历史' }}
+            </div>
+            <div
+              v-for="h in filteredHistory"
+              :key="h.id || h.queryId"
+              class="aside-row"
+              role="button"
+              tabindex="0"
+              @click="loadHistoryRow(h)"
+              @keydown.enter.prevent="loadHistoryRow(h)"
+            >
+              <div class="aside-row-main">
+                <div class="aside-row-title-line">
+                  <span class="tag" :class="h.tagClass">{{ h.statusLabel || h.status || '—' }}</span>
+                  <span class="aside-row-meta">{{ h.time }}</span>
+                </div>
+                <div class="aside-row-sub"><code>{{ h.summary || '—' }}</code></div>
+                <div class="aside-row-meta">
+                  {{ h.duration || '—' }}
+                  <span v-if="h.scan"> · Scan {{ h.scan }}</span>
+                  <span v-if="h.rows != null"> · {{ h.rows }} 行</span>
+                </div>
+              </div>
+              <button
+                type="button"
+                class="aside-row-del"
+                title="删除历史"
+                @click="onDeleteHistory(h, $event)"
+              >删除</button>
+            </div>
+          </div>
+          <div class="cat-foot">点击回填当前 Tab · 清空/删除仅影响本人列表</div>
+        </template>
+
         <div
           class="cat-resizer"
           title="拖动调整宽度"
@@ -1357,78 +1585,6 @@ function cellClass(col, row) {
           </div>
         </div>
 
-        <section class="card">
-          <div class="card-header">
-            <div class="card-title">已保存脚本 {{ savedScripts.length }}</div>
-            <button type="button" class="btn btn-sm" @click="loadSavedScripts">刷新</button>
-          </div>
-          <div class="card-body" style="padding: 0; overflow: auto">
-            <table class="table">
-              <thead>
-                <tr>
-                  <th>名称</th>
-                  <th>摘要</th>
-                  <th>更新</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-if="!savedScripts.length">
-                  <td colspan="3" class="empty">暂无保存脚本 · 点「保存脚本」写入 cp_query_saved</td>
-                </tr>
-                <tr
-                  v-for="s in savedScripts"
-                  :key="s.id"
-                  class="hist-row"
-                  @click="openSavedScript(s)"
-                >
-                  <td>{{ s.name }}</td>
-                  <td><code>{{ s.sqlSummary || '—' }}</code></td>
-                  <td>{{ s.updateTime || '—' }}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </section>
-
-        <section class="card">
-          <div class="card-header">
-            <div class="card-title">近 {{ history.length }} 条查询历史</div>
-            <div style="display: flex; gap: 8px; align-items: center">
-              <button type="button" class="btn btn-sm" @click="loadHistory">刷新</button>
-            </div>
-          </div>
-          <div class="card-body" style="padding: 0; overflow: auto">
-            <table class="table">
-              <thead>
-                <tr>
-                  <th>时间</th>
-                  <th>用户</th>
-                  <th>SQL 摘要</th>
-                  <th>耗时</th>
-                  <th>Scan</th>
-                  <th>行数</th>
-                  <th>状态/脱敏</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr
-                  v-for="h in history"
-                  :key="h.id || h.queryId"
-                  class="hist-row"
-                  @click="loadHistoryRow(h)"
-                >
-                  <td>{{ h.time }}</td>
-                  <td>{{ h.user }}</td>
-                  <td><code>{{ h.summary }}</code></td>
-                  <td>{{ h.duration }}</td>
-                  <td :class="{ danger: h.scanDanger }">{{ h.scan }}</td>
-                  <td>{{ h.rows }}</td>
-                  <td><span class="tag" :class="h.tagClass">{{ h.statusLabel }}</span></td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </section>
       </div>
     </div>
   </div>
@@ -1467,6 +1623,111 @@ function cellClass(col, row) {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+.aside-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 8px 8px 0;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.aside-tab {
+  flex: 1;
+  border: none;
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-3);
+  padding: 8px 6px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.aside-tab:hover { color: var(--text-1); }
+.aside-tab.active {
+  color: var(--primary);
+  border-bottom-color: var(--primary);
+}
+.aside-head-acts {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+  align-items: center;
+}
+.aside-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.aside-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: 8px;
+  padding: 8px;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+.aside-row:hover {
+  background: var(--bg-2);
+  border-color: var(--border);
+}
+.aside-row-main {
+  flex: 1;
+  min-width: 0;
+}
+.aside-row-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-1);
+  word-break: break-all;
+}
+.aside-row-title-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.aside-row-sub {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.aside-row-sub code {
+  font-size: inherit;
+  background: transparent;
+  padding: 0;
+}
+.aside-row-meta {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--text-4);
+}
+.aside-row-del {
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-4);
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 4px;
+  cursor: pointer;
+  border-radius: 4px;
+  opacity: 0.55;
+}
+.aside-row:hover .aside-row-del { opacity: 1; }
+.aside-row-del:hover {
+  color: var(--danger, #cf1322);
+  background: var(--bg-1, #fff);
 }
 .cat-resizer {
   position: absolute;
@@ -2005,9 +2266,6 @@ function cellClass(col, row) {
   color: var(--text-3);
   padding: 20px !important;
 }
-.hist-row { cursor: pointer; }
-.hist-row:hover { background: var(--bg-2); }
-
 @keyframes blink-in {
   from { background: rgba(30, 111, 255, 0.12); }
   to { background: transparent; }

@@ -22,7 +22,7 @@ export const LINEAGE_NODES = [
   { id: 'dws_user', name: 'dws.dws_user_profile_1d ⭐', layer: 'dws', x: 900, y: 380, desc: '黄金·画像宽表', icon: '🎯', type: 'table', assetId: 'dws_user_profile' },
   { id: 'ads_iceberg', name: 'ads.ads_gmv [Iceberg]', layer: 'ads', x: 1180, y: 130, desc: '湖ADS·事实源', icon: '🧊', type: 'table', assetId: 'ads_gmv' },
   { id: 'ads_ck', name: 'ads_gmv [ClickHouse]', layer: 'ads', x: 1180, y: 250, desc: '热ADS·CK TTL90天', icon: '🔥', type: 'table', assetId: 'ads_gmv' },
-  { id: 'superset', name: 'Superset 交易总览', layer: 'report', x: 1430, y: 100, desc: '核心看板·12图', icon: '📈', type: 'report' },
+  { id: 'superset', name: 'Superset 交易总览', layer: 'report', x: 1430, y: 100, desc: 'BI 看板·12图', icon: '📈', type: 'report' },
   { id: 'm_gmv', name: 'M-0001 日GMV', layer: 'metric', x: 1430, y: 220, desc: '口径v3·金额合计', icon: '🎯', type: 'metric' },
   { id: 'api_gmv', name: 'API /api/gmv/daily', layer: 'metric', x: 1430, y: 340, desc: 'HTTP JSON·对外', icon: '🔌', type: 'metric' },
 ]

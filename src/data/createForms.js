@@ -13,7 +13,14 @@ import {
   metricQualifierOptionsForAtom,
   parseMetricFormula,
   refsToArray,
+  validateCompositeGrain,
+  getMetricCatalogForForms,
 } from '@/data/metrics'
+import {
+  ensureMetricDimOptions,
+  ensureMetricQualifierOptions,
+  metricOntologyRev,
+} from '@/data/metricOntology'
 import {
   ensureWorkspaceUserOptions,
   workspaceUserOptions,
@@ -23,6 +30,13 @@ import {
   domainSelectOptionsSync,
   ensureDomainSelectOptions,
 } from '@/composables/useDomains'
+
+/** 兼容误从 createForms 引用域下拉的页面（规范入口仍是 useDomains） */
+export { domainSelectOptionsSync, ensureDomainSelectOptions }
+import {
+  AI_ROUTE_SCENE_OPTIONS,
+  getAiRouteModelSelectOptions,
+} from '@/data/ai'
 
 let _stdCodeOpts = []
 let _stdCodeLoaded = false
@@ -434,6 +448,66 @@ export const EXPORT_APPLY_FORM = {
       placeholder: '输入天数，如 60',
     },
   ],
+}
+
+export const AI_ROUTE_FORM = {
+  title: '＋ 新增路由策略',
+  intro: '按场景 × 空间绑定主/备模型。助手默认 scene=manual；写 SQL 为 sql。空间填 * 表示全空间默认。',
+  submitLabel: '保存',
+  width: '560px',
+  fields: [
+    {
+      key: 'scene',
+      label: '场景',
+      type: 'select',
+      required: true,
+      options: AI_ROUTE_SCENE_OPTIONS,
+      default: 'manual',
+      wide: true,
+    },
+    {
+      key: 'wsScope',
+      label: '空间范围',
+      type: 'text',
+      required: true,
+      default: '*',
+      placeholder: '* = 全部空间，或填写具体空间代码',
+      wide: true,
+    },
+    {
+      key: 'primaryModelId',
+      label: '主模型',
+      type: 'select',
+      required: true,
+      optionsResolver: () => getAiRouteModelSelectOptions({ enabledOnly: true }),
+      wide: true,
+    },
+    {
+      key: 'fallbackModelId',
+      label: '降级模型',
+      type: 'select',
+      optionsResolver: () => getAiRouteModelSelectOptions({ enabledOnly: true, includeEmpty: true }),
+      default: '',
+      wide: true,
+    },
+    {
+      key: 'enabled',
+      label: '状态',
+      type: 'select',
+      options: [
+        { value: '1', label: '启用' },
+        { value: '0', label: '停用' },
+      ],
+      default: '1',
+    },
+  ],
+}
+
+export const AI_ROUTE_EDIT_FORM = {
+  ...AI_ROUTE_FORM,
+  title: '✎ 编辑路由策略',
+  intro: '修改主/备模型或启停。外发模型须已安全岗标记方可启用。',
+  submitLabel: '保存',
 }
 
 export const AI_MODEL_FORM = {
@@ -965,7 +1039,7 @@ const METRIC_DOMAINS = [] // 运行时由 domain options 填充
 export const METRIC_CREATE_FORM = {
   title: '＋ 新建指标',
   intro:
-    '原子指标绑定湖表（Iceberg/Hive），经 Trino 试跑/查询；不能直连源端 MySQL 等。衍生=原子+限定+粒度；复合只写公式。',
+    '原子=绑湖表字段+聚合；衍生=原子+业务限定（修饰词库）+统计粒度（维度库）+周期；复合=公式。',
   submitLabel: '保存草稿',
   width: '680px',
   fields: [
@@ -974,14 +1048,22 @@ export const METRIC_CREATE_FORM = {
       label: '指标类型',
       type: 'select',
       options: [
-        { value: '原子', label: '原子指标 · 绑物理字段 + 聚合计算' },
-        { value: '衍生', label: '衍生指标 · 原子 + 业务限定 + 粒度 + 周期' },
-        { value: '复合', label: '复合指标 · 仅公式（不带粒度）' },
+        { value: '原子', label: '原子 · 湖表字段 + 聚合' },
+        { value: '衍生', label: '衍生 · 原子 + 限定 + 粒度 + 周期' },
+        { value: '复合', label: '复合 · 仅公式' },
       ],
       default: '原子',
       wide: true,
+      hint: '类型决定下方字段；限定/粒度从独立菜单「修饰词库」「维度库」选用',
     },
-    { key: 'name', label: '指标名', type: 'text', required: true, placeholder: '如 支付成功订单数 / 日GMV / 客单价', wide: true },
+    {
+      key: 'name',
+      label: '指标名',
+      type: 'text',
+      required: true,
+      placeholder: '如 支付成功订单数',
+      wide: true,
+    },
     {
       key: 'domain',
       label: '业务域',
@@ -989,15 +1071,44 @@ export const METRIC_CREATE_FORM = {
       optionsResolver: () => domainSelectOptionsSync(),
       optionsLoad: () => ensureDomainSelectOptions(),
       default: 'trade',
+      hint: '分类用；从域主数据选择',
     },
     {
       key: 'unit',
       label: '单位',
       type: 'text',
       default: '个',
-      placeholder: '个 / 元 / % / 元/单',
+      placeholder: '个 / 元 / %',
     },
-    // —— 原子（绑定表/字段读资产目录 gov_asset + Grav/OM schema）——
+    {
+      key: 'valueType',
+      label: '值类型',
+      type: 'select',
+      options: [
+        { value: 'number', label: '数值' },
+        { value: 'count', label: '计数' },
+        { value: 'ratio', label: '比率' },
+        { value: 'currency', label: '金额' },
+      ],
+      default: 'number',
+    },
+    {
+      key: 'valuePrecision',
+      label: '小数位',
+      type: 'text',
+      placeholder: '可选，如 2',
+      default: '',
+      hint: '可选 · 输入数字；空=不指定',
+    },
+    {
+      key: 'tags',
+      label: '标签',
+      type: 'text',
+      placeholder: '可选，逗号分隔',
+      wide: true,
+      hint: '可选 · 输入；目录标签筛选用',
+    },
+    // —— 原子 ——
     {
       key: 'table',
       label: '绑定表（湖表）',
@@ -1006,10 +1117,12 @@ export const METRIC_CREATE_FORM = {
       showWhen: { key: 'kind', value: '原子' },
       optionsResolver: () => metricBindTableOptions(),
       optionsLoad: () => ensureMetricBindTables({ force: true }),
+      allowCustom: true,
       placeholder: '搜索中文名 / 表名 / 分层 / FQN…',
       searchKeys: ['label', 'sub', 'name', 'assetCode', 'search', 'fqn', 'engine', 'layerLabel', 'domain'],
       subKey: 'sub',
-      hint: '试跑走 Trino，只能选湖表（Iceberg/Hive）。主行：业务名·表名；副行：引擎·分层·域·FQN。源端 MySQL/PG 等已过滤；无选项表示当前空间尚无湖表资产。',
+      hint:
+        '试跑走 Trino，只能选湖表（Iceberg/Hive）。落点 iceberg.<schema>.<table>（如 ods），存储 s3a://warehouse/。源端已过滤；无选项请先：数据源 → ETL 入湖 → 资产目录登记。',
       wide: true,
     },
     {
@@ -1062,13 +1175,14 @@ export const METRIC_CREATE_FORM = {
       subKey: 'sub',
       default: [],
       wide: true,
+      validate: (v) => validateCompositeGrain(v, getMetricCatalogForForms()),
     },
     // —— 复合 · 仅公式 ——
     {
       key: 'formula',
       label: '计算公式',
       type: 'preset-text',
-      required: true,
+      requiredWhen: { key: 'kind', value: '复合' },
       showWhen: { key: 'kind', value: '复合' },
       presets: [
         {
@@ -1092,13 +1206,18 @@ export const METRIC_CREATE_FORM = {
           value: '{ref0} * {ref1}',
         },
       ],
-      placeholder: '仅写指标 ID 与运算，如 {ref0} / {ref1}',
-      presetHint: '改依赖后会自动刷新 ID；切「自定义…」可手写',
-      validate: (v) => {
+      placeholder: '指标 ID 与运算，可加 WHERE 白名单限定，如 {ref0}/{ref1} WHERE channel_code = APP',
+      presetHint: '改依赖后会自动刷新 ID；切「自定义…」可手写；WHERE 同修饰词 DSL',
+      validate: (v, form) => {
         const parsed = parseMetricFormula(v)
-        return parsed.ok ? '' : parsed.error
+        if (!parsed.ok) return parsed.error
+        const grainErr = validateCompositeGrain(
+          parsed.refs?.length ? parsed.refs : form?.deriveRef,
+          getMetricCatalogForForms(),
+        )
+        return grainErr || ''
       },
-      hint: '复合指标只定义计算公式；粒度/周期继承各依赖指标，此处不配置。',
+      hint: '复合只写公式；粒度取依赖交集。可选 WHERE 用修饰词白名单 DSL。禁止嵌套复合；保存以公式 ID 为准。',
       wide: true,
     },
     // —— 衍生 · 业务限定 + 粒度 + 周期（无计算公式）——
@@ -1107,35 +1226,44 @@ export const METRIC_CREATE_FORM = {
       label: '业务限定',
       type: 'multi-search-select',
       showWhen: { key: 'kind', value: '衍生' },
-      optionsResolver: (form) => metricQualifierOptionsForAtom(form.atomRef),
-      placeholder: '可选业务过滤条件（非时间）；不选=无限定',
-      searchKeys: ['name', 'group', 'value', 'sub'],
+      optionsResolver: (form) => {
+        void metricOntologyRev.value
+        return metricQualifierOptionsForAtom(form.atomRef)
+      },
+      optionsLoad: () => ensureMetricQualifierOptions({ force: true }),
+      placeholder: '从修饰词库多选；不选=无限定',
+      searchKeys: ['name', 'group', 'value', 'sub', 'code'],
       subKey: 'sub',
       default: [],
       wide: true,
-      hint: '业务限定 ≈ WHERE 非时间条件。聚合只在原子指标定义；衍生不写计算公式。',
+      hint: '选择「修饰词库」条目；编译写入本版本快照。空库请先到侧栏「修饰词库」维护。',
     },
     {
       key: 'dim',
       label: '统计粒度',
       type: 'multi-search-select',
       showWhen: { key: 'kind', value: '衍生' },
-      optionsResolver: (form) => metricDimOptionsForAtom(form.atomRef),
-      placeholder: '从依赖原子指标绑定表字段中多选（不选=全表）',
-      searchKeys: ['name', 'group', 'type', 'value'],
+      optionsResolver: (form) => {
+        void metricOntologyRev.value
+        return metricDimOptionsForAtom(form.atomRef)
+      },
+      optionsLoad: () => ensureMetricDimOptions({ force: true }),
+      placeholder: '从维度库多选（不选=全表聚合）',
+      searchKeys: ['name', 'group', 'type', 'value', 'code'],
       subKey: 'sub',
       default: [],
       wide: true,
       validate: (v, form) => {
         const keys = refsToArray(v)
+        if (!keys.length) return ''
         const opts = metricDimOptionsForAtom(form.atomRef)
-        if (!opts.length) return '请先选择依赖原子指标'
+        if (!opts.length) return '请先选依赖原子，或到「维度库」维护'
         const allow = new Set(opts.map((o) => o.value))
         const bad = keys.find((k) => !allow.has(k))
-        if (bad) return `「${bad}」不在依赖原子指标绑定表可粒度字段中`
+        if (bad) return `「${bad}」不在可选粒度中`
         return ''
       },
-      hint: '统计粒度 = GROUP BY。衍生 = 原子 + 业务限定 + 统计粒度 + 统计周期。',
+      hint: '选择「维度库」条目 → 编译为 GROUP BY；试跑/就绪指标/BI 再用 dims 切片。',
     },
     {
       key: 'time',
@@ -1145,15 +1273,16 @@ export const METRIC_CREATE_FORM = {
       showWhen: { key: 'kind', value: '衍生' },
       options: ['近1天', '近7天', '近30天', '自然日', '自然周', '自然月', '累计'],
       default: '近1天',
-      hint: '统计周期 ≈ WHERE 时间范围；与粒度中的 dt（按日切开）不同。',
+      hint: '时间范围（WHERE）；与粒度列 dt 不同',
     },
     {
       key: 'caliber',
-      label: '口径定义',
+      label: '口径说明',
       type: 'textarea',
       required: true,
-      placeholder: '业务统计口径说明（衍生可不写计算式，描述组合语义即可）',
+      placeholder: '业务口径文字说明',
       wide: true,
+      hint: '必填说明；计算逻辑由类型字段决定',
     },
     {
       key: 'owner',
@@ -1178,7 +1307,7 @@ export const METRIC_CREATE_FORM = {
       searchKeys: ['name', 'account', 'label', 'sub'],
       subKey: 'sub',
       default: '',
-      hint: '选项来自系统用户；提交存用户 id',
+      hint: '从系统用户中选择',
     },
   ],
 }

@@ -11,13 +11,14 @@ import { useAiModels } from '@/composables/useAiModels'
 import { useSession } from '@/composables/useSession'
 import { resolveWs } from '@/utils/ws'
 import { useActionLock } from '@/composables/useActionLock'
-import { AI_MODEL_EDIT_FORM, AI_MODEL_FORM } from '@/data/createForms'
+import { AI_MODEL_EDIT_FORM, AI_MODEL_FORM, AI_ROUTE_EDIT_FORM, AI_ROUTE_FORM } from '@/data/createForms'
 import { pageGuideOf } from '@/data/pageGuides'
 import {
   formatUsageCalls,
   modelKindLabel,
   modelStatusTag,
   routeStatusTag,
+  setAiRouteModelSelectOptions,
 } from '@/data/ai'
 
 const router = useRouter()
@@ -30,6 +31,8 @@ const { currentWs } = useSession()
 const createOpen = ref(false)
 const editOpen = ref(false)
 const editingId = ref('')
+const routeOpen = ref(false)
+const editingRouteId = ref('')
 const detailOpen = ref(false)
 const detailModel = ref(null)
 const detailLoading = ref(false)
@@ -71,13 +74,8 @@ const enabledCount = computed(() => models.value.filter((m) => m.enabled).length
 
 function applyApiPayload() {
   models.value = (api.models.value || []).map((m) => ({ ...m }))
-  routeRows.value = (api.routes.value || []).map((r) => ({
-    scene: r.scene,
-    ws: r.ws,
-    primary: r.primary,
-    fallback: r.fallback,
-    status: r.status,
-  }))
+  routeRows.value = (api.routes.value || []).map((r) => ({ ...r }))
+  setAiRouteModelSelectOptions(models.value)
   usageBars.value = api.usageBars.value?.length
     ? api.usageBars.value.map((b) => ({ ...b }))
     : []
@@ -146,8 +144,14 @@ function applyOverviewKpi(ov) {
       value: `${ov.okCount ?? ov.connectivity ?? '—'}`,
       unit: '',
       label: '连通性',
-      trend: ov.warnCount ? `${ov.warnCount} 个告警` : ov.litellmReachable === false ? '网关未通' : '正常',
-      trendUp: true,
+      trend: ov.errorCount
+        ? `${ov.errorCount} 个不可用`
+        : ov.warnCount
+          ? `${ov.warnCount} 个告警`
+          : ov.litellmReachable === false
+            ? '网关未通'
+            : '正常',
+      trendUp: !(ov.errorCount > 0),
     },
     {
       icon: '💬',
@@ -317,6 +321,25 @@ function goChat() {
   router.push('/aiassistant')
 }
 
+function patchModelStatus(id, patch) {
+  if (!id || !patch) return
+  const idx = models.value.findIndex((x) => x.id === id)
+  if (idx >= 0) Object.assign(models.value[idx], patch)
+  if (detailModel.value?.id === id) Object.assign(detailModel.value, patch)
+  const ok = models.value.filter((x) => x.status === 'ok').length
+  const warn = models.value.filter((x) => x.status === 'warn').length
+  const error = models.value.filter((x) => x.status === 'error' || x.status === 'fail').length
+  applyOverviewKpi({
+    ...(api.overview.value || {}),
+    modelCount: models.value.length,
+    enabledCount: enabledCount.value,
+    okCount: ok,
+    warnCount: warn,
+    errorCount: error,
+    connectivity: `${ok}/${Math.max(models.value.length, 1)}`,
+  })
+}
+
 async function testModel(m) {
   if (!m?.id) {
     showToast('模型尚未持久化，无法测试', 'warning')
@@ -326,8 +349,14 @@ async function testModel(m) {
   await runLocked(key, async () => {
     try {
       const r = await api.test(m.id)
-      if (r?.latencyMs != null) m.latency = `${(r.latencyMs / 1000).toFixed(1)}s`
-      if (r?.status) m.status = r.status
+      const status = r?.status || (r?.ok === true ? 'ok' : 'error')
+      const patch = { status }
+      if (r?.latencyMs != null) {
+        patch.latencyMs = r.latencyMs
+        patch.latency = `${(r.latencyMs / 1000).toFixed(1)}s`
+      }
+      Object.assign(m, patch)
+      patchModelStatus(m.id, patch)
       const detail = r?.message || r?.status || ''
       if (r?.ok === true) {
         showToast(`测试成功 · ${m.name}${detail ? ` · ${detail}` : ''} · ${r?.latencyMs ?? '—'}ms`, 'success')
@@ -355,14 +384,97 @@ async function toggleModel(m) {
   })
 }
 
+const routeFormDef = computed(() => (editingRouteId.value ? AI_ROUTE_EDIT_FORM : AI_ROUTE_FORM))
+
+const routeInitial = computed(() => {
+  if (!editingRouteId.value) {
+    const firstEnabled = models.value.find((m) => m.enabled)
+    return {
+      scene: 'manual',
+      wsScope: '*',
+      primaryModelId: firstEnabled?.id || '',
+      fallbackModelId: '',
+      enabled: '1',
+    }
+  }
+  const r = routeRows.value.find((x) => x.id === editingRouteId.value)
+  if (!r) return null
+  return {
+    scene: r.sceneKey || r.scene,
+    wsScope: r.wsScope || (r.ws === '全部' ? '*' : r.ws) || '*',
+    primaryModelId: r.primaryModelId || '',
+    fallbackModelId: r.fallbackModelId || '',
+    enabled: r.enabled === false || r.status === 'off' ? '0' : '1',
+  }
+})
+
 function addPolicy() {
-  showToast('＋ 新增路由策略（P1）', 'info')
+  if (!models.value.some((m) => m.enabled)) {
+    showToast('请先接入并启用至少一个模型', 'warning')
+    return
+  }
+  setAiRouteModelSelectOptions(models.value)
+  editingRouteId.value = ''
+  routeOpen.value = true
+}
+
+function editPolicy(r) {
+  if (!r?.id) {
+    showToast('路由尚未持久化，无法编辑', 'warning')
+    return
+  }
+  setAiRouteModelSelectOptions(models.value)
+  editingRouteId.value = r.id
+  routeOpen.value = true
+}
+
+async function onSaveRoute(payload) {
+  try {
+    const saved = await api.saveRoute({
+      id: editingRouteId.value || undefined,
+      scene: payload.scene,
+      wsScope: payload.wsScope,
+      primaryModelId: payload.primaryModelId,
+      fallbackModelId: payload.fallbackModelId,
+      enabled: payload.enabled,
+    })
+    routeOpen.value = false
+    editingRouteId.value = ''
+    try {
+      await api.loadAll(resolveWs())
+      applyApiPayload()
+    } catch {
+      if (saved) {
+        const idx = routeRows.value.findIndex((x) => x.id === saved.id)
+        if (idx >= 0) routeRows.value[idx] = { ...saved }
+        else routeRows.value.push({ ...saved })
+      }
+    }
+    showToast(
+      saved
+        ? `✅ 路由已保存：${saved.scene} · ${saved.primary}`
+        : '✅ 路由已保存',
+      'success',
+    )
+  } catch (e) {
+    showToast(e?.message || '保存路由失败', 'error')
+  }
 }
 
 watch(
   () => api.models.value,
   (list) => {
-    if (Array.isArray(list)) models.value = list.map((m) => ({ ...m }))
+    if (Array.isArray(list)) {
+      models.value = list.map((m) => ({ ...m }))
+      setAiRouteModelSelectOptions(models.value)
+    }
+  },
+)
+
+watch(
+  () => api.routes.value,
+  (list) => {
+    if (Array.isArray(list)) routeRows.value = list.map((r) => ({ ...r }))
   },
 )
 </script>
@@ -399,6 +511,14 @@ watch(
       :initial-values="editInitial"
       @close="editOpen = false"
       @submit="onEditModel"
+    />
+
+    <CreateFormModal
+      :open="routeOpen"
+      v-bind="routeFormDef"
+      :initial-values="routeInitial"
+      @close="routeOpen = false; editingRouteId = ''"
+      @submit="onSaveRoute"
     />
 
     <AppDrawer
@@ -610,16 +730,20 @@ watch(
                 <th>主模型</th>
                 <th>降级模型</th>
                 <th>状态</th>
+                <th>操作</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="(r, i) in routePaged" :key="`${r.scene}-${r.ws}-${i}`">
+              <tr v-for="(r, i) in routePaged" :key="r.id || `${r.scene}-${r.ws}-${i}`">
                 <td>{{ r.scene }}</td>
                 <td><code>{{ r.ws }}</code></td>
                 <td><b>{{ r.primary }}</b></td>
                 <td>{{ r.fallback }}</td>
                 <td>
                   <span class="tag" :class="routeStatusTag(r.status).cls">{{ routeStatusTag(r.status).text }}</span>
+                </td>
+                <td>
+                  <button type="button" class="btn btn-sm" @click="editPolicy(r)">编辑</button>
                 </td>
               </tr>
             </tbody>

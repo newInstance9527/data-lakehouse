@@ -13,6 +13,7 @@ import {
   commitScript,
   createRelease,
   createScript,
+  deleteScript,
   fetchReleasePrecheck,
   fetchScriptContent,
   fetchScriptKpis,
@@ -22,6 +23,7 @@ import {
   fetchUdfs,
   runScript,
 } from '@/api/compute'
+import { confirmDelete } from '@/composables/useConfirmDelete'
 import { DEV_ENGINES, DEV_ENVS, lintTagClass, statusTagClass } from '@/data/develop'
 
 const route = useRoute()
@@ -35,6 +37,7 @@ const trialing = computed(() => busy('trial'))
 const saving = computed(() => busy('save'))
 const submitting = computed(() => busy('submit'))
 const creating = computed(() => busy('create'))
+const deleting = computed(() => busy('delete'))
 const tree = ref([])
 const kpis = ref([])
 const udfs = ref([])
@@ -262,6 +265,41 @@ async function onNewScript() {
   })
 }
 
+async function onDeleteScript(file, ev) {
+  ev?.stopPropagation?.()
+  const target = file?.id ? file : activeFile.value
+  if (!target?.id) {
+    showToast('请先选择要删除的脚本', 'warning')
+    return
+  }
+  const published = String(target.status || '').toUpperCase() === 'PUBLISHED'
+  const ok = await confirmDelete({
+    title: `删除脚本「${target.name || target.id}」`,
+    message: published
+      ? '将从脚本树移除并提交 Git 删除；已发 Tag / Git 历史仍保留。存在进行中的发布单时无法删除。'
+      : '将从脚本树移除并提交 Git 删除；Git 历史仍可找回。存在进行中的发布单时无法删除。',
+    confirmLabel: '确认删除',
+  })
+  if (!ok) return
+  await runLocked('delete', async () => {
+    try {
+      const resp = await deleteScript(target.id)
+      if (activeId.value === target.id) {
+        activeId.value = ''
+        sqlText.value = ''
+        dirty.value = false
+        runs.value = []
+        trialResult.value = null
+      }
+      await loadBoard()
+      if (resp?.remoteWarning) showToast(resp.remoteWarning, 'warning')
+      showToast(resp?.message || '已删除脚本', 'success')
+    } catch (e) {
+      showToast(e?.message || '删除失败', 'error')
+    }
+  })
+}
+
 function showRunResult(run) {
   trialResult.value = run || null
   const cols = run?.columns || []
@@ -416,17 +454,19 @@ onMounted(async () => {
           <span class="dev-ws">{{ wsLabel }}</span>
         </div>
         <div class="dev-tree">
-          <button
+          <div
             v-for="n in treeNodes"
             :key="n.id"
-            type="button"
             class="dev-tree-node"
             :class="{
               folder: n.type === 'folder',
               active: n.type === 'file' && n.id === activeId,
               file: n.type === 'file',
             }"
+            role="button"
+            tabindex="0"
             @click="n.type === 'folder' ? toggleFolder(n) : selectFile(n)"
+            @keydown.enter.prevent="n.type === 'folder' ? toggleFolder(n) : selectFile(n)"
           >
             <template v-if="n.type === 'folder'">
               <span>{{ n.open ? '▼' : '▶' }}</span>
@@ -435,12 +475,27 @@ onMounted(async () => {
             <template v-else>
               <span class="dev-indent">📄 {{ n.name }}</span>
               <span v-if="n.badge" class="dt-badge">{{ n.badge }}</span>
+              <button
+                type="button"
+                class="dev-tree-del"
+                title="删除脚本"
+                :disabled="deleting"
+                @click="onDeleteScript(n, $event)"
+              >删除</button>
             </template>
-          </button>
+          </div>
         </div>
         <div class="dev-tree-foot">
           <button class="btn btn-sm" style="width: 100%" :disabled="creating" @click="onNewScript">
             {{ creating ? '创建中…' : '＋ 新建 SQL 脚本' }}
+          </button>
+          <button
+            class="btn btn-sm"
+            style="width: 100%; margin-top: 6px; color: var(--danger)"
+            :disabled="!activeFile || deleting"
+            @click="onDeleteScript(activeFile)"
+          >
+            {{ deleting ? '删除中…' : '删除当前脚本' }}
           </button>
         </div>
       </aside>
@@ -667,6 +722,27 @@ onMounted(async () => {
   font-size: 12px;
   max-height: 420px;
   overflow: auto;
+}
+.dev-tree-del {
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  color: var(--text-4);
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 4px;
+  cursor: pointer;
+  border-radius: 4px;
+  opacity: 0;
+  flex-shrink: 0;
+}
+.dev-tree-node:hover .dev-tree-del,
+.dev-tree-node.active .dev-tree-del {
+  opacity: 0.85;
+}
+.dev-tree-del:hover:not(:disabled) {
+  color: var(--danger, #cf1322);
+  opacity: 1;
 }
 .dev-tree-node {
   width: 100%;

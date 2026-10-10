@@ -11,6 +11,7 @@ import {
   fetchAiModels,
   fetchAiRoutes,
   fetchAiUsage,
+  saveAiRoutes,
   testAiModel,
   updateAiModel,
 } from '@/api/ai'
@@ -125,8 +126,8 @@ export function normalizeAiRoute(row) {
     sceneKey: row.scene,
     ws: row.wsScope === '*' ? '全部' : row.wsScope,
     wsScope: row.wsScope,
-    primary: row.primaryName || row.primaryModelId,
-    fallback: row.fallbackName || row.fallbackModelId || '—',
+    primary: row.primaryModelName || row.primaryName || row.primaryModelId,
+    fallback: row.fallbackModelName || row.fallbackName || row.fallbackModelId || '—',
     primaryModelId: row.primaryModelId,
     fallbackModelId: row.fallbackModelId,
     status: row.enabled === false || row.enabled === 0 ? 'off' : row.status || 'ok',
@@ -297,6 +298,43 @@ export function useAiModels() {
     }
   }
 
+  /**
+   * 新增或更新一条路由策略（后端 PUT 接受数组，此处单条封装）。
+   * @param {{ id?: string, scene: string, wsScope?: string, primaryModelId: string, fallbackModelId?: string, enabled?: boolean|string|number }} payload
+   */
+  async function saveRoute(payload) {
+    if (!payload?.scene) throw new Error('场景不能为空')
+    if (!payload?.primaryModelId) throw new Error('主模型不能为空')
+    const enabled =
+      payload.enabled === undefined || payload.enabled === null
+        ? true
+        : payload.enabled === true ||
+          payload.enabled === 1 ||
+          payload.enabled === '1'
+    const body = [
+      {
+        id: payload.id || undefined,
+        scene: String(payload.scene).trim(),
+        wsScope: String(payload.wsScope || '*').trim() || '*',
+        primaryModelId: String(payload.primaryModelId).trim(),
+        fallbackModelId: payload.fallbackModelId
+          ? String(payload.fallbackModelId).trim()
+          : null,
+        enabled,
+      },
+    ]
+    const saved = await saveAiRoutes(body)
+    const list = Array.isArray(saved) ? saved : saved ? [saved] : []
+    const normalized = list.map(normalizeAiRoute).filter(Boolean)
+    // 合并进本地 routes：同 id 覆盖，否则追加
+    for (const n of normalized) {
+      const idx = routes.value.findIndex((x) => x.id === n.id)
+      if (idx >= 0) routes.value[idx] = n
+      else routes.value.push(n)
+    }
+    return normalized[0] || null
+  }
+
   return {
     models: computed(() => {
       ensureLoaded()
@@ -323,5 +361,6 @@ export function useAiModels() {
     getDetail,
     toggle,
     test,
+    saveRoute,
   }
 }

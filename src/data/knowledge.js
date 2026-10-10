@@ -7,6 +7,7 @@ export const KB_FORM_CATS = [
   { value: '规范', cat: 'manual', icon: '📘' },
   { value: '最佳实践', cat: 'practice', icon: '💡' },
   { value: '案例', cat: 'practice', icon: '💡' },
+  { value: '项目纪要', cat: 'minutes', icon: '📝' },
 ]
 
 export const KB_CHUNK_STRATEGIES = [
@@ -40,6 +41,7 @@ export const KB_CATS = [
   { id: 'practice', name: '💡 最佳实践' },
   { id: 'faq', name: '❓ FAQ' },
   { id: 'manual', name: '📘 平台手册' },
+  { id: 'minutes', name: '📝 项目纪要' },
 ]
 
 export function estimateChunkCount(charCount, chunkSize = 500, overlap = 50) {

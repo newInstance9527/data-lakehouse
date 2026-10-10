@@ -124,6 +124,16 @@ export function fetchQueryHistory(params = {}) {
   })
 }
 
+/** 本人历史软删（从列表移除） */
+export function deleteQueryHistory(id) {
+  return http.post(`${Q}/history/${encodeURIComponent(id)}/delete`, {})
+}
+
+/** 清空本人在当前 ws 下的可见历史（软删） */
+export function clearQueryHistory(ws) {
+  return http.post(`${Q}/history/clear`, { ws: resolveWs(ws) })
+}
+
 export function fetchSchemaTree(ws) {
   return http.get(`${Q}/schema-tree`, { ws: resolveWs(ws) })
 }

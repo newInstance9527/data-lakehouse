@@ -59,6 +59,20 @@ export function isMetricQueryableLakeAsset(vo) {
 export const METRIC_BIND_LAKE_HINT =
   '指标经 Trino 查湖表，只能选 Iceberg/Hive 等湖上资产；源端 MySQL/PG 等不可直连。请先入湖并在资产目录登记湖表。'
 
+/** 落点说明（横幅 / 表单共用） */
+export const METRIC_LAKE_LANDING_HINT =
+  '湖表落点：iceberg.<schema>.<table>（常用 schema 如 ods），存储 s3a://warehouse/。'
+
+/** 入湖前置跳转 */
+export const METRIC_LAKE_PREP_LINKS = [
+  { to: '/datasource', label: '去登记数据源' },
+  { to: '/integration', label: '去配置入湖作业' },
+  { to: '/catalog', label: '去资产目录' },
+]
+
+/** 最近一次拉取绑表时过滤掉的源端资产数（供空态提示） */
+export const metricBindSkippedSource = ref(0)
+
 function bump() {
   metricBindRev.value += 1
 }
@@ -68,6 +82,7 @@ export function invalidateMetricBindTables() {
   tableOptions.value = []
   fieldsByTable.value = {}
   metaByTable.value = {}
+  metricBindSkippedSource.value = 0
   cachedWs = ''
   tablesPromise = null
   fieldsPromises.clear()
@@ -305,6 +320,7 @@ export async function ensureMetricBindTables(filters = {}) {
         })
       metaByTable.value = meta
       cachedWs = ws
+      metricBindSkippedSource.value = skippedSource
       if (!tableOptions.value.length && skippedSource > 0) {
         console.info(
           `[metricBind] 空间 ${ws} 有 ${skippedSource} 个源端表资产，已过滤；指标仅可选湖表`,

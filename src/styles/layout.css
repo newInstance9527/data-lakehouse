@@ -97,6 +97,31 @@
   background: var(--primary);
   border-radius: 0 3px 3px 0;
 }
+.nav-item.pending {
+  background: var(--sidebar-hover);
+  color: var(--sidebar-logo);
+  opacity: 0.92;
+}
+.nav-item.pending::after {
+  content: '';
+  width: 6px;
+  height: 6px;
+  margin-left: auto;
+  border-radius: 50%;
+  background: var(--primary);
+  animation: route-nav-pulse 0.9s ease-in-out infinite;
+}
+@keyframes route-nav-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.85);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
 .nav-icon {
   width: 18px;
   height: 18px;
@@ -141,6 +166,34 @@
   display: flex;
   flex-direction: column;
   min-width: 0;
+  position: relative;
+}
+
+.route-progress {
+  position: absolute;
+  top: var(--header-h);
+  left: 0;
+  right: 0;
+  height: 2px;
+  z-index: 40;
+  overflow: hidden;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+}
+.route-progress-bar {
+  height: 100%;
+  width: 40%;
+  background: var(--primary);
+  border-radius: 0 2px 2px 0;
+  animation: route-progress-slide 1.1s ease-in-out infinite;
+}
+@keyframes route-progress-slide {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(320%);
+  }
 }
 
 .header {
@@ -518,6 +571,49 @@
   overflow-y: auto;
   padding: 20px 24px 40px;
   background: var(--bg-0);
+  position: relative;
+}
+.content--navigating {
+  cursor: progress;
+}
+.content--navigating > :not(.route-loading-hint) {
+  opacity: 0.55;
+  transition: opacity 0.15s ease;
+  pointer-events: none;
+}
+.route-loading-hint {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin: 0;
+  padding: 10px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 10%, var(--bg-1));
+  border: 1px solid color-mix(in srgb, var(--primary) 22%, transparent);
+  box-shadow: 0 4px 16px color-mix(in srgb, var(--text-1) 8%, transparent);
+  pointer-events: none;
+}
+.route-loading-hint::before {
+  content: '';
+  width: 10px;
+  height: 10px;
+  border: 2px solid color-mix(in srgb, var(--primary) 30%, transparent);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: route-spin 0.7s linear infinite;
+}
+@keyframes route-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 html[data-theme='soft'] .content,

@@ -1,6 +1,7 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
 import { getToken } from '@/api/token'
 import { useSession } from '@/composables/useSession'
+import { installRouteLoading } from '@/composables/useRouteLoading'
 
 const routes = [
   {
@@ -78,6 +79,18 @@ const routes = [
     meta: { id: 'metrics-catalog' },
   },
   {
+    path: '/metrics/qualifiers',
+    name: 'metric-qualifiers',
+    component: () => import('@/views/MetricQualifiersView.vue'),
+    meta: { id: 'metric-qualifiers' },
+  },
+  {
+    path: '/metrics/dims',
+    name: 'metric-dims',
+    component: () => import('@/views/MetricDimsView.vue'),
+    meta: { id: 'metric-dims' },
+  },
+  {
     path: '/metrics/define/:id?',
     redirect: (to) => ({
       path: '/metrics/catalog',
@@ -86,6 +99,26 @@ const routes = [
         : { create: '1' },
     }),
   },
+  {
+    path: '/bi',
+    name: 'bi',
+    component: () => import('@/views/BiView.vue'),
+    meta: { id: 'bi' },
+  },
+  {
+    path: '/bi/studio',
+    name: 'bi-studio',
+    component: () => import('@/views/BiStudioView.vue'),
+    meta: { id: 'bi-studio' },
+  },
+  // 旧路径兼容 → 看板 / 制作台
+  { path: '/bi/filter', redirect: (to) => ({ path: '/bi/studio', query: to.query }) },
+  { path: '/bi/setup', redirect: (to) => ({ path: '/bi/studio', query: to.query }) },
+  { path: '/bi/publish', redirect: (to) => ({ path: '/bi/studio', query: to.query }) },
+  { path: '/bi/connect', redirect: (to) => ({ path: '/bi/studio', query: to.query }) },
+  { path: '/bi/datasets', redirect: (to) => ({ path: '/bi/studio', query: to.query }) },
+  { path: '/bi/charts', redirect: (to) => ({ path: '/bi/studio', query: to.query }) },
+  { path: '/bi/share', redirect: (to) => ({ path: '/bi/studio', query: to.query }) },
   { path: '/export', name: 'export', component: () => import('@/views/ExportView.vue'), meta: { id: 'export' } },
   { path: '/apply', name: 'apply', component: () => import('@/views/ApplyView.vue'), meta: { id: 'apply' } },
   { path: '/ops', name: 'ops', component: () => import('@/views/OpsView.vue'), meta: { id: 'ops' } },
@@ -120,6 +153,8 @@ const router = createRouter({
   history: createWebHashHistory(),
   routes,
 })
+
+installRouteLoading(router)
 
 let sessionBootstrapped = false
 

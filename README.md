@@ -46,6 +46,24 @@ npm run preview
 
 登录走 Snowy B 端：`POST /lakehouse/auth/b/doLogin`（密码 SM2 加密）；Token 存 `localStorage`（`LH_TOKEN`），请求头字段名 `token`。
 
+### Cloudflare 公网映射（开发预览）
+
+用 Cloudflare Quick Tunnel 把本机门户临时映射到 `*.trycloudflare.com`（无需自有域名）。API 走 Vite 代理 `/lakehouse` → `8080`，公网只需打一条隧道到门户。
+
+```bash
+# 终端 1：后端 lakehouse-gov（8080）
+# 终端 2：门户
+npm run dev
+
+# 终端 3：隧道（需已安装 cloudflared）
+npm run tunnel
+```
+
+`cloudflared` 安装（Windows）：`winget install --id Cloudflare.cloudflared`  
+启动后终端会打印 HTTPS 公网地址；进程退出后地址失效。生产请用 Named Tunnel + 自有域名，勿长期用 Quick Tunnel。
+
+`vite.config.js` 已设 `allowedHosts: true`，可接受 trycloudflare Host。
+
 ### 部署
 
 构建产物为静态站点（Hash 路由，无需服务端 rewrite）。Nginx / OSS 托管即可；网关将 `/lakehouse` 反代到 Snowy。

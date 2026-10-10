@@ -8,8 +8,19 @@ import { useMetrics } from '@/composables/useMetrics'
 import { usePager } from '@/composables/usePager'
 import { pageGuideOf } from '@/data/pageGuides'
 import { METRIC_LIFECYCLE_STAGES } from '@/data/metrics'
+import {
+  METRIC_LAKE_LANDING_HINT,
+  METRIC_LAKE_PREP_LINKS,
+  ensureMetricBindTables,
+  metricBindTableOptions,
+  metricBindRev,
+} from '@/data/metricBindAssets'
 import { useSession } from '@/composables/useSession'
 import { pageMyTickets } from '@/api/apply'
+import { fetchDatasourcePage } from '@/api/datasource'
+import { fetchEtlDags } from '@/api/etl'
+import { queryMetricBoard } from '@/api/metric'
+import MetricDimFilterBar from '@/components/metrics/MetricDimFilterBar.vue'
 import '@/styles/metrics-page.css'
 
 const route = useRoute()
@@ -20,6 +31,76 @@ const guide = pageGuideOf('metrics')
 
 const { catalog, liveKpis, loading, lastError, loadAll } = useMetrics()
 const publishTickets = ref({})
+const prepOpen = ref(true)
+const prep = ref({
+  dsOk: false,
+  etlOk: false,
+  lakeOk: false,
+  loading: false,
+})
+
+const prepSteps = computed(() => {
+  void metricBindRev.value
+  const lakeN = metricBindTableOptions().length
+  return [
+    {
+      id: 'ds',
+      label: '登记入湖数据源',
+      ok: prep.value.dsOk,
+      to: '/datasource',
+      tip: '用途选「数据入湖」，并同步表清单',
+    },
+    {
+      id: 'etl',
+      label: '配置 Iceberg 入湖作业',
+      ok: prep.value.etlOk,
+      to: '/integration',
+      tip: 'sink_iceberg → iceberg.<schema>.<table>',
+    },
+    {
+      id: 'lake',
+      label: '资产目录有可绑湖表',
+      ok: prep.value.lakeOk || lakeN > 0,
+      to: '/catalog',
+      tip: lakeN ? `当前可绑 ${lakeN} 张` : '登记 Iceberg/Hive 湖表',
+    },
+    {
+      id: 'metric',
+      label: '新建原子指标',
+      ok: catalog.value.some((r) => r.type === '原子' || r.kind === '原子'),
+      to: '/metrics/catalog?create=1',
+      tip: '绑定湖表字段并保存草稿',
+    },
+  ]
+})
+
+const prepReady = computed(() => prepSteps.value.every((s) => s.ok))
+
+async function refreshPrep() {
+  prep.value.loading = true
+  const ws = currentWs.value || 'default'
+  try {
+    const [dsPage, etlPage] = await Promise.all([
+      fetchDatasourcePage({ ws }, { current: 1, size: 50 }).catch(() => null),
+      fetchEtlDags({ ws }, { current: 1, size: 50 }).catch(() => null),
+    ])
+    const dsRows = dsPage?.records || dsPage?.rows || []
+    prep.value.dsOk = dsRows.length > 0
+    const etlRows = etlPage?.records || etlPage?.rows || []
+    prep.value.etlOk = etlRows.some((d) => {
+      const nodes = d.nodes || d.nodeList || []
+      if (Array.isArray(nodes) && nodes.some((n) => String(n.nodeType || n.type || '').includes('iceberg'))) {
+        return true
+      }
+      // 弱探测：有已发布/生产任务也算一步
+      return ['prod', 'published', 'online'].includes(String(d.status || '').toLowerCase())
+    }) || etlRows.length > 0
+    await ensureMetricBindTables({ force: true }).catch(() => {})
+    prep.value.lakeOk = metricBindTableOptions().length > 0
+  } finally {
+    prep.value.loading = false
+  }
+}
 
 const pendingPublish = computed(() =>
   catalog.value.filter((r) => {
@@ -79,8 +160,11 @@ async function refreshPublishTickets() {
 }
 
 async function reload() {
-  await loadAll({ ws: currentWs.value || 'default', scope: 'workspace' })
-  await refreshPublishTickets()
+  await Promise.all([
+    loadAll({ ws: currentWs.value || 'default', scope: 'workspace' }),
+    refreshPrep(),
+    refreshPublishTickets(),
+  ])
 }
 
 onMounted(async () => {
@@ -126,6 +210,61 @@ function goApplyTicket(row) {
     query: hit?.ticketNo ? { tab: 'metric', ticket: hit.ticketNo } : { tab: 'metric' },
   })
 }
+
+const boardFilters = ref({ dims: {} })
+
+function goBiWithDims(metricCode) {
+  const dims = boardFilters.value?.dims || {}
+  const code =
+    metricCode ||
+    (boardCards.value || []).find((c) => c.ready && c.metricCode)?.metricCode ||
+    (boardCards.value || [])[0]?.metricCode ||
+    ''
+  if (!code && !(dims && typeof dims === 'object' && Object.keys(dims).length)) {
+    router.push({ path: '/bi' })
+    return
+  }
+  const q = { openDataset: '1' }
+  if (code) q.metricCode = code
+  if (dims && typeof dims === 'object' && Object.keys(dims).length) {
+    q.dims = JSON.stringify(dims)
+  }
+  router.push({ path: '/bi/studio', query: q })
+}
+const boardPrefer = ref('trino')
+const boardBusy = ref(false)
+const boardCards = ref([])
+const boardMeta = ref({ readyCount: 0, blockedCount: 0, okCount: 0, queriedCount: 0 })
+
+async function refreshBoardValues() {
+  boardBusy.value = true
+  try {
+    const res = await queryMetricBoard({
+      ws: currentWs.value || 'default',
+      prefer: boardPrefer.value || 'trino',
+      filters: boardFilters.value || { dims: {} },
+      maxRows: 20,
+    })
+    boardCards.value = Array.isArray(res?.cards) ? res.cards : []
+    boardMeta.value = {
+      readyCount: res?.readyCount ?? 0,
+      blockedCount: res?.blockedCount ?? 0,
+      okCount: res?.okCount ?? 0,
+      queriedCount: res?.queriedCount ?? 0,
+    }
+  } catch (e) {
+    boardCards.value = []
+    showToast(e?.message || '看板查询失败', 'warning')
+  } finally {
+    boardBusy.value = false
+  }
+}
+
+function formatBoardValue(v) {
+  if (v == null || v === '') return '—'
+  if (typeof v === 'number') return Number.isInteger(v) ? String(v) : v.toFixed(4)
+  return String(v)
+}
 </script>
 
 <template>
@@ -141,9 +280,51 @@ function goApplyTicket(row) {
       <button type="button" class="btn btn-sm btn-primary" @click="goCreate()">＋ 新建指标</button>
     </PageHeader>
 
-    <p class="tip met-banner">
-      原子指标绑定<strong>湖表</strong>（Iceberg/Hive），试跑/查询经 <strong>Trino</strong> 执行。请先入湖并在资产目录登记湖表后再建指标。
-    </p>
+    <div class="met-banner-cta">
+      <span>
+        原子指标绑定<strong>湖表</strong>（Iceberg/Hive），试跑/查询经 <strong>Trino</strong> 执行。
+        {{ METRIC_LAKE_LANDING_HINT }}
+        源端 MySQL 等不可直连；请先入湖并登记湖表后再建指标。
+      </span>
+      <span class="met-cta-links">
+        <router-link v-for="l in METRIC_LAKE_PREP_LINKS" :key="l.to" :to="l.to">{{ l.label }}</router-link>
+      </span>
+    </div>
+
+    <div class="card met-flow" style="margin-bottom: 16px">
+      <div class="card-header">
+        <div class="card-title">
+          入湖建指标准备
+          <span class="tip">· {{ prepReady ? '已就绪，可新建原子指标' : '按步骤完成前置' }}</span>
+        </div>
+        <button type="button" class="btn btn-sm" style="margin-left: auto" @click="prepOpen = !prepOpen">
+          {{ prepOpen ? '收起' : '展开' }}
+        </button>
+        <button type="button" class="btn btn-sm" :disabled="prep.loading" @click="refreshPrep">
+          {{ prep.loading ? '检测中…' : '重新检测' }}
+        </button>
+      </div>
+      <div v-if="prepOpen" class="card-body">
+        <div class="met-stages" style="flex-direction: column; align-items: stretch; gap: 10px">
+          <div
+            v-for="(s, i) in prepSteps"
+            :key="s.id"
+            style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px"
+          >
+            <span class="met-stage-idx" :style="s.ok ? { background: 'var(--success-light)', color: 'var(--success)' } : undefined">
+              {{ s.ok ? '✓' : i + 1 }}
+            </span>
+            <strong>{{ s.label }}</strong>
+            <span class="tip">{{ s.tip }}</span>
+            <router-link class="btn-link" style="margin-left: auto" :to="s.to">去完成 →</router-link>
+          </div>
+        </div>
+        <div v-if="prepReady" style="margin-top: 12px">
+          <button type="button" class="btn btn-sm btn-primary" @click="goCreate()">＋ 新建原子指标</button>
+        </div>
+      </div>
+    </div>
+
     <p v-if="lastError && !catalog.length" class="met-banner warn">
       加载失败：{{ lastError.message || lastError }}
     </p>
@@ -157,6 +338,88 @@ function goApplyTicket(row) {
           {{ k.value }}<span class="kpi-unit">{{ k.unit }}</span>
         </div>
         <div v-if="k.trend" class="kpi-trend" :class="k.trendUp ? 'up' : 'down'">{{ k.trend }}</div>
+      </div>
+    </div>
+
+    <div class="card met-flow" style="margin-bottom: 16px">
+      <div class="card-header">
+        <div class="card-title">
+          就绪指标
+          <span class="tip">
+            · filters.dims ≡ params.dims · 就绪 {{ boardMeta.readyCount }} · 阻断
+            {{ boardMeta.blockedCount }}
+            <template v-if="boardMeta.queriedCount">
+              · 已查 {{ boardMeta.okCount }}/{{ boardMeta.queriedCount }}
+            </template>
+          </span>
+        </div>
+        <label class="tip" style="margin-left: auto; display: flex; align-items: center; gap: 6px">
+          路由
+          <select v-model="boardPrefer" class="input input-sm">
+            <option value="trino">trino</option>
+            <option value="hot">hot</option>
+          </select>
+        </label>
+        <button
+          type="button"
+          class="btn btn-sm btn-primary"
+          :disabled="boardBusy"
+          @click="refreshBoardValues"
+        >
+          {{ boardBusy ? '查询中…' : '按维刷新数值' }}
+        </button>
+      </div>
+      <div class="card-body">
+        <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start">
+          <div style="flex: 1; min-width: 240px">
+            <MetricDimFilterBar v-model="boardFilters" :ws="currentWs || 'default'" />
+          </div>
+          <button type="button" class="btn btn-sm" title="携带当前维筛选打开 BI" @click="goBiWithDims">
+            在 BI 打开
+          </button>
+        </div>
+        <p class="tip" style="margin: 0 0 10px">
+          仅对账就绪（ready）的已启用指标会执行查询；未选成员 = 不切片（全量）。
+        </p>
+        <div v-if="!boardCards.length" class="tip">
+          点击「按维刷新数值」加载看板卡片。无就绪卡时请先物化并对账（见可靠性中心）。
+        </div>
+        <div v-else class="kpi-grid met-kpi" style="margin: 0">
+          <div
+            v-for="c in boardCards"
+            :key="c.metricCode"
+            class="kpi-card"
+            :class="c.ready ? 'blue' : 'orange'"
+          >
+            <div class="kpi-label">
+              <button type="button" class="btn-link" @click="goCatalog({ q: c.metricCode })">
+                {{ c.metricCode }}
+              </button>
+              · {{ c.name || '' }}
+            </div>
+            <div class="kpi-value">
+              {{ c.ready ? formatBoardValue(c.value) : '—' }}
+            </div>
+            <div class="kpi-trend" :class="c.ready && c.executed ? 'up' : 'warn'">
+              <template v-if="!c.ready">{{ c.statusLabel || '未就绪' }} · {{ c.reason || '' }}</template>
+              <template v-else-if="c.blocked">阻断 · {{ c.message || '' }}</template>
+              <template v-else-if="c.executed">
+                {{ c.rowCount ?? 0 }} 行 · {{ c.durMs ?? '—' }} ms
+              </template>
+              <template v-else>{{ c.message || c.statusLabel || '未执行' }}</template>
+            </div>
+            <button
+              v-if="c.ready"
+              type="button"
+              class="btn btn-sm"
+              style="margin-top: 8px"
+              title="携带当前维筛选打开 BI"
+              @click="goBiWithDims(c.metricCode)"
+            >
+              在 BI 打开
+            </button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -227,7 +490,7 @@ function goApplyTicket(row) {
           </tbody>
         </table>
         <p v-else class="met-pending-empty tip">
-          暂无待发布项。在「指标定义」保存草稿后，于目录中点「申请发布」。
+          暂无待发布项。在「指标目录」保存草稿后，于目录中点「申请发布」。
         </p>
         <ListPager
           v-model:page="pendingPage"

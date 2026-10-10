@@ -1,10 +1,12 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
 import ListPager from '@/components/common/ListPager.vue'
+import DeferredRefreshBar from '@/components/common/DeferredRefreshBar.vue'
 import { useToast } from '@/composables/useToast'
 import { usePager } from '@/composables/usePager'
+import { useDeferredRefresh } from '@/composables/useDeferredRefresh'
 import { pageGuideOf } from '@/data/pageGuides'
 import { opsStatusIconClass } from '@/data/ops'
 import {
@@ -327,13 +329,55 @@ watch(
   },
 )
 
+const {
+  hasPending: hasOpsPending,
+  offer: offerOpsSnap,
+  applyPending: applyOpsPending,
+  discardPending: discardOpsPending,
+  reset: resetOpsDefer,
+} = useDeferredRefresh()
+let opsSoftTimer = null
+
+async function softCheckOps() {
+  try {
+    const ws = currentWs.value || 'default'
+    const tasksPage = await fetchObsTasks({ group: 'all', ws })
+    const records = tasksPage?.records || []
+    const snap = records.map((t) => ({
+      id: t.id,
+      status: t.status,
+      lastStatus: t.lastStatus,
+    }))
+    offerOpsSnap(snap, { force: false })
+  } catch {
+    /* soft */
+  }
+}
+
+async function confirmOpsRefresh() {
+  applyOpsPending()
+  await loadOpsBoard()
+  await softCheckOps()
+  showToast('运维板已更新', 'success')
+}
+
 watch(currentWs, () => {
+  resetOpsDefer()
   loadOpsBoard()
+  softCheckOps().catch(() => {})
 })
 
 onMounted(() => {
   loadFocusRun()
   loadOpsBoard()
+  softCheckOps().catch(() => {})
+  opsSoftTimer = setInterval(() => softCheckOps().catch(() => {}), 60_000)
+})
+onUnmounted(() => {
+  if (opsSoftTimer) {
+    clearInterval(opsSoftTimer)
+    opsSoftTimer = null
+  }
 })
 
 async function startSupplement() {
@@ -446,6 +490,14 @@ function metaToneStyle(tone) {
       </button>
       <button type="button" class="btn btn-sm btn-primary" @click="startSupplement">🔧 发起补数</button>
     </PageHeader>
+
+    <DeferredRefreshBar
+      :show="hasOpsPending"
+      message="任务状态有变化。确认后更新运维板，避免打断当前补数或排查。"
+      apply-label="更新运维板"
+      @apply="confirmOpsRefresh"
+      @dismiss="discardOpsPending"
+    />
 
     <p class="tip ops-banner">作业列表来自 ETL / 对账 API；无作业时为空。</p>
     <div v-if="loadError" class="banner-soft">{{ loadError }}</div>

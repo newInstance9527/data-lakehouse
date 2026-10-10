@@ -110,8 +110,11 @@ export function maskApiKey(key) {
 }
 
 export function modelStatusTag(m) {
-  if (m.status === 'ok') return { text: '● 在线', cls: 'tag-green' }
-  if (m.status === 'warn') return { text: '⚠ Key将过期', cls: 'tag-orange' }
+  const st = String(m?.status || '').toLowerCase()
+  if (st === 'ok') return { text: '● 在线', cls: 'tag-green' }
+  if (st === 'warn') return { text: '⚠ Key将过期', cls: 'tag-orange' }
+  if (st === 'error' || st === 'fail') return { text: '● 不可用', cls: 'tag-red' }
+  if (m?.enabled && st && st !== 'off') return { text: `● ${st}`, cls: 'tag-orange' }
   return { text: '○ 未启用', cls: 'tag-gray' }
 }
 
@@ -119,4 +122,40 @@ export function routeStatusTag(status) {
   return status === 'ok'
     ? { text: '启用', cls: 'tag-green' }
     : { text: '停用', cls: 'tag-gray' }
+}
+
+/** 路由场景（与 gov_ai_route.scene / IntentRouter.modelScene 对齐） */
+export const AI_ROUTE_SCENE_OPTIONS = [
+  { value: 'manual', label: '使用手册问答 / 助手默认' },
+  { value: 'sql', label: 'SQL 生成/优化' },
+  { value: 'script', label: '脚本生成' },
+  { value: 'diagnose', label: '故障诊断' },
+  { value: 'sandbox', label: '沙箱实验' },
+  { value: 'embed', label: 'Embedding' },
+]
+
+/** 路由表单用：模型下拉（由模型页 setAiRouteModelSelectOptions 注入） */
+let _routeModelSelectOpts = []
+
+export function setAiRouteModelSelectOptions(models) {
+  _routeModelSelectOpts = (Array.isArray(models) ? models : [])
+    .filter((m) => m?.id)
+    .map((m) => {
+      const on = !(m.enabled === false || m.enabled === 0)
+      const name = m.name || m.modelName || m.id
+      const vendor = m.vendor ? ` · ${m.vendor}` : ''
+      return {
+        value: m.id,
+        label: `${name}${on ? '' : '（已停用）'}${vendor}`,
+        enabled: on,
+      }
+    })
+}
+
+export function getAiRouteModelSelectOptions({ enabledOnly = false, includeEmpty = false } = {}) {
+  let list = _routeModelSelectOpts
+  if (enabledOnly) list = list.filter((o) => o.enabled)
+  const opts = list.map(({ value, label }) => ({ value, label }))
+  if (includeEmpty) return [{ value: '', label: '（无）' }, ...opts]
+  return opts
 }

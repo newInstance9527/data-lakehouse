@@ -687,7 +687,7 @@ async function publish() {
               <div><span>入参 / 出参</span><code>{{ form.params.length }} 入 · {{ form.responses.length }} 出 · {{ form.responseFormat }}/{{ form.responseShape }}</code></div>
               <div><span>试跑</span><code>{{ form.tested ? `通过 ${form.testResult?.latencyMs}ms` : '未测试' }}</code></div>
             </div>
-            <p class="field-hint">发布写入 SQLREST Gateway 路由；prod 环境会同步生成申请单待 API Owner 审批。本平台不做 APISIX。</p>
+            <p class="field-hint">发布写入 SQLREST Gateway 路由；prod 环境会同步生成申请单待 API Owner 审批。数据服务边缘不含 APISIX。</p>
           </div>
         </div>
 
