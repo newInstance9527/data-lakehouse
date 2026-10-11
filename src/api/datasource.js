@@ -144,68 +144,66 @@ export function batchSyncTables(ids) {
   )
 }
 
+/** 顶层元数据：不进 Vault conn */
+const SUBMIT_META_KEYS = new Set([
+  'id',
+  'name',
+  'type',
+  'typeCode',
+  'purpose',
+  'owner',
+  'ownerName',
+  'desc',
+  'lag',
+  'asset',
+  'ws',
+  'conn',
+  'status',
+  'health',
+  'ver',
+  'created',
+  'tables',
+  'syncState',
+  'lastError',
+  'icon',
+  'bg',
+  'color',
+])
+
 /**
- * 前端表单 → 后端提交体（字段已对齐，补 conn 便于类型专属字段落库）
+ * 前端表单 → 后端提交体。
+ * 类型专属字段全部写入 conn（不再白名单遗漏 security/ssl/authSource 等）。
  */
 export function toSubmitBody(form) {
-  const typeFields = [
-    'host',
-    'port',
-    'database',
-    'user',
-    'password',
-    'extra',
-    'schema',
-    'access',
-    'bootstrap',
-    'bootstrapServers',
-    'topics',
-    'queues',
-    'endpoint',
-    'nameNode',
-    'serviceUrl',
-    'zkQuorum',
-    'baseURL',
-    'httpUrl',
-    'bucket',
-    'accessKey',
-    'secretKey',
-    'path',
-    'token',
-    'authType',
-    'openapiSpec',
-    'sid',
-    'namespace',
-    'vhost',
-    'tenant',
-    'db',
-    'warehouse',
-    'feNodes',
-    'pollCycle',
-    'jdbcUrl',
-  ]
-  const conn = { ...(form.conn || {}) }
-  typeFields.forEach((k) => {
-    if (form[k] != null && form[k] !== '') conn[k] = form[k]
-  })
+  const src = form && typeof form === 'object' ? form : {}
+  const conn = {
+    ...(src.conn && typeof src.conn === 'object' ? src.conn : {}),
+  }
+  for (const [k, v] of Object.entries(src)) {
+    if (SUBMIT_META_KEYS.has(k)) continue
+    if (v == null || v === '') continue
+    if (typeof v === 'object' && !Array.isArray(v)) continue
+    conn[k] = v
+  }
+  if (conn.password === '******') delete conn.password
   return {
-    id: form.id,
-    name: form.name,
-    type: form.type,
-    purpose: form.purpose,
-    owner: form.owner,
-    desc: form.desc,
-    host: form.host,
-    port: form.port != null ? String(form.port) : undefined,
-    database: form.database,
-    user: form.user,
-    password: form.password === '******' ? undefined : form.password,
-    extra: form.extra,
-    schema: form.schema,
-    lag: form.lag,
-    access: form.access,
-    asset: form.asset,
+    id: src.id,
+    name: src.name,
+    type: src.type,
+    purpose: src.purpose,
+    owner: src.owner,
+    desc: src.desc,
+    host: src.host ?? conn.host,
+    port: src.port != null && src.port !== '' ? String(src.port) : conn.port != null ? String(conn.port) : undefined,
+    database: src.database ?? conn.database,
+    user: src.user ?? conn.user,
+    password: src.password === '******' ? undefined : src.password,
+    extra: src.extra ?? conn.extra,
+    schema: src.schema ?? conn.schema,
+    lag: src.lag,
+    access: src.access ?? conn.access,
+    asset: src.asset,
     conn,
-    ws: resolveWs(form.ws),
+    ws: resolveWs(src.ws),
   }
 }

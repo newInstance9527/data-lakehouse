@@ -5,6 +5,7 @@
  */
 import { computed, readonly, ref } from 'vue'
 import { clearToken, getLoginUser, getToken, loginMenu, doLogout as apiLogout } from '@/api/auth'
+import { stopInboxPush } from '@/composables/useInbox'
 import { http } from '@/api/http'
 import { fetchWsCurrent } from '@/api/workspace'
 import { fetchPrincipalMe } from '@/api/security'
@@ -417,6 +418,7 @@ export function useSession() {
     } catch {
       clearToken()
     }
+    stopInboxPush()
     currentUser.value = null
     menuNavIds.value = new Set()
     grantCache.value = {}

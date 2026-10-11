@@ -4,11 +4,12 @@ import SchemaListField from '@/components/datasource/SchemaListField.vue'
 import DsTypeIcon from '@/components/datasource/DsTypeIcon.vue'
 import SearchSelect from '@/components/common/SearchSelect.vue'
 import { DS_COMMON_FIELDS, dsTypeFields, dsTypeMeta } from '@/data/dsForm'
-import { groupTypesByCategory, parseHttpBaseUrl } from '@/data/datasources'
+import { DS_REGISTER_TYPE_OPTIONS } from '@/data/dsRegisterTypes'
+import { groupTypesByCategory, parseHttpBaseUrl, sortTypesByCategory } from '@/data/datasources'
 import { isInventoryField, tablesToSchema } from '@/utils/schemaList'
 import { ensureWorkspaceUserOptions, workspaceUserById, workspaceUserOptions } from '@/data/workspaceUsers'
 import { useToast } from '@/composables/useToast'
-import { discoverTables, testDatasource } from '@/api/datasource'
+import { discoverTables, fetchTypeOptions, testDatasource } from '@/api/datasource'
 import { useSession } from '@/composables/useSession'
 
 const props = defineProps({
@@ -46,8 +47,31 @@ const ownerOptions = computed(() => {
 const typeFields = computed(() => dsTypeFields(form.type || 'MySQL'))
 const isEdit = computed(() => !!props.editSource)
 const typeField = computed(() => DS_COMMON_FIELDS.find((f) => f.n === 'type'))
-const typeGroups = computed(() => groupTypesByCategory(typeField.value?.o || []))
+/** 优先后端 typeOptions，失败回落本地白名单；并保留 MariaDB/AzureSQL 兼容项 */
+const remoteTypeLabels = ref([])
+const typeOptions = computed(() => {
+  const base = remoteTypeLabels.value.length
+    ? remoteTypeLabels.value
+    : [...DS_REGISTER_TYPE_OPTIONS]
+  const set = new Set(base)
+  for (const extra of ['MariaDB', 'AzureSQL']) set.add(extra)
+  return sortTypesByCategory([...set])
+})
+const typeGroups = computed(() => groupTypesByCategory(typeOptions.value))
 const basicFields = computed(() => DS_COMMON_FIELDS.filter((f) => f.n !== 'type'))
+
+async function loadTypeOptions() {
+  try {
+    const rows = await fetchTypeOptions()
+    const list = Array.isArray(rows) ? rows : rows?.records || []
+    const labels = list
+      .map((r) => (typeof r === 'string' ? r : r?.label || r?.value || ''))
+      .filter(Boolean)
+    if (labels.length) remoteTypeLabels.value = labels
+  } catch {
+    /* 用本地白名单 */
+  }
+}
 
 function blankForm(type = 'MySQL') {
   const next = { type }
@@ -119,7 +143,7 @@ function resolveOwnerId(raw) {
 async function resetForm() {
   hydrating.value = true
   try {
-    await ensureWorkspaceUserOptions()
+    await Promise.all([ensureWorkspaceUserOptions(), loadTypeOptions()])
     ownerOptionsTick.value += 1
     Object.keys(form).forEach((k) => delete form[k])
     const seed = props.editSource

@@ -67,6 +67,7 @@ const zh = {
   'inbox.noContent': '暂无内容',
   'inbox.detail': '消息详情',
   'inbox.loadFail': '加载消息失败',
+  'inbox.push.new': '收到新的站内消息',
   'app.search.toast': '🔍 全站搜索「{q}」· 跳转资产目录',
   'app.guide': '说明',
   'app.guide.title': '功能说明',
@@ -225,6 +226,7 @@ const en = {
   'inbox.noContent': 'No content',
   'inbox.detail': 'Message detail',
   'inbox.loadFail': 'Failed to load messages',
+  'inbox.push.new': 'New inbox message',
 
   'app.search.toast': '🔍 Search “{q}” · opening Catalog',
   'app.guide': 'Guide',

@@ -1,13 +1,16 @@
 /**
- * 顶栏站内信：列表 + 未读角标（轮询；WS 可选后续）
+ * 顶栏站内信：列表 + 未读角标（WebSocket 实时推送 + 轮询兜底）
  */
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, ref } from 'vue'
 import {
   fetchIndexMessageDetail,
   fetchIndexMessageList,
   markAllMessagesRead,
 } from '@/api/message'
+import { API_BASE } from '@/api/http'
 import { getToken } from '@/api/token'
+import { useToast } from '@/composables/useToast'
+import { t } from '@/composables/useLocale'
 
 const messages = ref([])
 const unreadCount = ref(0)
@@ -16,11 +19,45 @@ const open = ref(false)
 const detail = ref(null)
 const detailOpen = ref(false)
 let pollTimer = null
-let bootstrapped = false
+let ws = null
+let wsRetryTimer = null
+let wsRetryMs = 3000
+let lastNotifiedUnread = 0
+let started = false
 
 function countUnread(list) {
   if (!Array.isArray(list)) return 0
   return list.filter((m) => !m.read && m.read !== true && m.read !== 1 && m.read !== '1').length
+}
+
+function buildWsUrl() {
+  const token = getToken()
+  if (!token) return ''
+  const base = API_BASE || '/lakehouse'
+  const path = `${base.replace(/\/$/, '')}/dev/message/ws?token=${encodeURIComponent(token)}`
+  if (/^https?:\/\//i.test(base)) {
+    return path.replace(/^http/i, 'ws')
+  }
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  return `${proto}//${window.location.host}${path.startsWith('/') ? path : `/${path}`}`
+}
+
+function notifyUnreadBump(next) {
+  const n = Number(next) || 0
+  if (n > lastNotifiedUnread && n > 0) {
+    try {
+      const { showToast } = useToast()
+      showToast(
+        t('inbox.push.new', '收到新的站内消息'),
+        'info',
+        { duration: 4500 },
+      )
+    } catch {
+      /* ignore */
+    }
+  }
+  lastNotifiedUnread = n
+  unreadCount.value = n
 }
 
 async function refreshList() {
@@ -34,7 +71,8 @@ async function refreshList() {
     const data = await fetchIndexMessageList({ limit: 30 })
     const list = Array.isArray(data) ? data : data?.records || []
     messages.value = list
-    unreadCount.value = countUnread(list)
+    const n = countUnread(list)
+    notifyUnreadBump(n)
   } catch {
     /* soft — 不打扰顶栏 */
   } finally {
@@ -50,18 +88,86 @@ async function refreshBadge() {
   try {
     const data = await fetchIndexMessageList({ limit: 30 })
     const list = Array.isArray(data) ? data : data?.records || []
-    unreadCount.value = countUnread(list)
+    const n = countUnread(list)
+    notifyUnreadBump(n)
     if (open.value) messages.value = list
   } catch {
     /* soft */
   }
 }
 
+function stopWs() {
+  if (wsRetryTimer) {
+    clearTimeout(wsRetryTimer)
+    wsRetryTimer = null
+  }
+  if (ws) {
+    try {
+      ws.onopen = null
+      ws.onmessage = null
+      ws.onerror = null
+      ws.onclose = null
+      ws.close()
+    } catch {
+      /* ignore */
+    }
+    ws = null
+  }
+}
+
+function scheduleWsRetry() {
+  if (wsRetryTimer) return
+  wsRetryTimer = setTimeout(() => {
+    wsRetryTimer = null
+    startWs()
+  }, wsRetryMs)
+  wsRetryMs = Math.min(wsRetryMs * 2, 60000)
+}
+
+function startWs() {
+  if (!getToken() || typeof WebSocket === 'undefined') return
+  if (ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) {
+    return
+  }
+  const url = buildWsUrl()
+  if (!url) return
+  stopWs()
+  try {
+    ws = new WebSocket(url)
+  } catch {
+    scheduleWsRetry()
+    return
+  }
+  ws.onopen = () => {
+    wsRetryMs = 3000
+  }
+  ws.onmessage = (event) => {
+    try {
+      const result = JSON.parse(event.data)
+      if (result?.code === 200 && result.data != null) {
+        const n = Number(result.data) || 0
+        notifyUnreadBump(n)
+        if (open.value) refreshList()
+      }
+    } catch {
+      /* ignore bad frame */
+    }
+  }
+  ws.onerror = () => {
+    /* onclose will retry */
+  }
+  ws.onclose = () => {
+    ws = null
+    if (started && getToken()) scheduleWsRetry()
+  }
+}
+
 function startPoll() {
   stopPoll()
+  // WS 正常时作低频兜底；断开时仍能刷角标
   pollTimer = setInterval(() => {
     refreshBadge()
-  }, 60000)
+  }, 120000)
 }
 
 function stopPoll() {
@@ -72,18 +178,6 @@ function stopPoll() {
 }
 
 export function useInbox() {
-  if (!bootstrapped) {
-    bootstrapped = true
-  }
-
-  onMounted(() => {
-    refreshBadge()
-    startPoll()
-  })
-  onUnmounted(() => {
-    /* 多实例共享 poll：仅在 AppLayout 挂载时用 ensureInboxPoll */
-  })
-
   async function openPanel() {
     open.value = true
     await refreshList()
@@ -101,6 +195,7 @@ export function useInbox() {
       detail.value = { ...row, ...(data || {}) }
       if (!row.read) {
         unreadCount.value = Math.max(0, unreadCount.value - 1)
+        lastNotifiedUnread = unreadCount.value
         const hit = messages.value.find((m) => m.id === row.id)
         if (hit) hit.read = true
       }
@@ -118,6 +213,7 @@ export function useInbox() {
     await markAllMessagesRead()
     messages.value = messages.value.map((m) => ({ ...m, read: true }))
     unreadCount.value = 0
+    lastNotifiedUnread = 0
   }
 
   return {
@@ -139,9 +235,20 @@ export function useInbox() {
   }
 }
 
-/** 顶栏单例轮询（重复调用不会叠多个 timer） */
+/** 顶栏单例：WS + 轮询（重复调用不会叠多个连接） */
 export function ensureInboxPoll() {
+  if (!started) {
+    started = true
+    lastNotifiedUnread = unreadCount.value
+  }
   refreshBadge()
+  startWs()
   if (!pollTimer) startPoll()
-  return { refreshBadge, stopPoll }
+  return { refreshBadge, stopPoll, stopWs }
+}
+
+export function stopInboxPush() {
+  started = false
+  stopPoll()
+  stopWs()
 }

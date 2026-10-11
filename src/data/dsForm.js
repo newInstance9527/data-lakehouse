@@ -1,5 +1,5 @@
 /** 注册数据源表单 schema */
-import { DS_TYPE_OPTIONS } from '@/data/datasources'
+import { DS_REGISTER_TYPE_OPTIONS } from '@/data/dsRegisterTypes'
 
 export const DS_COMMON_FIELDS = [
   {
@@ -14,7 +14,8 @@ export const DS_COMMON_FIELDS = [
     "n": "type",
     "l": "数据源类型",
     "t": "select",
-    "o": DS_TYPE_OPTIONS,
+    // 仅已接入/可登记类型；全量别名见 datasources.DS_TYPE_OPTIONS（列表筛选）
+    "o": DS_REGISTER_TYPE_OPTIONS,
     "def": "MySQL"
   },
   {
@@ -314,10 +315,10 @@ export const DS_TYPE_FIELDS = {
     },
     {
       "n": "port",
-      "l": "端口 (TCP/HTTP)",
+      "l": "HTTP 端口 (JDBC)",
       "t": "text",
       "req": 1,
-      "def": "9000"
+      "def": "8123"
     },
     {
       "n": "database",
@@ -480,6 +481,67 @@ export const DS_TYPE_FIELDS = {
       "l": "库.表清单",
       "t": "textarea",
       "ph": "edw.order、edw.user",
+      "def": ""
+    }
+  ],
+  "Trino": [
+    {
+      "n": "host",
+      "l": "Coordinator 地址",
+      "t": "text",
+      "req": 1,
+      "ph": "dev3.datagoo.cn",
+      "def": ""
+    },
+    {
+      "n": "port",
+      "l": "端口",
+      "t": "text",
+      "req": 1,
+      "def": "8080"
+    },
+    {
+      "n": "catalog",
+      "l": "Catalog",
+      "t": "text",
+      "req": 1,
+      "ph": "hive",
+      "def": "hive"
+    },
+    {
+      "n": "database",
+      "l": "Schema",
+      "t": "text",
+      "req": 1,
+      "ph": "default",
+      "def": "default"
+    },
+    {
+      "n": "user",
+      "l": "用户名",
+      "t": "text",
+      "ph": "trino",
+      "def": ""
+    },
+    {
+      "n": "password",
+      "l": "密码",
+      "t": "text",
+      "ph": "建议 Vault 注入",
+      "def": ""
+    },
+    {
+      "n": "extra",
+      "l": "JDBC 高级参数",
+      "t": "textarea",
+      "ph": "SSL=false",
+      "def": ""
+    },
+    {
+      "n": "schema",
+      "l": "表清单",
+      "t": "textarea",
+      "ph": "orders, users",
       "def": ""
     }
   ],
@@ -1167,52 +1229,20 @@ export const DS_TYPE_FIELDS = {
   ]
 }
 
+/** 仅保留协议兼容 / 有独立 typeCode 的表单借用；未接入别名已从注册下拉移除 */
 export const DS_TYPE_FIELD_ALIAS = {
   "MariaDB": "MySQL",
   "AzureSQL": "SQL Server",
-  "Snowflake": "PostgreSQL",
-  "Redshift": "PostgreSQL",
-  "BigQuery": "Hive",
-  "Trino": "Hive",
-  "Presto": "Hive",
   "StarRocks": "Doris",
-  "Databricks": "Hive",
-  "Delta Lake": "Iceberg",
-  "SAP HANA": "Oracle",
-  "DB2": "Oracle",
-  "Teradata": "Oracle",
-  "Greenplum": "PostgreSQL",
-  "SQLite": "MySQL",
-  "Cassandra": "MongoDB",
-  "DynamoDB": "MongoDB",
-  "PinotDB": "ClickHouse",
-  "Druid": "ClickHouse",
-  "Redpanda": "Kafka",
-  "Kinesis": "Kafka",
-  "Pub/Sub": "Kafka",
   "OpenSearch": "Elasticsearch",
   "S3/MinIO": "S3 / MinIO",
   "S3": "S3 / MinIO",
   "MinIO": "S3 / MinIO",
-  "GCS": "S3 / MinIO",
-  "ADLS": "S3 / MinIO",
-  "Google Drive": "FTP/SFTP",
   "REST": "HTTP API",
   "OpenAPI": "HTTP API",
   "Tableau": "HTTP API",
   "Superset": "HTTP API",
-  "PowerBI": "HTTP API",
-  "Grafana": "HTTP API",
-  "Metabase": "HTTP API",
-  "Looker": "HTTP API",
   "Airflow": "HTTP API",
-  "Flink": "HTTP API",
-  "Spark": "HTTP API",
-  "dbt": "HTTP API",
-  "NiFi": "HTTP API",
-  "KafkaConnect": "HTTP API",
-  "MLflow": "HTTP API",
-  "Sagemaker": "HTTP API"
 }
 
 /** 类型视觉：底色 / 前景色 / 默认端口；图标见 dsTypeIcons + DsTypeIcon */
@@ -1240,7 +1270,12 @@ export const DS_TYPE_META = {
   "ClickHouse": {
     "bg": "#e6f7ff",
     "color": "#1890ff",
-    "port": "9000"
+    "port": "8123"
+  },
+  "Trino": {
+    "bg": "#e6f7ff",
+    "color": "#1890ff",
+    "port": "8080"
   },
   "Doris": {
     "bg": "#e6f7ff",
