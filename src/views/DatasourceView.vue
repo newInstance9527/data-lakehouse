@@ -18,6 +18,7 @@ import {
   statusMeta,
 } from '@/data/datasources'
 import { schemaSummary, tablesToSchema } from '@/utils/schemaList'
+import { inventoryCopy } from '@/utils/inventoryCopy'
 import { pageGuideOf } from '@/data/pageGuides'
 import { fetchDatasourceDetail, fetchDatasourceKpi } from '@/api/datasource'
 import { confirmDelete } from '@/composables/useConfirmDelete'
@@ -525,7 +526,7 @@ function goPage(p) {
                   <span style="margin-left: auto; color: var(--text-3)" :title="s.owner">👤 {{ displayUser(s.ownerName, s.owner) }}</span>
                 </div>
                 <div class="ds-card-actions" @click.stop>
-                  <button class="btn-link btn-sm" @click="openTables(s.id)">表清单</button>
+                  <button class="btn-link btn-sm" @click="openTables(s.id)">{{ inventoryCopy(s).entryLabel }}</button>
                   <button class="btn-link btn-sm" @click="test(s.id)">🧪 测试</button>
                   <button
                     v-if="canEditDatasource(s)"
@@ -593,7 +594,7 @@ function goPage(p) {
                     <td>{{ displayUser(s.ownerName, s.owner) || '-' }}</td>
                     <td style="font-size: 11px; color: var(--text-3)">{{ s.ver }} · {{ s.created }}</td>
                     <td @click.stop style="white-space: nowrap">
-                      <button class="btn-link btn-sm" @click="openTables(s.id)">表</button>
+                      <button class="btn-link btn-sm" @click="openTables(s.id)">{{ inventoryCopy(s).entryShort }}</button>
                       <button class="btn-link btn-sm" @click="test(s.id)">🧪</button>
                       <button
                         v-if="canEditDatasource(s)"

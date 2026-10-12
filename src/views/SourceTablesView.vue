@@ -6,6 +6,7 @@ import PageSizeSelect from '@/components/common/PageSizeSelect.vue'
 import { useDatasources } from '@/composables/useDatasources'
 import { useToast } from '@/composables/useToast'
 import { enrichTableMeta } from '@/utils/schemaList'
+import { inventoryCopy } from '@/utils/inventoryCopy'
 import { endpointOf, statusMeta } from '@/data/datasources'
 import { pageGuideOf } from '@/data/pageGuides'
 import { confirmDelete } from '@/composables/useConfirmDelete'
@@ -28,6 +29,7 @@ const {
 
 const sourceId = computed(() => String(route.params.id || ''))
 const source = computed(() => getSource(sourceId.value))
+const inv = computed(() => inventoryCopy(source.value || {}))
 const canEdit = computed(() => canEditDatasource(source.value))
 const canDelete = computed(() => canDeleteDatasource(source.value))
 const needApplyOps = computed(() => !canEdit.value && !canDelete.value)
@@ -100,7 +102,7 @@ onMounted(async () => {
         refreshManageGrant('datasource', sourceId.value, getSource(sourceId.value)),
       ])
     } catch (e) {
-      showToast(`加载表清单失败：${e.message || e}`, 'error')
+      showToast(inv.value.loadingFail(e.message || e), 'error')
     }
   }
 })
@@ -115,7 +117,7 @@ watch(
           refreshManageGrant('datasource', id, getSource(id)),
         ])
       } catch (e) {
-        showToast(`加载表清单失败：${e.message || e}`, 'error')
+        showToast(inv.value.loadingFail(e.message || e), 'error')
       }
     }
   },
@@ -174,7 +176,7 @@ async function onSync() {
   const ds = source.value
   const dsId = ds?.id || sourceId.value
   if (!dsId) {
-    showToast('未找到数据源，请从数据源列表重新进入表清单', 'warning')
+    showToast(`未找到数据源，请从数据源列表重新进入${inv.value.listTitle}`, 'warning')
     return
   }
   if (!assertEditOrGuide('同步')) {
@@ -182,12 +184,12 @@ async function onSync() {
     return
   }
   syncing.value = true
-  showToast(`🔄 正在同步 ${ds?.name || dsId} 表清单…`, 'info')
+  showToast(`🔄 ${inv.value.syncToast(ds?.name || dsId)}`, 'info')
   try {
     const before = tables.value.length
     await syncTables(dsId)
     const after = getSource(dsId)?.tables?.length || 0
-    showToast(`✅ 同步完成 · 新增 ${Math.max(0, after - before)} 张 · 共 ${after} 张`, 'success')
+    showToast(`✅ 同步完成 · 新增 ${Math.max(0, after - before)} 项 · 共 ${after} 项`, 'success')
   } catch (e) {
     if (isNeedOwnerApplyError(e)) {
       showToast(e.message || '无编辑权不可同步', 'warning')
@@ -201,7 +203,7 @@ async function onSync() {
 }
 
 function openAdd() {
-  if (!assertEditOrGuide('添加表')) {
+  if (!assertEditOrGuide(`添加${inv.value.unit}`)) {
     goApplyManage()
     return
   }
@@ -216,10 +218,10 @@ function openAdd() {
 async function submitAdd() {
   const name = draft.name.trim()
   if (!name) {
-    showToast('请填写表名', 'warning')
+    showToast(`请填写${inv.value.nameColumn}`, 'warning')
     return
   }
-  if (!assertEditOrGuide('添加表')) {
+  if (!assertEditOrGuide(`添加${inv.value.unit}`)) {
     goApplyManage()
     return
   }
@@ -237,7 +239,7 @@ async function submitAdd() {
   try {
     const res = await addTable(dsId, item)
     if (!res.ok) {
-      showToast('表名已存在', 'warning')
+      showToast(`${inv.value.nameColumn}已存在`, 'warning')
       return
     }
     showAdd.value = false
@@ -258,8 +260,8 @@ async function onRemove(name) {
     return
   }
   const ok = await confirmDelete({
-    title: `删除表「${name}」`,
-    message: `将从数据源「${source.value?.name || sourceId.value}」的表清单中移除该表登记。`,
+    title: `删除${inv.value.unit}「${name}」`,
+    message: inv.value.removeConfirm(source.value?.name || sourceId.value),
     confirmLabel: '确认删除',
   })
   if (!ok) return
@@ -319,16 +321,16 @@ function fmtRows(n) {
   <div v-else>
     <PageHeader
       page-id="source-tables"
-      :title="`📋 表清单 · ${source.name}`"
+      :title="`📋 ${inv.pageTitle(source.name)}`"
       :subtitle="`${source.id} · ${source.type} · ${endpointOf(source)} · ${statusMeta(source.status).label}`"
       :guide-title="tablesGuide.title"
       :guide="tablesGuide"
     >
       <button class="btn btn-sm" @click="goBack">← 返回数据源</button>
       <button v-if="canEdit" class="btn btn-sm" :disabled="syncing" @click="onSync">
-        {{ syncing ? '同步中…' : '🔄 同步清单' }}
+        {{ syncing ? '同步中…' : `🔄 ${inv.syncShort}` }}
       </button>
-      <button v-if="canEdit" class="btn btn-sm btn-primary" @click="openAdd">＋ 手动添加</button>
+      <button v-if="canEdit" class="btn btn-sm btn-primary" @click="openAdd">＋ {{ inv.addLabel }}</button>
       <button v-if="needApplyOps" class="btn btn-sm" @click="goApplyManage">🔐 申请操作权限</button>
     </PageHeader>
 
@@ -337,19 +339,19 @@ function fmtRows(n) {
         v-model="kw"
         class="input"
         style="width: 320px"
-        placeholder="搜索表名 / 中文名 / 注释 / 编码…"
+        :placeholder="inv.searchPlaceholder"
       />
       <span class="tag tag-blue">筛选 {{ filtered.length }} / 共 {{ tables.length }}</span>
     </div>
 
     <div class="card">
       <div class="card-body" style="padding: 0">
-        <div v-if="!filtered.length" class="ds-empty">暂无表清单，可同步或手动添加</div>
+        <div v-if="!filtered.length" class="ds-empty">{{ inv.emptyText }}</div>
         <div v-else style="overflow: auto">
           <table class="std-table tbl-meta">
             <thead>
               <tr>
-                <th style="width: 18%">表名</th>
+                <th style="width: 18%">{{ inv.nameColumn }}</th>
                 <th style="width: 12%">中文名</th>
                 <th>注释</th>
                 <th style="width: 9%">编码</th>
@@ -447,18 +449,18 @@ function fmtRows(n) {
       <div v-if="showAdd" class="modal-mask" @click.self="showAdd = false">
         <div class="modal" style="width: 480px">
           <div class="modal-header">
-            <div class="modal-title">＋ 手动添加表</div>
+            <div class="modal-title">＋ {{ inv.addLabel }}</div>
             <button class="btn btn-sm" @click="showAdd = false">✕</button>
           </div>
           <div class="modal-body">
             <div class="form-grid" style="grid-template-columns: 1fr">
               <label class="form-field">
-                <span class="form-label"><span class="req">*</span>表名</span>
-                <input v-model="draft.name" class="input" placeholder="如 s_order / public.user_info" />
+                <span class="form-label"><span class="req">*</span>{{ inv.nameColumn }}</span>
+                <input v-model="draft.name" class="input" :placeholder="`如 ${inv.unit} 标识`" />
               </label>
               <label class="form-field">
                 <span class="form-label">中文名</span>
-                <input v-model="draft.cnName" class="input" placeholder="如 订单表" />
+                <input v-model="draft.cnName" class="input" placeholder="业务中文名" />
               </label>
               <label class="form-field">
                 <span class="form-label">注释</span>

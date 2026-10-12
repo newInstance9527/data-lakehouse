@@ -3,7 +3,7 @@
 export const PAGE_SUBTITLES_ZH = {
   overview: '接入 → 入湖 → 治理 → 服务 · 平台驾驶舱',
   datasource: '多类型异构源注册 · 连通性管理 · Schema 同步 · 分类分级',
-  'source-tables': '源端表清单 · 抽样预览 · 登记入湖候选',
+  'source-tables': '源端对象清单（按类型：表/Topic/路径等）· 登记入湖候选',
   integration: '流 / 批 / 同步抽取 · 对接门户编排',
   catalog: '湖表登记 · 分层域 · 画像标签 · 血缘入口',
   lineage: '端到端血缘 · 可输入上下游钻取层数（默认 5）· 支持变更影响分析',
@@ -47,7 +47,7 @@ export const PAGE_SUBTITLES_ZH = {
 export const PAGE_SUBTITLES_EN = {
   overview: 'Ingest → Lake → Govern → Serve · Platform cockpit',
   datasource: 'Heterogeneous sources · Connectivity · Schema sync · Classification',
-  'source-tables': 'Source table inventory · Sample preview · Lake registration candidates',
+  'source-tables': 'Source object inventory (by type: table/topic/path/…) · Lake candidates',
   integration: 'Streaming / batch / sync · Portal orchestration',
   catalog: 'Lake table registry · Layers & domains · Profile tags · Lineage entry',
   lineage: 'End-to-end lineage · Configurable hop depth (default 5) · Impact analysis',

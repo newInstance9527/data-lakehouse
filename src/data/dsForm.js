@@ -892,7 +892,7 @@ export const DS_TYPE_FIELDS = {
       "l": "主机地址",
       "t": "text",
       "req": 1,
-      "ph": "10.3.6.40",
+      "ph": "es1.corp 或 es1:9200（单节点）",
       "def": ""
     },
     {
@@ -901,6 +901,13 @@ export const DS_TYPE_FIELDS = {
       "t": "text",
       "req": 1,
       "def": "9200"
+    },
+    {
+      "n": "nodes",
+      "l": "集群节点",
+      "t": "textarea",
+      "ph": "多节点逗号分隔，如 es1:9200,es2:9200,es3:9200（优先于单 host）",
+      "def": ""
     },
     {
       "n": "user",
@@ -947,7 +954,7 @@ export const DS_TYPE_FIELDS = {
       "l": "主机地址",
       "t": "text",
       "req": 1,
-      "ph": "10.3.6.60",
+      "ph": "单机/入口；Sentinel 可写 sentinel1,sentinel2",
       "def": ""
     },
     {
@@ -979,20 +986,20 @@ export const DS_TYPE_FIELDS = {
         "Sentinel",
         "Cluster"
       ],
-      "def": "Cluster"
+      "def": "Standalone"
     },
     {
       "n": "masterName",
       "l": "Sentinel Master 名",
       "t": "text",
-      "ph": "mymaster（sentinel 模式填）",
+      "ph": "mymaster（Sentinel 必填）",
       "def": ""
     },
     {
       "n": "nodes",
-      "l": "Cluster 节点",
-      "t": "text",
-      "ph": "6×(1master+1slave)",
+      "l": "Cluster/Sentinel 节点",
+      "t": "textarea",
+      "ph": "host:port 逗号分隔，如 10.0.1.1:6379,10.0.1.2:6379（Cluster）或 :26379（Sentinel）",
       "def": ""
     },
     {
@@ -1346,23 +1353,104 @@ export const DS_TYPE_META = {
     "bg": "#e6f7ff",
     "color": "#1890ff",
     "port": "443"
+  },
+  "StarRocks": {
+    "bg": "#fff7e6",
+    "color": "#d46b08",
+    "port": "9030"
+  },
+  "Tableau": {
+    "bg": "#f6ffed",
+    "color": "#389e0d",
+    "port": "443"
+  },
+  "Superset": {
+    "bg": "#e6fffb",
+    "color": "#13c2c2",
+    "port": "8088"
+  },
+  "Airflow": {
+    "bg": "#e6fffb",
+    "color": "#13c2c2",
+    "port": "8080"
   }
+}
+
+/** 后端 typeCode → 门户身份展示名（注册下拉 / 编辑回显；勿折叠为字段借用目标） */
+const TYPE_CODE_TO_IDENTITY = {
+  mysql: 'MySQL',
+  mariadb: 'MariaDB',
+  postgresql: 'PostgreSQL',
+  pg: 'PostgreSQL',
+  oracle: 'Oracle',
+  sqlserver: 'SQL Server',
+  azuresql: 'AzureSQL',
+  clickhouse: 'ClickHouse',
+  doris: 'Doris',
+  starrocks: 'StarRocks',
+  hive: 'Hive',
+  iceberg: 'Iceberg',
+  hbase: 'HBase',
+  trino: 'Trino',
+  kafka: 'Kafka',
+  rabbitmq: 'RabbitMQ',
+  pulsar: 'Pulsar',
+  mongodb: 'MongoDB',
+  redis: 'Redis',
+  elasticsearch: 'Elasticsearch',
+  opensearch: 'OpenSearch',
+  hdfs: 'HDFS',
+  s3: 'S3 / MinIO',
+  minio: 'S3 / MinIO',
+  ftp: 'FTP/SFTP',
+  sftp: 'FTP/SFTP',
+  file: 'FTP/SFTP',
+  http_api: 'HTTP API',
+  tableau: 'Tableau',
+  superset: 'Superset',
+  airflow: 'Airflow',
+}
+
+/**
+ * 类型身份展示名（StarRocks/Tableau 等保持独立；编辑提交用此值，勿落到 Doris/HTTP API）。
+ */
+export function resolveDsTypeIdentity(type) {
+  let key = String(type || '').trim()
+  if (!key) return ''
+  if (DS_TYPE_FIELDS[key] || DS_TYPE_META[key] || DS_TYPE_FIELD_ALIAS[key]) return key
+  const spaced = key.replace(/\//g, ' / ')
+  if (DS_TYPE_META[spaced] || DS_TYPE_FIELDS[spaced] || DS_TYPE_FIELD_ALIAS[spaced]) return spaced
+  const byCode = TYPE_CODE_TO_IDENTITY[key.toLowerCase()]
+  if (byCode) return byCode
+  return key
+}
+
+/**
+ * 表单字段 schema 键（可走 alias：Tableau→HTTP API）。
+ * @deprecated 语义易混；新代码用 resolveDsTypeIdentity + resolveDsFormFieldsKey
+ */
+export function resolveDsTypeLabel(type) {
+  return resolveDsFormFieldsKey(type)
+}
+
+/** 连接参数区字段定义键 */
+export function resolveDsFormFieldsKey(type) {
+  const identity = resolveDsTypeIdentity(type)
+  if (DS_TYPE_FIELDS[identity]) return identity
+  if (DS_TYPE_FIELD_ALIAS[identity]) return DS_TYPE_FIELD_ALIAS[identity]
+  if (DS_TYPE_FIELDS[type]) return type
+  if (DS_TYPE_FIELD_ALIAS[type]) return DS_TYPE_FIELD_ALIAS[type]
+  return identity
 }
 
 export function dsTypeFields(type) {
-  return DS_TYPE_FIELDS[type] || DS_TYPE_FIELDS[DS_TYPE_FIELD_ALIAS[type]] || []
+  const label = resolveDsFormFieldsKey(type)
+  return DS_TYPE_FIELDS[label] || DS_TYPE_FIELDS[DS_TYPE_FIELD_ALIAS[label]] || []
 }
 
 export function dsTypeMeta(type) {
-  let key = String(type || '').trim()
-  if (!DS_TYPE_FIELDS[key] && !DS_TYPE_META[key]) {
-    key = DS_TYPE_FIELD_ALIAS[key] || key
-  }
-  // 后端标签偶发无空格：S3/MinIO
-  if (!DS_TYPE_META[key] && !DS_TYPE_FIELDS[key]) {
-    const spaced = key.replace(/\//g, ' / ')
-    if (DS_TYPE_META[spaced] || DS_TYPE_FIELDS[spaced]) key = spaced
-    else if (DS_TYPE_FIELD_ALIAS[spaced]) key = DS_TYPE_FIELD_ALIAS[spaced]
-  }
-  return DS_TYPE_META[key] || { bg: '#eff6ff', color: '#3b82f6', port: '' }
+  const identity = resolveDsTypeIdentity(type)
+  if (DS_TYPE_META[identity]) return DS_TYPE_META[identity]
+  const fieldsKey = resolveDsFormFieldsKey(type)
+  return DS_TYPE_META[fieldsKey] || { bg: '#eff6ff', color: '#3b82f6', port: '' }
 }

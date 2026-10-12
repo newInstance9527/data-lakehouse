@@ -3,7 +3,12 @@ import { computed, reactive, ref, watch } from 'vue'
 import SchemaListField from '@/components/datasource/SchemaListField.vue'
 import DsTypeIcon from '@/components/datasource/DsTypeIcon.vue'
 import SearchSelect from '@/components/common/SearchSelect.vue'
-import { DS_COMMON_FIELDS, dsTypeFields, dsTypeMeta } from '@/data/dsForm'
+import {
+  DS_COMMON_FIELDS,
+  dsTypeFields,
+  dsTypeMeta,
+  resolveDsTypeIdentity,
+} from '@/data/dsForm'
 import { DS_REGISTER_TYPE_OPTIONS } from '@/data/dsRegisterTypes'
 import { groupTypesByCategory, parseHttpBaseUrl, sortTypesByCategory } from '@/data/datasources'
 import { isInventoryField, tablesToSchema } from '@/utils/schemaList'
@@ -47,13 +52,13 @@ const ownerOptions = computed(() => {
 const typeFields = computed(() => dsTypeFields(form.type || 'MySQL'))
 const isEdit = computed(() => !!props.editSource)
 const typeField = computed(() => DS_COMMON_FIELDS.find((f) => f.n === 'type'))
-/** 优先后端 typeOptions，失败回落本地白名单；并保留 MariaDB/AzureSQL 兼容项 */
+/** 后端 typeOptions ∪ 本地可登记白名单（避免远程缺 StarRocks/Tableau 等） */
 const remoteTypeLabels = ref([])
 const typeOptions = computed(() => {
-  const base = remoteTypeLabels.value.length
-    ? remoteTypeLabels.value
-    : [...DS_REGISTER_TYPE_OPTIONS]
-  const set = new Set(base)
+  const set = new Set(DS_REGISTER_TYPE_OPTIONS)
+  for (const lab of remoteTypeLabels.value) {
+    if (lab) set.add(lab)
+  }
   for (const extra of ['MariaDB', 'AzureSQL']) set.add(extra)
   return sortTypesByCategory([...set])
 })
@@ -69,7 +74,7 @@ async function loadTypeOptions() {
       .filter(Boolean)
     if (labels.length) remoteTypeLabels.value = labels
   } catch {
-    /* 用本地白名单 */
+    /* 本地白名单已在 typeOptions union */
   }
 }
 
@@ -101,7 +106,8 @@ function flattenSeed(seed) {
     ...conn,
     id: seed.id,
     name: seed.name || '',
-    type: seed.type || seed.typeCode || 'MySQL',
+    type: resolveDsTypeIdentity(seed.typeCode || seed.type) || 'MySQL',
+    typeCode: seed.typeCode || '',
     purpose: seed.purpose || '数据入湖',
     owner: seed.owner || user.value?.id || '',
     desc: seed.desc || '',
@@ -149,8 +155,8 @@ async function resetForm() {
     const seed = props.editSource
     if (seed) {
       const flat = flattenSeed(seed)
-      const type = flat.type || 'MySQL'
-      Object.assign(form, blankForm(type), flat, { type })
+      const type = resolveDsTypeIdentity(flat.typeCode || flat.type) || 'MySQL'
+      Object.assign(form, blankForm(type), flat, { type, typeCode: flat.typeCode || seed.typeCode || '' })
       form.owner = resolveOwnerId(flat.owner)
       dsTypeFields(type).forEach((f) => {
         const v = flat[f.n] ?? seed[f.n] ?? seed.conn?.[f.n]
@@ -199,10 +205,32 @@ function close() {
   emit('close')
 }
 
+function fieldFilled(name) {
+  return !!String(form[name] ?? '').trim()
+}
+
+/** Redis Cluster/Sentinel、ES 多节点：nodes（或含 : 的 host）可兜底 host/port */
+function hostPortSatisfiedByNodes(fieldName) {
+  if (fieldName !== 'host' && fieldName !== 'port') return false
+  const nodes = String(form.nodes ?? form.hosts ?? form.clusterNodes ?? form.sentinels ?? '').trim()
+  if (nodes) {
+    if (fieldName === 'host') return true
+    if (fieldName === 'port' && nodes.includes(':')) return true
+  }
+  if (fieldName === 'port') {
+    const host = String(form.host ?? form.bootstrap ?? '').trim()
+    if (host.includes(':')) return true
+  }
+  if (fieldName === 'host') {
+    return fieldFilled('bootstrap') || fieldFilled('bootstrapServers')
+  }
+  return false
+}
+
 function validate() {
   const fields = [...DS_COMMON_FIELDS.filter((f) => f.n !== 'type'), ...typeFields.value]
   for (const f of fields) {
-    if (f.req && !String(form[f.n] ?? '').trim()) {
+    if (f.req && !fieldFilled(f.n) && !hostPortSatisfiedByNodes(f.n)) {
       showToast(`请填写：${f.l}`, 'error')
       return false
     }

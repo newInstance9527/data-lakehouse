@@ -189,7 +189,9 @@ export function toSubmitBody(form) {
   return {
     id: src.id,
     name: src.name,
-    type: src.type,
+    // 提交下拉身份名（Tableau/StarRocks…）；typeCode 仅作兜底（API 直调）
+    type: src.type || src.typeCode,
+    typeCode: src.typeCode || undefined,
     purpose: src.purpose,
     owner: src.owner,
     desc: src.desc,

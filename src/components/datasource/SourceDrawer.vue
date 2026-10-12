@@ -10,6 +10,7 @@ import {
   statusMeta,
 } from '@/data/datasources'
 import { schemaSummary } from '@/utils/schemaList'
+import { inventoryCopy } from '@/utils/inventoryCopy'
 import { useToast } from '@/composables/useToast'
 import { useSession } from '@/composables/useSession'
 import { testDatasource } from '@/api/datasource'
@@ -30,6 +31,7 @@ const st = computed(() => statusMeta(props.source?.status))
 const summary = computed(() =>
   schemaSummary(props.source?.schema, 5, { sourceType: props.source?.type }),
 )
+const inv = computed(() => inventoryCopy(props.source || {}))
 const testing = ref(false)
 const canEdit = computed(() => canEditDatasource(props.source))
 const canDelete = computed(() => canDeleteDatasource(props.source))
@@ -207,7 +209,7 @@ const linkedAssets = computed(() => {
           </div>
         </div>
 
-        <div class="detail-section-title">表清单</div>
+        <div class="detail-section-title">{{ inv.listTitle }}</div>
         <div class="schema-preview" style="margin: 8px 0 18px">
           <div class="schema-preview-text">
             <template v-if="summary.count">
@@ -216,10 +218,10 @@ const linkedAssets = computed(() => {
                 … 共 {{ summary.count }} 项
               </div>
             </template>
-            <div v-else class="schema-preview-empty">未同步 Schema</div>
+            <div v-else class="schema-preview-empty">未同步清单</div>
           </div>
           <button class="btn btn-sm btn-primary" style="margin-top: 10px" @click="openTables">
-            管理表清单 →
+            {{ inv.manageLabel }} →
           </button>
         </div>
 

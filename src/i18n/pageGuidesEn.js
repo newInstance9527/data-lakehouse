@@ -49,20 +49,20 @@ export const PAGE_GUIDES_EN = {
     'Datasources',
     sections4({
       about: [
-        'Register and maintain connectable systems: databases, messaging, object/file stores, and HTTP APIs.',
-        'Configure purpose (ingest, metadata-only, export target), owners, and connectivity; open table inventory before lake onboarding.',
+        'Register and maintain connectable systems across 26 type codes: databases, messaging, object/file stores, HTTP APIs, BI and pipeline endpoints.',
+        'Configure purpose (ingest, metadata-only, export target), owners, and connectivity; open the type-specific inventory (tables / topics / paths / …) before lake onboarding.',
       ],
       ops: [
         'Click Register datasource, choose type and purpose, enter connection details, then save.',
         'Filter by category or status, or search by name, address, or owner.',
         'Open the detail drawer to review metadata and run a connectivity test.',
-        'Open Table inventory to sync or maintain source tables.',
+        'Open the type-specific inventory (tables / topics / paths / …) to sync or maintain source objects.',
         'Use Batch sync when multiple sources need structure refresh.',
       ],
       example:
         'Scenario: onboard a trading database\n1. Type MySQL, purpose Ingest\n2. Enter host, port, database, and credentials; test connectivity\n3. Sync table inventory\n4. Reference the source in an ETL ingest job',
       next: [
-        'Confirm tables, keys, and partitions in Table inventory.',
+        'Confirm objects, keys, and partitions in the source inventory.',
         'Create an ingest job in ETL Orchestration.',
         'Register lake assets in the Asset Catalog.',
         'Project the source in Data Services if APIs are required.',
@@ -71,24 +71,24 @@ export const PAGE_GUIDES_EN = {
   ),
 
   'source-tables': guide(
-    'Source tables',
+    'Source object inventory',
     sections4({
       about: [
-        'Lists source objects (tables, topics, paths) under a registered datasource with metadata summaries.',
+        'Lists source objects under a registered datasource; title follows type (table / topic / queue / index / collection / key prefix / bucket / path / endpoint).',
         'Use it to confirm scope before ingest. This page describes source objects; lake assets are governed in the Asset Catalog.',
       ],
       ops: [
-        'Open Table inventory from a datasource.',
+        'Open inventory from a datasource (route remains /datasource/:id/tables).',
         'Click Sync inventory to pull the latest structure.',
         'Search by name and browse pages.',
-        'Manually add critical tables when the source is temporarily unreachable.',
-        'Select tables from this list when registering assets.',
+        'Manually add critical objects when the source is temporarily unreachable.',
+        'Select objects from this list when registering assets.',
       ],
       example:
         'Scenario: register an order master table\nName: s_order\nPrimary key: order_id\nAction: sync or add manually → register as a detailed-layer asset in Catalog',
       next: [
         'Register the corresponding lake asset in Catalog.',
-        'Use the table as an ETL source.',
+        'Use the object as an ETL source.',
         'Map source fields to standards.',
         'Return to Datasources to maintain connectivity and owners.',
       ],

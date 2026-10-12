@@ -9,11 +9,12 @@ import {
   parseHttpApiEntry,
   parseSchemaList,
 } from '@/utils/schemaList'
+import { inventoryCopy } from '@/utils/inventoryCopy'
 import { useToast } from '@/composables/useToast'
 
 const props = defineProps({
   modelValue: { type: String, default: '' },
-  label: { type: String, default: '表清单' },
+  label: { type: String, default: '' },
   canSync: { type: Boolean, default: false },
   placeholder: { type: String, default: '输入名称后添加' },
   sourceType: { type: String, default: 'MySQL' },
@@ -33,14 +34,16 @@ const emit = defineEmits(['update:modelValue', 'sync'])
 const { showToast } = useToast()
 const draft = ref('')
 const draftMethod = ref('GET')
+const inv = computed(() => inventoryCopy({ type: props.sourceType }))
+const resolvedLabel = computed(() => props.label || inv.value.listTitle)
 const listOpts = computed(() => ({
   sourceType: props.sourceType,
   fieldName: props.fieldName,
-  label: props.label,
-  pathLike: isPathLikeInventory(props.sourceType, props.fieldName, props.label),
+  label: resolvedLabel.value,
+  pathLike: isPathLikeInventory(props.sourceType, props.fieldName, resolvedLabel.value),
 }))
 const httpApiMode = computed(() =>
-  isHttpApiInventory(props.sourceType, props.fieldName, props.label),
+  isHttpApiInventory(props.sourceType, props.fieldName, resolvedLabel.value),
 )
 const items = ref(parseSchemaList(props.modelValue, listOpts.value))
 const syncing = ref(false)
@@ -55,7 +58,7 @@ watch(
 )
 
 watch(
-  () => [props.sourceType, props.fieldName, props.label],
+  () => [props.sourceType, props.fieldName, resolvedLabel.value],
   () => {
     const next = parseSchemaList(props.modelValue, listOpts.value)
     const cur = items.value.join('\0')
@@ -160,7 +163,7 @@ function normalizeDiscoverResult(res) {
 
 async function syncList() {
   if (!props.discover) {
-    showToast('请先测试连通性后再同步真实表清单', 'warning')
+    showToast(`请先测试连通性后再同步真实${resolvedLabel.value}`, 'warning')
     return
   }
   if (!syncEnabled.value) {
@@ -168,7 +171,7 @@ async function syncList() {
     return
   }
   syncing.value = true
-  showToast(`🔄 正在同步${props.label}…`, 'info')
+  showToast(`🔄 正在同步${resolvedLabel.value}…`, 'info')
   try {
     const res = await props.discover()
     let names = normalizeDiscoverResult(res)
@@ -181,7 +184,7 @@ async function syncList() {
       })
     }
     commit(names)
-    showToast(`✅ 已同步 ${names.length} 项（源端真实表）`, 'success')
+    showToast(`✅ 已同步 ${names.length} 项（源端真实对象）`, 'success')
     emit('sync', joinSchemaList(names, listOpts.value))
   } catch (e) {
     showToast(`同步失败：${e?.message || e}`, 'error')
@@ -229,7 +232,7 @@ async function syncList() {
         <code>GET /a, POST /b</code>
       </template>
       <template v-else>
-        未同步，可手动添加或{{ alwaysSyncable ? '' : '先测通后' }}点击「同步清单」拉取源端真实表
+        未同步，可手动添加或{{ alwaysSyncable ? '' : '先测通后' }}点击「同步清单」拉取源端真实{{ inv.unit }}
       </template>
     </div>
     <ul v-else class="schema-list">
