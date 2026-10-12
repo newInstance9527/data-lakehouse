@@ -199,14 +199,104 @@ export function resolveSqlDialect(type) {
   if (t === 'db2') return { ...ANSI, label: 'DB2', family: 'ANSI' }
   if (['sqlite', 'sqlite3'].includes(t)) return SQLITE
   if (['tdengine', 'taos'].includes(t)) return TDENGINE
-  if (t === 'mongodb') return { ...TRINO, sql: true, id: 'mongodb', label: 'MongoDB' }
-  if (t === 'elasticsearch') return { ...TRINO, sql: true, id: 'elasticsearch', label: 'Elasticsearch' }
+  if (t === 'mongodb') {
+    return {
+      id: 'mongodb',
+      label: 'MongoDB',
+      family: 'MongoDB JDBC',
+      sql: true,
+      quote: 'double',
+      quoteHint: '经 Mongo JDBC 的类 SQL 子集，不是 mongo shell；复杂聚合请改 GROOVY 或落仓后再 API',
+      keywords: ['LIMIT', 'WHERE', 'FROM', 'SELECT'],
+      functions: [],
+      types: [],
+      completes: [{ caption: 'LIMIT', insert: 'LIMIT 100' }],
+      sample: 'SELECT _id, name, status FROM "my_collection" WHERE status = #{status}',
+    }
+  }
+  // ES SQL（SQLREST EsDriver）；Query DSL 走 engine=ES_DSL，见 resolveEsDslProfile
+  if (['elasticsearch', 'opensearch', 'es'].includes(t)) {
+    return {
+      ...TRINO,
+      sql: true,
+      id: 'elasticsearch',
+      label: 'Elasticsearch SQL',
+      family: 'Elasticsearch',
+      quoteHint: 'ES SQL（经 EsDriver）；无 SQL 插件时请改用「Query DSL」引擎',
+      sample: 'SELECT * FROM "my_index" WHERE status = #{status}',
+      keywords: ['MATCH', 'QUERY', 'SCORE', 'LIMIT'],
+      functions: ['MATCH', 'QUERY', 'SCORE'],
+      types: [],
+      completes: [{ caption: 'LIMIT', insert: 'LIMIT 100' }],
+    }
+  }
+  if (['esdsl', 'es_dsl', 'querydsl'].includes(t)) return resolveEsDslProfile()
   return { ...UNKNOWN, raw }
+}
+
+/** Query DSL 编辑配置（engine=ES_DSL） */
+export function resolveEsDslProfile() {
+  return {
+    id: 'es_dsl',
+    label: 'Query DSL',
+    family: 'Elasticsearch',
+    sql: true,
+    quote: 'none',
+    quoteHint: 'JSON Query DSL；须含 index；占位符 #{name}；经门户 POST /{index}/_search',
+    keywords: ['query', 'bool', 'must', 'filter', 'should', 'term', 'match', 'range', 'aggs'],
+    functions: [],
+    types: [],
+    completes: [],
+    sample:
+      '{\n  "index": "my_index",\n  "query": {\n    "term": { "status": #{status} }\n  },\n  "size": 20\n}',
+  }
+}
+
+/** 归一 type / sqlrestType，便于工作台判断 */
+export function normalizeDsTypeCode(type) {
+  return String(type || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]/g, '')
+}
+
+export function isElasticsearchType(type) {
+  const t = normalizeDsTypeCode(type)
+  return ['elasticsearch', 'opensearch', 'es', 'elasticsearchsql'].includes(t)
+}
+
+export function isHttpFamilyType(type) {
+  const t = normalizeDsTypeCode(type)
+  return ['http', 'httpapi', 'rest', 'openapi', 'tableau', 'superset', 'airflow'].includes(t)
+}
+
+export function isRedisType(type) {
+  return normalizeDsTypeCode(type) === 'redis'
+}
+
+/** Redis KV 引擎样本（engine=REDIS_KV） */
+export function resolveRedisKvProfile() {
+  return {
+    id: 'redis_kv',
+    label: 'Redis KV',
+    family: 'Redis',
+    sql: true,
+    quote: 'none',
+    quoteHint: 'JSON：op=get|mget|hgetall|scan；#{param}；门户直连，不经 SQLREST',
+    keywords: ['get', 'mget', 'hgetall', 'scan', 'key', 'keys', 'pattern'],
+    functions: [],
+    types: [],
+    completes: [],
+    sample:
+      '{\n  "op": "get",\n  "key": "user:#{userId}"\n}',
+  }
 }
 
 export function isDialectSample(sql) {
   const cur = String(sql || '').trim()
   if (!cur) return false
+  if (resolveEsDslProfile().sample.trim() === cur) return true
+  if (resolveRedisKvProfile().sample.trim() === cur) return true
   return PROFILES.some((p) => p.sample && p.sample.trim() === cur)
 }
 

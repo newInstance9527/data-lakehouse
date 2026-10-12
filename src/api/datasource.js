@@ -55,6 +55,11 @@ export function fetchDatasourceKpi(ws) {
   return http.get(`${DS}/kpi`, { ws: resolveWs(ws) })
 }
 
+/** Elasticsearch SQL 能力探测（推荐 SQL / ES_DSL） */
+export function fetchEsCapabilities(id) {
+  return http.get(`${DS}/esCapabilities`, { id })
+}
+
 /** 投影门户数据源到 SQLREST（可按 id 列表；空=全部可投影） */
 export function projectToSqlrest(ids = []) {
   const body = (Array.isArray(ids) ? ids : [ids]).filter(Boolean).map((id) => ({ id }))

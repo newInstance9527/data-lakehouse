@@ -33,10 +33,16 @@ import {
   normalizeSqlContext,
   quoteIdent,
   quoteQualified,
+  isElasticsearchType,
+  isHttpFamilyType,
+  isRedisType,
+  resolveEsDslProfile,
+  resolveRedisKvProfile,
   resolveSqlDialect,
   sqlHasTrailingLimit,
   sqlNeedsPgParamTextCast,
 } from '@/utils/sqlDialect'
+import { fetchEsCapabilities } from '@/api/datasource'
 import { FIELD_TRANSFORM_OPTIONS, mapResponseRow } from '@/data/apiBuild.js'
 
 const props = defineProps({
@@ -148,7 +154,7 @@ loadDebugWidth()
 
 const form = reactive(emptyForm())
 /** 各引擎独立窗口列表 + 激活 key，切换时互不覆盖 */
-const engineWindowStash = reactive({ SQL: null, GROOVY: null })
+const engineWindowStash = reactive({ SQL: null, GROOVY: null, ES_DSL: null, REDIS_KV: null })
 const objectNodes = ref([])
 const metaLoading = ref(false)
 const sqlEditorRef = ref(null)
@@ -225,25 +231,66 @@ async function loadAiModelOptions() {
   }
 }
 
-const projectedDs = computed(() =>
-  (sqlrestDs.value || []).filter((d) => d.projected || d.sqlrestDatasourceId),
+function dsIsProjected(d) {
+  return !!(d && (d.projected || d.sqlrestDatasourceId))
+}
+
+function dsTypeOf(d) {
+  return d?.sqlrestType || d?.type || ''
+}
+
+/** 已投影源 + 未投影 ES（ES_DSL）+ Redis（REDIS_KV） */
+const selectableDs = computed(() =>
+  (sqlrestDs.value || []).filter(
+    (d) => dsIsProjected(d) || isElasticsearchType(dsTypeOf(d)) || isRedisType(dsTypeOf(d)),
+  ),
 )
 
+const projectedDs = computed(() => selectableDs.value.filter((d) => dsIsProjected(d)))
+
 const dsOptions = computed(() =>
-  projectedDs.value.map((d) => ({
-    id: d.id,
-    label: `[${d.sqlrestDatasourceId || '?'}] ${d.name || d.dsCode || d.id}`,
-    sqlrestId: d.sqlrestDatasourceId,
-  })),
+  selectableDs.value.map((d) => {
+    const name = d.name || d.dsCode || d.id
+    if (dsIsProjected(d)) {
+      return { id: d.id, label: `[${d.sqlrestDatasourceId}] ${name}`, sqlrestId: d.sqlrestDatasourceId }
+    }
+    if (isRedisType(dsTypeOf(d))) {
+      return { id: d.id, label: `[Redis KV] ${name}`, sqlrestId: null, redisKvOnly: true }
+    }
+    return { id: d.id, label: `[Query DSL] ${name}`, sqlrestId: null, esDslOnly: true }
+  }),
 )
 
 const selectedDs = computed(() =>
-  projectedDs.value.find((d) => d.id === form.datasourceId) || null,
+  selectableDs.value.find((d) => d.id === form.datasourceId) || null,
 )
 
-const sqlDialect = computed(() =>
-  resolveSqlDialect(selectedDs.value?.sqlrestType || selectedDs.value?.type),
+const selectedDsProjected = computed(() => dsIsProjected(selectedDs.value))
+
+const isEsDatasource = computed(() => isElasticsearchType(dsTypeOf(selectedDs.value)))
+
+const isRedisDatasource = computed(() => isRedisType(dsTypeOf(selectedDs.value)))
+
+const isHttpDatasource = computed(() => isHttpFamilyType(dsTypeOf(selectedDs.value)))
+
+const isPortalNativeEngine = computed(
+  () => form.engine === 'ES_DSL' || form.engine === 'REDIS_KV',
 )
+
+/** HTTP / Redis / 未投影 ES 不宜走 SQLREST SQL */
+const sqlEngineAllowed = computed(() => {
+  if (isHttpDatasource.value || isRedisDatasource.value) return false
+  if (isEsDatasource.value && !selectedDsProjected.value) return false
+  return true
+})
+
+const sqlDialect = computed(() => {
+  if (form.engine === 'ES_DSL') return resolveEsDslProfile()
+  if (form.engine === 'REDIS_KV') return resolveRedisKvProfile()
+  return resolveSqlDialect(dsTypeOf(selectedDs.value))
+})
+
+const esCapabilityHint = ref('')
 
 const isPgDialect = computed(() => isPostgresFamily(sqlDialect.value))
 
@@ -261,6 +308,9 @@ const hydratingEdit = ref(false)
 function resetWorkbenchChrome() {
   engineWindowStash.SQL = null
   engineWindowStash.GROOVY = null
+  engineWindowStash.ES_DSL = null
+  engineWindowStash.REDIS_KV = null
+  esCapabilityHint.value = ''
   objectNodes.value = []
   tab.value = 'sql'
   dirty.value = false
@@ -435,17 +485,21 @@ function removeSqlWindow(key) {
 }
 
 function contextListOf({ trial = false } = {}) {
+  const keepRaw = form.engine === 'ES_DSL' || form.engine === 'REDIS_KV' || form.engine === 'GROOVY'
+  const norm = (s) => {
+    const t = String(s || '').trim()
+    if (!t) return ''
+    return keepRaw ? t : normalizeSqlContext(t)
+  }
   // 调试：只用当前窗口，避免其它窗口残片（如单独的 LIMIT）被一并执行
   if (trial) {
     const cur = String(activeSql.value || '').trim()
     if (cur) {
-      const n = normalizeSqlContext(cur)
+      const n = norm(cur)
       if (n) return [n]
     }
   }
-  return form.sqlWindows
-    .map((w) => normalizeSqlContext(w.sql || ''))
-    .filter((s) => String(s).trim())
+  return form.sqlWindows.map((w) => norm(w.sql || '')).filter((s) => String(s).trim())
 }
 
 /**
@@ -467,7 +521,17 @@ function applyDetailToForm(d, opts = {}) {
   form.path = d.path || d.publicPath || form.path || '/api/'
   form.method = d.method || form.method || 'GET'
   form.description = d.description || d.desc || form.description || ''
-  form.engine = sr.engine || d.engine || form.engine || 'SQL'
+  {
+    const eng = String(sr.engine || d.engine || form.engine || 'SQL').trim().toUpperCase()
+    form.engine =
+      eng === 'ES_DSL' || eng === 'ESDSL' || eng === 'DSL'
+        ? 'ES_DSL'
+        : eng === 'REDIS_KV' || eng === 'REDISKV' || eng === 'REDIS'
+          ? 'REDIS_KV'
+          : eng === 'GROOVY'
+            ? 'GROOVY'
+            : 'SQL'
+  }
   form.sourceKind = d.sourceKind || form.sourceKind || 'sql'
   form.sourceRef = d.sourceRef != null && d.sourceRef !== '' ? d.sourceRef : form.sourceRef || ''
   if (d.state) form.state = d.state
@@ -511,6 +575,8 @@ function applyDetailToForm(d, opts = {}) {
     retitleWindows()
     engineWindowStash.SQL = null
     engineWindowStash.GROOVY = null
+    engineWindowStash.ES_DSL = null
+    engineWindowStash.REDIS_KV = null
     stashEngineWindows(form.engine)
   }
 
@@ -617,7 +683,7 @@ async function loadObjects(dsId) {
   metaLoading.value = true
   objectNodes.value = []
   metaSel.value = null
-  const ds = projectedDs.value.find((d) => d.id === dsId) || null
+  const ds = selectableDs.value.find((d) => d.id === dsId) || null
   const schema = metaSchemaArg(ds)
   try {
     const [tables, views] = await Promise.all([
@@ -719,13 +785,72 @@ const GROOVY_SNIPPETS = [
   { caption: 'return', value: 'return result' },
 ]
 
+const HTTP_GROOVY_SNIPPETS = [
+  {
+    caption: '列表占位',
+    value:
+      `// HTTP 族：SQLREST RestfulDriver；响应需 List/Map 行集\n` +
+      `// 路径相对数据源 Base URL；入参用 #{name}\n` +
+      `def status = "#{status}"\n` +
+      `def rows = [\n` +
+      `  [id: 1, name: 'alpha', status: status],\n` +
+      `  [id: 2, name: 'beta', status: status],\n` +
+      `]\n` +
+      `return rows\n`,
+  },
+  {
+    caption: '单对象',
+    value:
+      `def id = "#{id}"\n` +
+      `return [[id: id, ok: true, message: 'demo']]\n`,
+  },
+  {
+    caption: '空安全',
+    value:
+      `def q = "#{q}"\n` +
+      `if (!q?.trim()) {\n` +
+      `  return []\n` +
+      `}\n` +
+      `return [[q: q, hit: 0]]\n`,
+  },
+]
+
+const ES_DSL_STUB = resolveEsDslProfile().sample
+const REDIS_KV_STUB = resolveRedisKvProfile().sample
+
 const activeSnippets = computed(() => {
-  if (form.engine === 'GROOVY') return GROOVY_SNIPPETS
+  if (form.engine === 'GROOVY') {
+    return isHttpDatasource.value ? HTTP_GROOVY_SNIPPETS : GROOVY_SNIPPETS
+  }
+  if (form.engine === 'ES_DSL') {
+    return [{ caption: '示例', value: ES_DSL_STUB }]
+  }
+  if (form.engine === 'REDIS_KV') {
+    return [
+      { caption: 'GET', value: REDIS_KV_STUB },
+      {
+        caption: 'MGET',
+        value: '{\n  "op": "mget",\n  "keys": ["user:#{userId}", "profile:#{userId}"]\n}',
+      },
+      { caption: 'SCAN', value: '{\n  "op": "scan",\n  "pattern": "#{prefix}*",\n  "count": 50\n}' },
+      { caption: 'HGETALL', value: '{\n  "op": "hgetall",\n  "key": "hash:#{id}"\n}' },
+    ]
+  }
   if (sqlDialect.value.sql === false) return []
   return [{ caption: '示例', value: sqlDialect.value.sample }, ...SQL_SNIPPETS]
 })
 const editorHint = computed(() => {
-  if (form.engine === 'GROOVY') return 'Groovy 高亮 · Ctrl+Space 补全 · 格式化按花括号缩进'
+  if (form.engine === 'GROOVY') {
+    return isHttpDatasource.value
+      ? 'HTTP 族 Groovy · 用下方模板起步 · 不经关系 SQL'
+      : 'Groovy 高亮 · Ctrl+Space 补全 · 格式化按花括号缩进'
+  }
+  if (form.engine === 'ES_DSL') {
+    return 'Query DSL · JSON 须含 index · #{param} 占位 · 门户直连 _search（不经 SQLREST）'
+  }
+  if (form.engine === 'REDIS_KV') {
+    return 'Redis KV · JSON op/key · #{param} · 门户直连（不经 SQLREST）'
+  }
   const d = sqlDialect.value
   if (d.sql === false) return `${d.label} · ${d.quoteHint}`
   const name = d.family ? `${d.label} · 按 ${d.family}` : d.label
@@ -739,9 +864,54 @@ watch(
   () => form.datasourceId,
   (id, prev) => {
     if (hydratingEdit.value) return
-    if (!id || id === prev || form.engine === 'GROOVY') return
+    if (!id || id === prev) return
+
+    esCapabilityHint.value = ''
+    // HTTP 族：强制 GROOVY（RestfulDriver，非关系 SQL）
+    if (isHttpDatasource.value) {
+      if (form.engine !== 'GROOVY') {
+        setEngine('GROOVY')
+        showToast('HTTP / BI / 调度类数据源已切换为 Groovy 引擎', 'info')
+      }
+      return
+    }
+    // Redis：门户 REDIS_KV
+    if (isRedisDatasource.value) {
+      if (form.engine !== 'REDIS_KV') {
+        setEngine('REDIS_KV')
+        showToast('Redis 已切换为 KV 引擎（门户直连，不经 SQLREST）', 'info')
+      }
+      return
+    }
+    // 未投影 ES：只能走 Query DSL
+    if (isEsDatasource.value && !selectedDsProjected.value) {
+      if (form.engine !== 'ES_DSL') {
+        setEngine('ES_DSL')
+        showToast('该 ES 尚未投影 SQLREST，已切换 Query DSL（门户直连 _search）', 'info')
+      }
+      return
+    }
+    // 已投影 ES：探测 SQL 能力并推荐引擎
+    if (isEsDatasource.value && selectedDsProjected.value) {
+      recommendEsEngine().catch(() => {})
+    }
+    // 离开原生引擎 / 从 HTTP·Redis 回到关系源：回到 SQL
+    if ((form.engine === 'ES_DSL' && !isEsDatasource.value)
+      || (form.engine === 'REDIS_KV' && !isRedisDatasource.value)) {
+      setEngine('SQL')
+      return
+    }
+    if (form.engine === 'GROOVY' && !isHttpDatasource.value && prev) {
+      const prevRow = selectableDs.value.find((d) => d.id === prev)
+      if (prevRow && isHttpFamilyType(dsTypeOf(prevRow))) {
+        setEngine('SQL')
+        return
+      }
+    }
+    if (form.engine === 'GROOVY' || form.engine === 'ES_DSL' || form.engine === 'REDIS_KV') return
+
     const cur = String(activeSql.value || '').trim()
-    if (!cur || cur === SQL_STUB || isDialectSample(cur)) {
+    if (!cur || cur === SQL_STUB || cur === ES_DSL_STUB || cur === REDIS_KV_STUB || isDialectSample(cur)) {
       activeSql.value = sqlDialect.value.sql === false || !sqlDialect.value.sample ? '' : `${sqlDialect.value.sample}\n`
       return
     }
@@ -758,7 +928,44 @@ watch(
 )
 
 function windowTitlePrefix(engine) {
-  return engine === 'GROOVY' ? 'Groovy窗口' : 'SQL窗口'
+  if (engine === 'GROOVY') return 'Groovy窗口'
+  if (engine === 'ES_DSL') return 'DSL窗口'
+  if (engine === 'REDIS_KV') return 'KV窗口'
+  return 'SQL窗口'
+}
+
+async function recommendEsEngine(opts = {}) {
+  // 忽略 @click 传入的 DOM Event，避免误伤 autoSwitch 默认值
+  const autoSwitch =
+    opts && typeof opts === 'object' && !('isTrusted' in opts) ? opts.autoSwitch !== false : true
+  if (!form.datasourceId || !isEsDatasource.value) return
+  try {
+    const cap = await fetchEsCapabilities(form.datasourceId)
+    const rec = String(cap?.recommendEngine || '').toUpperCase()
+    esCapabilityHint.value = cap?.message || ''
+    if (!cap?.ok) return
+    const cur = String(activeSql.value || '').trim()
+    const stubish = !cur || cur === SQL_STUB || cur === ES_DSL_STUB || isDialectSample(cur)
+    if (autoSwitch && rec === 'ES_DSL' && form.engine === 'SQL' && sqlEngineAllowed.value) {
+      setEngine('ES_DSL')
+      showToast(cap.message || '未检测到 SQL，已切换 Query DSL', 'info')
+      return
+    }
+    if (autoSwitch && rec === 'SQL' && form.engine === 'ES_DSL' && sqlEngineAllowed.value && stubish) {
+      setEngine('SQL')
+      showToast(cap.message || '已检测到 SQL，已切换 ES SQL', 'info')
+      return
+    }
+    if (rec === 'ES_DSL' && form.engine === 'SQL') {
+      showToast(`${cap.message || '建议改用 Query DSL'}（可点 Query DSL）`, 'info')
+    } else if (rec === 'SQL' && form.engine === 'ES_DSL') {
+      showToast(`${cap.message || '可用 ES SQL'}（正文非空未自动切换，可手动切 ES SQL）`, 'info')
+    } else if (cap.message) {
+      showToast(cap.message, 'info')
+    }
+  } catch (e) {
+    esCapabilityHint.value = e?.message || 'SQL 能力探测失败'
+  }
 }
 
 function cloneWindowState(windows, activeKey) {
@@ -770,7 +977,10 @@ function cloneWindowState(windows, activeKey) {
 
 function defaultWindowState(engine) {
   const prefix = windowTitlePrefix(engine)
-  const sql = engine === 'GROOVY' ? `${GROOVY_STUB}\n` : SQL_STUB
+  let sql = SQL_STUB
+  if (engine === 'GROOVY') sql = `${GROOVY_STUB}\n`
+  else if (engine === 'ES_DSL') sql = `${ES_DSL_STUB}\n`
+  else if (engine === 'REDIS_KV') sql = `${REDIS_KV_STUB}\n`
   return {
     windows: [{ key: 'w1', title: `${prefix}(1)`, sql }],
     activeKey: 'w1',
@@ -785,7 +995,7 @@ function applyWindowState(state) {
 }
 
 function stashEngineWindows(engine = form.engine) {
-  if (engine !== 'SQL' && engine !== 'GROOVY') return
+  if (engine !== 'SQL' && engine !== 'GROOVY' && engine !== 'ES_DSL' && engine !== 'REDIS_KV') return
   engineWindowStash[engine] = cloneWindowState(form.sqlWindows, form.activeSqlKey)
 }
 
@@ -802,7 +1012,15 @@ function onEngineChange(fromEngine) {
   }
   const saved = engineWindowStash[form.engine]
   applyWindowState(saved || defaultWindowState(form.engine))
-  showToast(form.engine === 'GROOVY' ? '已切换 Groovy，请按脚本语法编写' : '已切换 SQL', 'info')
+  const tip =
+    form.engine === 'GROOVY'
+      ? '已切换 Groovy，请按脚本语法编写'
+      : form.engine === 'ES_DSL'
+        ? '已切换 Query DSL：写 JSON（含 index），经门户 _search 执行'
+        : form.engine === 'REDIS_KV'
+          ? '已切换 Redis KV：写 JSON（op/key），经门户直连执行'
+          : '已切换 SQL'
+  showToast(tip, 'info')
   markDirty()
 }
 
@@ -1016,11 +1234,11 @@ async function ensureAiSession() {
 function openAiChat() {
   moreOpen.value = false
   if (!form.datasourceId) {
-    showToast('请先选择已投影数据源，再打开 AI 对话', 'warning')
+    showToast('请先选择数据源，再打开 AI 对话', 'warning')
     return
   }
   if (!selectedDs.value) {
-    showToast('当前数据源未投影或不在可选列表，请重新选择', 'warning')
+    showToast('当前数据源不在可选列表，请重新选择', 'warning')
     return
   }
   aiOpen.value = true
@@ -1756,6 +1974,24 @@ function removeOutput(i) {
 
 function setEngine(engine) {
   if (form.engine === engine) return
+  if (engine === 'ES_DSL' && !isEsDatasource.value) {
+    showToast('Query DSL 仅 Elasticsearch 数据源可用', 'warning')
+    return
+  }
+  if (engine === 'REDIS_KV' && !isRedisDatasource.value) {
+    showToast('Redis KV 仅 Redis 数据源可用', 'warning')
+    return
+  }
+  if (engine === 'SQL' && !sqlEngineAllowed.value) {
+    if (isHttpDatasource.value) {
+      showToast('HTTP 族数据源请用 Groovy，不支持关系 SQL', 'warning')
+    } else if (isRedisDatasource.value) {
+      showToast('Redis 请用 KV 引擎，不经 SQLREST', 'warning')
+    } else if (isEsDatasource.value && !selectedDsProjected.value) {
+      showToast('未投影的 ES 请用 Query DSL，或先在数据源中心投影后再写 ES SQL', 'warning')
+    }
+    return
+  }
   const from = form.engine
   form.engine = engine
   onEngineChange(from)
@@ -2014,8 +2250,32 @@ function buildPayload() {
 function validate() {
   if (!form.name?.trim()) return '请填写 API 名称'
   if (!form.path?.trim()) return '请填写路径'
-  if (!form.datasourceId) return '请选择已投影且有权的数据源'
-  if (!contextListOf().length) return '请至少填写一个 SQL 窗口'
+  if (!form.datasourceId) return '请选择数据源（SQL 轨须已投影；ES DSL / Redis KV 可仅登记）'
+  if (!selectedDs.value) return '当前数据源不在可选列表，请重新选择'
+  if (form.engine === 'SQL' && !selectedDsProjected.value) {
+    return 'SQL 引擎需要已投影到 SQLREST 的数据源；ES 可改用 Query DSL'
+  }
+  if (form.engine === 'ES_DSL' && !isEsDatasource.value) {
+    return 'Query DSL 仅支持 Elasticsearch 数据源'
+  }
+  if (form.engine === 'REDIS_KV' && !isRedisDatasource.value) {
+    return 'Redis KV 仅支持 Redis 数据源'
+  }
+  if (isHttpDatasource.value && form.engine === 'SQL') {
+    return 'HTTP / BI / 调度类数据源请使用 Groovy 引擎'
+  }
+  if (isRedisDatasource.value && form.engine !== 'REDIS_KV') {
+    return 'Redis 数据源请使用 Redis KV 引擎'
+  }
+  if (!contextListOf().length) {
+    return form.engine === 'ES_DSL'
+      ? '请至少填写一个 DSL 窗口'
+      : form.engine === 'REDIS_KV'
+        ? '请至少填写一个 KV 窗口'
+        : form.engine === 'GROOVY'
+          ? '请至少填写一个脚本窗口'
+          : '请至少填写一个 SQL 窗口'
+  }
   if (form.cacheKeyType === 'SpEL' && !String(form.cacheKeyExpr || '').trim()) return 'SpEL 缓存须填写表达式'
   if (form.flowStatus && Number(form.flowCount) < 1) return '开启流控时阈值须 ≥ 1'
   return ''
@@ -2284,6 +2544,21 @@ async function saveAndPublish() {
 }
 
 async function doGatewayProbe() {
+  if (isPortalNativeEngine.value) {
+    debugOpen.value = true
+    showToast(
+      `${form.engine} 不经 SQLREST Gateway，请用「调试」试跑；上线后走 POST /lh/dataapi/runtime/invoke`,
+      'info',
+    )
+    form.probeResult = {
+      ok: false,
+      skipped: true,
+      edgeMode: form.engine === 'REDIS_KV' ? 'portal-redis-kv' : 'portal-es-dsl',
+      hint: '门户原生引擎：无 Gateway 入口',
+      suggestion: '调试面板试跑，或发布后用 runtime/invoke + 订阅 Key',
+    }
+    return
+  }
   try {
     debugOpen.value = true
     const res = await gatewayProbe(form.id ? { id: form.id } : { path: form.path, method: form.method })
@@ -2472,6 +2747,10 @@ async function applyTpl() {
     if (tplPortalDsId.value && projectedDs.value.some((x) => x.id === tplPortalDsId.value) && !form.datasourceId) {
       form.datasourceId = tplPortalDsId.value
     }
+    if (isHttpDatasource.value || isRedisDatasource.value || (isEsDatasource.value && !selectedDsProjected.value)) {
+      showToast('当前数据源不适合写入关系 SQL 模板，请换已投影 JDBC/数仓源', 'warning')
+      return
+    }
     if (form.engine !== 'SQL') setEngine('SQL')
     activeSql.value = sql.endsWith('\n') ? sql : `${sql}\n`
     tab.value = 'sql'
@@ -2552,7 +2831,14 @@ async function applyTpl() {
                 <button type="button" class="wb-more-item" @click="openAiChat">AI 对话生成脚本</button>
               </div>
             </div>
-            <button type="button" class="btn btn-sm" @click="doGatewayProbe">Gateway 探针</button>
+            <button
+              type="button"
+              class="btn btn-sm"
+              :title="isPortalNativeEngine ? '门户原生引擎无 Gateway，点此查看说明' : '探测 SQLREST Gateway'"
+              @click="doGatewayProbe"
+            >
+              {{ isPortalNativeEngine ? '调用说明' : 'Gateway 探针' }}
+            </button>
             <button type="button" class="btn btn-sm" @click="debugOpen = !debugOpen">调试</button>
             <button
               type="button"
@@ -2593,15 +2879,22 @@ async function applyTpl() {
             <label class="meta-ds">
               <span>数据源</span>
               <select v-model="form.datasourceId" class="select" @change="markDirty">
-                <option value="">选择已投影数据源</option>
+                <option value="">选择数据源</option>
                 <option v-for="d in dsOptions" :key="d.id" :value="d.id">{{ d.label }}</option>
               </select>
             </label>
-            <p v-if="!dsOptions.length" class="meta-empty">暂无已投影源。请先在数据源中心登记（登记会自动投影）。</p>
+            <p v-if="!dsOptions.length" class="meta-empty">
+              暂无可选源。请先登记 MySQL/PG/CK/Doris 等可投影类型；Kafka/Iceberg/Trino 等不可投 SQLREST，请换数仓源或走
+              ETL/即席。Elasticsearch（Query DSL）与 Redis（KV）即使未投影也可选。
+            </p>
             <p v-else-if="selectedDs" class="meta-bound">
               当前库 <code>{{ selectedDs.database || selectedDs.databaseName || '连接默认' }}</code>
               · 方言 <code>{{ sqlDialect.family ? `${sqlDialect.label}（${sqlDialect.family}）` : sqlDialect.label }}</code>
+              <template v-if="isRedisDatasource"> · Redis KV · 门户直连</template>
+              <template v-else-if="!selectedDsProjected && isEsDatasource"> · 未投影 · 仅 Query DSL</template>
+              <template v-else-if="isHttpDatasource"> · HTTP 族 · 请用 Groovy</template>
             </p>
+            <p v-if="esCapabilityHint && isEsDatasource" class="meta-bound tip">{{ esCapabilityHint }}</p>
             <p v-if="metaSel?.table" class="meta-bound meta-sel-hint">
               AI 上下文 <code>{{ metaSelLabel() }}</code>
               <button type="button" class="btn-link btn-sm" @click="metaSel = null">清除</button>
@@ -2673,11 +2966,49 @@ async function applyTpl() {
             </nav>
 
             <div v-show="tab === 'sql'" class="wb-panel sql-panel">
+              <p v-if="isPortalNativeEngine" class="engine-edge-hint tip">
+                {{ form.engine === 'REDIS_KV' ? 'Redis KV' : 'Query DSL' }}
+                经门户直连执行；发布后请用
+                <code>POST /lh/dataapi/runtime/invoke</code>
+                （订阅 Key），不经 SQLREST Gateway。
+              </p>
               <div class="sql-exec">
                 <span class="exec-label">执行</span>
                 <div class="seg">
-                  <button type="button" :class="{ on: form.engine === 'SQL' }" @click="setEngine('SQL')">SQL语句</button>
-                  <button type="button" :class="{ on: form.engine === 'GROOVY' }" @click="setEngine('GROOVY')">Groovy脚本</button>
+                  <button
+                    v-if="sqlEngineAllowed"
+                    type="button"
+                    :class="{ on: form.engine === 'SQL' }"
+                    @click="setEngine('SQL')"
+                  >
+                    {{ isEsDatasource ? 'ES SQL' : 'SQL语句' }}
+                  </button>
+                  <button
+                    v-if="isEsDatasource"
+                    type="button"
+                    :class="{ on: form.engine === 'ES_DSL' }"
+                    title="无 ES SQL 插件或不投影时使用；经门户 _search，不经 SQLREST Gateway"
+                    @click="setEngine('ES_DSL')"
+                  >
+                    Query DSL
+                  </button>
+                  <button
+                    v-if="isRedisDatasource"
+                    type="button"
+                    :class="{ on: form.engine === 'REDIS_KV' }"
+                    title="Redis GET/MGET/HGETALL/SCAN；门户直连"
+                    @click="setEngine('REDIS_KV')"
+                  >
+                    Redis KV
+                  </button>
+                  <button
+                    v-if="!isRedisDatasource"
+                    type="button"
+                    :class="{ on: form.engine === 'GROOVY' }"
+                    @click="setEngine('GROOVY')"
+                  >
+                    Groovy脚本
+                  </button>
                 </div>
                 <div class="stepper" title="调试超时（秒）">
                   <button type="button" @click="form.timeout = Math.max(1, Number(form.timeout) - 1); markDirty()">−</button>
@@ -2687,13 +3018,26 @@ async function applyTpl() {
               </div>
               <div class="stmt-bar">
                 <span class="exec-label">语句</span>
-                <span v-if="form.engine === 'SQL'" class="dialect-tag" :title="sqlDialect.quoteHint">
+                <span
+                  v-if="form.engine === 'SQL' || form.engine === 'ES_DSL' || form.engine === 'REDIS_KV'"
+                  class="dialect-tag"
+                  :title="sqlDialect.quoteHint"
+                >
                   {{ sqlDialect.family ? `${sqlDialect.label} · ${sqlDialect.family}` : sqlDialect.label }}
                 </span>
                 <button
+                  v-if="isEsDatasource && selectedDsProjected"
+                  type="button"
+                  class="btn btn-sm"
+                  title="探测集群是否支持 ES SQL"
+                  @click="() => recommendEsEngine()"
+                >
+                  探测 SQL
+                </button>
+                <button
                   type="button"
                   class="btn btn-sm btn-primary"
-                  :title="form.datasourceId ? '打开 AI 对话生成 SQL/Groovy' : '请先选择已投影数据源'"
+                  :title="form.datasourceId ? '打开 AI 对话生成 SQL/Groovy/DSL' : '请先选择数据源'"
                   @click="openAiChat"
                 >
                   AI 助手
@@ -2734,8 +3078,8 @@ async function applyTpl() {
                 :rows="10"
                 default-editing
                 :language="form.engine === 'GROOVY' ? 'groovy' : 'sql'"
-                :dialect="selectedDs?.sqlrestType || selectedDs?.type || ''"
-                :label="form.engine === 'GROOVY' ? 'Groovy' : '语句'"
+                :dialect="form.engine === 'ES_DSL' ? 'es_dsl' : (form.engine === 'REDIS_KV' ? 'redis_kv' : (selectedDs?.sqlrestType || selectedDs?.type || ''))"
+                :label="form.engine === 'GROOVY' ? 'Groovy' : (form.engine === 'ES_DSL' ? 'Query DSL' : (form.engine === 'REDIS_KV' ? 'Redis KV' : '语句'))"
                 :placeholder="form.engine === 'GROOVY' ? '// groovy' : (sqlDialect.sql === false ? '此数据源不使用 SQL' : sqlDialect.sample)"
                 :hint="editorHint"
                 :suggests="editorSuggests"
@@ -3145,9 +3489,12 @@ async function applyTpl() {
             <pre v-if="form.testResult?.sqlPreview" class="sample-json sql-preview">{{ form.testResult.sqlPreview }}</pre>
             <div v-if="form.probeResult" class="probe-panel">
               <div class="probe-line">
-                <span class="probe-k">探针</span>
-                <code>{{ form.probeResult.method || form.method }}</code>
-                <code class="probe-url">{{ form.probeResult.requestUrl || '—' }}</code>
+                <span class="probe-k">{{ form.probeResult.skipped ? '调用边' : '探针' }}</span>
+                <code v-if="form.probeResult.edgeMode">{{ form.probeResult.edgeMode }}</code>
+                <template v-else>
+                  <code>{{ form.probeResult.method || form.method }}</code>
+                  <code class="probe-url">{{ form.probeResult.requestUrl || '—' }}</code>
+                </template>
               </div>
               <p v-if="form.probeResult.hint || form.probeResult.message" class="tip probe-hint">
                 {{ form.probeResult.hint || form.probeResult.message }}
@@ -4196,6 +4543,21 @@ async function applyTpl() {
 .tip {
   font-size: 12px;
   color: var(--text-3, #94a3b8);
+}
+.engine-edge-hint {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  line-height: 1.45;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--primary, #2563eb) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--primary, #2563eb) 22%, transparent);
+  color: var(--text-2, #64748b);
+}
+.engine-edge-hint code {
+  font-size: 11px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--text-1, #0f172a) 6%, transparent);
 }
 .param-pg-hint {
   margin: 6px 0 10px;
