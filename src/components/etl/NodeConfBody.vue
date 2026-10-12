@@ -17,6 +17,7 @@ import {
   SCHEMA_FROM_OPTIONS,
   buildCreateDdlPreview,
 } from '@/utils/etlAutoCreate'
+import { allowsEtlDsBind, etlDsBindHint } from '@/data/etlDsCapability'
 
 const props = defineProps({
   type: { type: String, required: true },
@@ -41,7 +42,17 @@ const { list: assetList } = useAssets()
 const { fieldList, codeList, ensureLoaded: ensureStdLoaded, loaded: stdLoaded } = useStandards()
 const { ensureTableFields, getTableFields, schemaRev } = useDsSchema()
 
-const DB_TYPES = ['MySQL', 'PostgreSQL', 'Oracle', 'SQLServer', 'MongoDB', 'TiDB', 'SQLite']
+const DB_TYPES = [
+  'MySQL',
+  'PostgreSQL',
+  'Oracle',
+  'SQLServer',
+  'Doris',
+  'StarRocks',
+  'ClickHouse',
+  'MariaDB',
+  'TiDB',
+]
 const STARTUP_MODES = [
   { value: 'initial', label: 'initial (快照+增量)' },
   { value: 'latest-offset', label: 'latest-offset (只增量)' },
@@ -120,21 +131,82 @@ const etlSourcePool = computed(() => {
 })
 
 const dsOptions = computed(() =>
-  etlSourcePool.value.map((s) => ({
-    value: s.id,
-    label: `${s.name} (${s.type})`,
-  })),
+  etlSourcePool.value
+    .filter((s) => allowsEtlDsBind(s.type, props.type))
+    .map((s) => ({
+      value: s.id,
+      label: `${s.name} (${s.type})`,
+    })),
 )
+
+const dsCapabilityHint = computed(() => {
+  const id = props.conf?.dsId
+  if (!id) return ''
+  const s = getSource?.(id) || etlSourcePool.value.find((x) => x.id === id)
+  return s ? etlDsBindHint(s.typeCode || s.type, props.type) : ''
+})
 
 const kafkaDsOptions = computed(() =>
   etlSourcePool.value
-    .filter((s) => String(s.type || '').toLowerCase().includes('kafka') || s.category === 'mq')
+    .filter(
+      (s) =>
+        allowsEtlDsBind(s.type, props.type) &&
+        (String(s.type || '').toLowerCase().includes('kafka') || s.category === 'mq'),
+    )
+    .filter((s) => !String(s.type || '').toLowerCase().includes('pulsar'))
     .map((s) => ({ value: s.id, label: `${s.name} (${s.type})` })),
 )
+
+const pulsarDsOptions = computed(() =>
+  etlSourcePool.value
+    .filter(
+      (s) =>
+        allowsEtlDsBind(s.type, 'source_pulsar') &&
+        String(s.type || '').toLowerCase().includes('pulsar'),
+    )
+    .map((s) => ({ value: s.id, label: `${s.name} (${s.type})` })),
+)
+
+function dsTypeKey(s) {
+  return String(s?.typeCode || s?.type || '').toLowerCase()
+}
+
+const mongoDsOptions = computed(() =>
+  etlSourcePool.value
+    .filter((s) => dsTypeKey(s).includes('mongo'))
+    .filter((s) => allowsEtlDsBind(s.typeCode || s.type, 'source_mongo'))
+    .map((s) => ({ value: s.id, label: `${s.name} (${s.type || s.typeCode})` })),
+)
+
+const hbaseDsOptions = computed(() =>
+  etlSourcePool.value
+    .filter((s) => dsTypeKey(s).includes('hbase'))
+    .filter((s) => allowsEtlDsBind(s.typeCode || s.type, 'source_hbase'))
+    .map((s) => ({ value: s.id, label: `${s.name} (${s.type || s.typeCode})` })),
+)
+
+const rabbitDsOptions = computed(() =>
+  etlSourcePool.value
+    .filter((s) => dsTypeKey(s).includes('rabbit'))
+    .filter((s) => allowsEtlDsBind(s.typeCode || s.type, 'source_rabbitmq'))
+    .map((s) => ({ value: s.id, label: `${s.name} (${s.type || s.typeCode})` })),
+)
+
+const rdbSinkDsOptions = computed(() =>
+  etlSourcePool.value
+    .filter((s) => allowsEtlDsBind(s.typeCode || s.type, 'sink_rdb'))
+    .map((s) => ({ value: s.id, label: `${s.name} (${s.type || s.typeCode})` })),
+)
+
+const isDorisOrSrSink = computed(() => {
+  const t = dsTypeKey(boundSource.value || { type: props.conf?.dbType || props.conf?.lhDsType })
+  return t.includes('doris') || t.includes('starrocks')
+})
 
 const apiDsOptions = computed(() =>
   etlSourcePool.value
     .filter((s) => {
+      if (!allowsEtlDsBind(s.type, props.type)) return false
       const t = String(s.type || '').toLowerCase()
       const c = String(s.category || '').toLowerCase()
       return (
@@ -145,6 +217,32 @@ const apiDsOptions = computed(() =>
         t.includes('rest')
       )
     })
+    .map((s) => ({ value: s.id, label: `${s.name} (${s.type})` })),
+)
+
+const searchDsOptions = computed(() =>
+  etlSourcePool.value
+    .filter((s) => {
+      const t = String(s.type || '').toLowerCase()
+      return t.includes('elastic') || t.includes('opensearch') || s.category === 'search'
+    })
+    .filter((s) => allowsEtlDsBind(s.type, 'sink_search'))
+    .map((s) => ({ value: s.id, label: `${s.name} (${s.type})` })),
+)
+
+const objectDsOptions = computed(() =>
+  etlSourcePool.value
+    .filter((s) => {
+      const t = String(s.type || '').toLowerCase()
+      return (
+        t.includes('s3') ||
+        t.includes('minio') ||
+        t.includes('hdfs') ||
+        t.includes('oss') ||
+        s.category === 'storage'
+      )
+    })
+    .filter((s) => allowsEtlDsBind(s.type, 'sink_object'))
     .map((s) => ({ value: s.id, label: `${s.name} (${s.type})` })),
 )
 
@@ -287,6 +385,10 @@ function typeLabel(t) {
     oracle: 'Oracle',
     sqlserver: 'SQLServer',
     mongodb: 'MongoDB',
+    hbase: 'HBase',
+    doris: 'Doris',
+    starrocks: 'StarRocks',
+    rabbitmq: 'RabbitMQ',
     tidb: 'TiDB',
     kafka: 'Kafka',
   }
@@ -307,7 +409,8 @@ function onBindDs(id) {
     return
   }
   const s = getSource(id)
-  setMany({
+  const conn = s?.conn && typeof s.conn === 'object' ? s.conn : {}
+  const patch = {
     dsId: id,
     password: '',
     authPass: '',
@@ -319,9 +422,39 @@ function onBindDs(id) {
     database: '',
     username: '',
     bootstrap: '',
-    dbType: s ? typeLabel(s.type) : props.conf.dbType,
+    dbType: s ? typeLabel(s.typeCode || s.type) : props.conf.dbType,
     baseUrl: s?.endpoint || s?.host || props.conf.baseUrl || '',
-  })
+  }
+  // Mongo / HBase：绑定后从数据源回填展示字段（凭证仍走 Vault，不清空业务对象名）
+  if (props.type === 'source_mongo' && s) {
+    patch.host = s.host || conn.host || ''
+    patch.port = Number(s.port || conn.port || 27017) || 27017
+    patch.database = s.database || conn.database || ''
+    if (!props.conf.collection && !props.conf.table) {
+      /* keep empty for user pick */
+    }
+  }
+  if (props.type === 'source_hbase' && s) {
+    const zk = s.host || conn.zkQuorum || conn.host || ''
+    patch.host = zk
+    patch.zkQuorum = zk
+    patch.zkPort = Number(s.port || conn.port || conn.zkPort || 2181) || 2181
+    patch.namespace = s.database || conn.namespace || conn.database || props.conf.namespace || ''
+  }
+  if (props.type === 'source_rabbitmq' && s) {
+    patch.host = s.host || conn.host || ''
+    patch.port = Number(s.port || conn.port || 5672) || 5672
+    patch.vhost = conn.vhost || conn.virtualHost || props.conf.vhost || '/'
+  }
+  if (props.type === 'sink_rdb' && s) {
+    const tk = String(s.typeCode || s.type || '').toLowerCase()
+    if (tk.includes('doris') || tk.includes('starrocks')) {
+      patch.writeMode = props.conf.writeMode || 'stream_load'
+      patch.lhDsType = s.typeCode || s.type
+      patch.dbType = typeLabel(s.typeCode || s.type)
+    }
+  }
+  setMany(patch)
   ensureTables(id).catch(() => {})
 }
 
@@ -978,8 +1111,283 @@ function onCodeSetPick(v) {
     <div class="form-hint">本节点只读文件；落地/覆盖策略请在下游 sink_object / sink_iceberg 配置</div>
   </template>
 
+  <!-- ===== source_kafka ===== -->
+  <template v-else-if="type === 'source_kafka'">
+    <div class="sec-title">Kafka 源（流式入湖）</div>
+    <div class="form-hint">本节点为占位绑定；真正的 Flink STREAMING 作业在下游 <code>sink_iceberg</code> 同作业消费 Topic。</div>
+    <label class="form-field">
+      <span class="form-label">绑定 Kafka 数据源</span>
+      <select class="select" :value="conf.dsId || ''" @change="onBindDs($event.target.value)">
+        <option value="">— 暂不绑定 / 手填 bootstrap —</option>
+        <option v-for="o in (kafkaDsOptions.length ? kafkaDsOptions : dsOptions)" :key="o.value" :value="o.value">{{ o.label }}</option>
+      </select>
+    </label>
+    <div v-if="dsBound" class="ds-bound-card">
+      <div class="ds-bound-title">已绑定 · {{ boundSource?.name || conf.dsId }}</div>
+      <div class="form-hint">Bootstrap / SASL 运行时由 Vault 注入</div>
+    </div>
+    <label v-else class="form-field"><span class="form-label">Bootstrap</span><input class="input" :value="conf.bootstrap" @input="set('bootstrap', $event.target.value)" placeholder="kafka-1:9092,kafka-2:9092" /></label>
+    <label class="form-field"><span class="form-label">Topic</span><input class="input" :value="conf.topic" @input="set('topic', $event.target.value)" placeholder="pc_app_events" /></label>
+    <div class="form-grid-2">
+      <label class="form-field">
+        <span class="form-label">消费组</span>
+        <input class="input" :value="conf.groupId" @input="set('groupId', $event.target.value)" placeholder="默认 lh-etl-{topic}" />
+      </label>
+      <label class="form-field">
+        <span class="form-label">启动位点</span>
+        <select class="select" :value="conf.startupMode || 'latest-offset'" @change="set('startupMode', $event.target.value)">
+          <option value="latest-offset">latest-offset</option>
+          <option value="earliest-offset">earliest-offset</option>
+          <option value="group-offsets">group-offsets</option>
+        </select>
+      </label>
+      <label class="form-field">
+        <span class="form-label">Value 格式</span>
+        <select class="select" :value="conf.valueFormat || 'JSON'" @change="set('valueFormat', $event.target.value)">
+          <option>JSON</option><option>String</option>
+        </select>
+      </label>
+      <label class="form-field">
+        <span class="form-label">Schema 模板</span>
+        <select class="select" :value="conf.schemaTemplate || 'analytics'" @change="set('schemaTemplate', $event.target.value)">
+          <option value="analytics">埋点信封（analytics）</option>
+          <option value="pc_app">PC 应用（同 analytics）</option>
+          <option value="custom">自定义列（高级）</option>
+        </select>
+      </label>
+    </div>
+    <details class="adv-fold">
+      <summary>高级：安全</summary>
+      <div class="form-grid-2" style="margin-top: 8px">
+        <label class="form-field">
+          <span class="form-label">security.protocol</span>
+          <select class="select" :value="conf.security || 'PLAINTEXT'" @change="set('security', $event.target.value)">
+            <option>PLAINTEXT</option><option>SASL_PLAINTEXT</option><option>SASL_SSL</option><option>SSL</option>
+          </select>
+        </label>
+        <label class="form-field">
+          <span class="form-label">sasl.mechanism</span>
+          <select class="select" :value="conf.saslMech || 'PLAIN'" @change="set('saslMech', $event.target.value)">
+            <option>PLAIN</option><option>SCRAM-SHA-256</option><option>SCRAM-SHA-512</option>
+          </select>
+        </label>
+      </div>
+      <div class="form-hint" style="margin-top: 8px">生产请绑定 dsId，用户口令走 Vault；此处仅开发手填。</div>
+    </details>
+  </template>
+
+  <!-- ===== source_pulsar ===== -->
+  <template v-else-if="type === 'source_pulsar'">
+    <div class="sec-title">Pulsar 源（流式入湖）</div>
+    <div class="form-hint">本节点为 SHELL 占位；真正 STREAMING 作业在下游 <code>sink_iceberg</code> / <code>sink_ck</code> / <code>sink_kafka</code> 折叠消费。</div>
+    <label class="form-field">
+      <span class="form-label">绑定 Pulsar 数据源</span>
+      <select class="select" :value="conf.dsId || ''" @change="onBindDs($event.target.value)">
+        <option value="">— 暂不绑定 / 手填 serviceUrl —</option>
+        <option v-for="o in pulsarDsOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
+      </select>
+    </label>
+    <div v-if="dsBound" class="ds-bound-card">
+      <div class="ds-bound-title">已绑定 · {{ boundSource?.name || conf.dsId }}</div>
+      <div class="form-hint">service-url 运行时由 Vault 注入（LH_PULSAR_*）</div>
+    </div>
+    <label v-else class="form-field"><span class="form-label">Service URL</span><input class="input" :value="conf.serviceUrl" @input="set('serviceUrl', $event.target.value)" placeholder="pulsar://broker:6650" /></label>
+    <label class="form-field"><span class="form-label">Admin URL（可选）</span><input class="input" :value="conf.adminUrl" @input="set('adminUrl', $event.target.value)" placeholder="http://broker:8080" /></label>
+    <label class="form-field"><span class="form-label">Topic</span><input class="input" :value="conf.topic" @input="set('topic', $event.target.value)" placeholder="persistent://public/default/pc_app_events" /></label>
+    <div class="form-grid-2">
+      <label class="form-field">
+        <span class="form-label">Subscription</span>
+        <input class="input" :value="conf.subscription || conf.groupId || ''" @input="set('subscription', $event.target.value)" placeholder="默认 lh-etl-{topic}" />
+      </label>
+      <label class="form-field">
+        <span class="form-label">启动位点</span>
+        <select class="select" :value="conf.startupMode || 'latest'" @change="set('startupMode', $event.target.value)">
+          <option value="latest">latest</option>
+          <option value="earliest">earliest</option>
+        </select>
+      </label>
+      <label class="form-field">
+        <span class="form-label">Value 格式</span>
+        <select class="select" :value="conf.valueFormat || 'JSON'" @change="set('valueFormat', $event.target.value)">
+          <option>JSON</option><option>String</option>
+        </select>
+      </label>
+      <label class="form-field">
+        <span class="form-label">Schema 模板</span>
+        <select class="select" :value="conf.schemaTemplate || 'analytics'" @change="set('schemaTemplate', $event.target.value)">
+          <option value="analytics">埋点信封（analytics）</option>
+          <option value="custom">自定义列（高级）</option>
+        </select>
+      </label>
+    </div>
+  </template>
+
+  <!-- ===== source_rabbitmq ===== -->
+  <template v-else-if="type === 'source_rabbitmq'">
+    <div class="sec-title">RabbitMQ 入湖</div>
+    <div class="form-hint">
+      SHELL 占位 + Vault <code>LH_RABBIT_*</code>；生产请配置 Worker 环境变量
+      <code>LH_RABBIT_CONSUMER_CMD</code>（真实消费命令）。
+    </div>
+    <label class="form-field">
+      <span class="form-label">绑定 RabbitMQ 数据源</span>
+      <select class="select" :value="conf.dsId || ''" @change="onBindDs($event.target.value)">
+        <option value="">— 暂不绑定 / 手填 —</option>
+        <option v-for="o in rabbitDsOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
+      </select>
+    </label>
+    <div v-if="!rabbitDsOptions.length" class="form-hint">暂无可用 RabbitMQ 源：请先登记 type=RabbitMQ 且用途含入湖。</div>
+    <div v-if="dsCapabilityHint" class="form-hint">{{ dsCapabilityHint }}</div>
+    <div v-if="dsBound" class="ds-bound-card">
+      <div class="ds-bound-title">已绑定 · {{ boundSource?.name || conf.dsId }}</div>
+      <div class="ds-bound-grid">
+        <div><span class="k">Host</span>{{ conf.host || boundSource?.host || '（Vault）' }}</div>
+        <div><span class="k">端口</span>{{ conf.port || boundSource?.port || 5672 }}</div>
+        <div><span class="k">vhost</span>{{ conf.vhost || boundSource?.conn?.vhost || '/' }}</div>
+        <div><span class="k">账号</span>{{ boundSource?.user || '（Vault）' }}</div>
+      </div>
+    </div>
+    <div v-else class="form-grid-2">
+      <label class="form-field"><span class="form-label">Host</span><input class="input" :value="conf.host" @input="set('host', $event.target.value)" placeholder="mq-1" /></label>
+      <label class="form-field"><span class="form-label">Port</span><input class="input" type="number" :value="conf.port || 5672" @input="set('port', Number($event.target.value))" /></label>
+      <label class="form-field"><span class="form-label">vhost</span><input class="input" :value="conf.vhost || '/'" @input="set('vhost', $event.target.value)" /></label>
+    </div>
+    <div class="form-grid-2">
+      <label class="form-field">
+        <span class="form-label"><span class="req">*</span>Queue</span>
+        <input class="input" :value="conf.queue || conf.table || ''" @input="setMany({ queue: $event.target.value, table: $event.target.value })" placeholder="lh.events.q" />
+      </label>
+      <label class="form-field">
+        <span class="form-label">Exchange（可选）</span>
+        <input class="input" :value="conf.exchange || ''" @input="set('exchange', $event.target.value)" />
+      </label>
+      <label class="form-field">
+        <span class="form-label">Routing Key</span>
+        <input class="input" :value="conf.routingKey || ''" @input="set('routingKey', $event.target.value)" />
+      </label>
+      <label class="form-field">
+        <span class="form-label">Value 格式</span>
+        <select class="select" :value="conf.valueFormat || 'JSON'" @change="set('valueFormat', $event.target.value)">
+          <option>JSON</option><option>String</option>
+        </select>
+      </label>
+    </div>
+  </template>
+
+  <!-- ===== source_mongo ===== -->
+  <template v-else-if="type === 'source_mongo'">
+    <div class="sec-title">MongoDB 抽取</div>
+    <div class="form-hint">DataX <code>mongodbreader</code> → 下游落表/入湖；账号口令运行时 Vault <code>LH_MONGO_*</code>。</div>
+    <label class="form-field">
+      <span class="form-label">绑定 Mongo 数据源</span>
+      <select class="select" :value="conf.dsId || ''" @change="onBindDs($event.target.value)">
+        <option value="">— 暂不绑定 / 手填连接 —</option>
+        <option v-for="o in mongoDsOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
+      </select>
+    </label>
+    <div v-if="!mongoDsOptions.length" class="form-hint">暂无可用 Mongo 源：请先在数据源中心登记 type=MongoDB 且用途含入湖。</div>
+    <div v-if="dsCapabilityHint" class="form-hint">{{ dsCapabilityHint }}</div>
+    <div v-if="dsBound" class="ds-bound-card">
+      <div class="ds-bound-title">已绑定 · {{ boundSource?.name || conf.dsId }}</div>
+      <div class="ds-bound-grid">
+        <div><span class="k">Host</span>{{ conf.host || boundSource?.host || '（运行时解析）' }}</div>
+        <div><span class="k">端口</span>{{ conf.port || boundSource?.port || 27017 }}</div>
+        <div><span class="k">库</span>{{ conf.database || boundSource?.database || '—' }}</div>
+        <div><span class="k">账号</span>{{ boundSource?.user || '（Vault）' }}</div>
+      </div>
+    </div>
+    <div v-else class="form-grid-2">
+      <label class="form-field"><span class="form-label">Host</span><input class="input" :value="conf.host" @input="set('host', $event.target.value)" placeholder="10.3.6.20" /></label>
+      <label class="form-field"><span class="form-label">Port</span><input class="input" type="number" :value="conf.port || 27017" @input="set('port', Number($event.target.value))" /></label>
+      <label class="form-field"><span class="form-label">Database</span><input class="input" :value="conf.database" @input="set('database', $event.target.value)" placeholder="behavior_db" /></label>
+    </div>
+    <div class="form-grid-2">
+      <label class="form-field">
+        <span class="form-label"><span class="req">*</span>Collection</span>
+        <input
+          class="input"
+          :value="conf.collection || conf.table || ''"
+          @input="setMany({ collection: $event.target.value, table: $event.target.value })"
+          placeholder="user_events"
+        />
+      </label>
+      <label v-if="dsBound" class="form-field">
+        <span class="form-label">Database（可覆盖）</span>
+        <input class="input" :value="conf.database" @input="set('database', $event.target.value)" placeholder="默认用数据源库名" />
+      </label>
+    </div>
+    <label class="form-field">
+      <span class="form-label">列（可选，逗号分隔）</span>
+      <input class="input" :value="conf.column || ''" @input="set('column', $event.target.value)" placeholder="空=全字段；如 _id,userId,event" />
+    </label>
+    <label class="form-field">
+      <span class="form-label">Query（可选 JSON）</span>
+      <textarea class="textarea mono" rows="2" :value="conf.query || ''" @input="set('query', $event.target.value)" placeholder='{"status":"A"}' />
+    </label>
+  </template>
+
+  <!-- ===== source_hbase ===== -->
+  <template v-else-if="type === 'source_hbase'">
+    <div class="sec-title">HBase 抽取</div>
+    <div class="form-hint">DataX <code>hbasereader</code>；ZK 运行时 Vault <code>LH_HBASE_ZK</code>。</div>
+    <label class="form-field">
+      <span class="form-label">绑定 HBase 数据源</span>
+      <select class="select" :value="conf.dsId || ''" @change="onBindDs($event.target.value)">
+        <option value="">— 暂不绑定 / 手填 ZK —</option>
+        <option v-for="o in hbaseDsOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
+      </select>
+    </label>
+    <div v-if="!hbaseDsOptions.length" class="form-hint">暂无可用 HBase 源：请先在数据源中心登记 type=HBase 且用途含入湖。</div>
+    <div v-if="dsCapabilityHint" class="form-hint">{{ dsCapabilityHint }}</div>
+    <div v-if="dsBound" class="ds-bound-card">
+      <div class="ds-bound-title">已绑定 · {{ boundSource?.name || conf.dsId }}</div>
+      <div class="ds-bound-grid">
+        <div><span class="k">ZK</span>{{ conf.zkQuorum || conf.host || boundSource?.host || '（Vault）' }}</div>
+        <div><span class="k">端口</span>{{ conf.zkPort || boundSource?.port || 2181 }}</div>
+        <div><span class="k">命名空间</span>{{ conf.namespace || boundSource?.database || '—' }}</div>
+        <div><span class="k">认证</span>{{ boundSource?.conn?.auth || 'NONE' }}</div>
+      </div>
+    </div>
+    <div v-else class="form-grid-2">
+      <label class="form-field"><span class="form-label">ZK Quorum</span><input class="input" :value="conf.zkQuorum || conf.host || ''" @input="setMany({ zkQuorum: $event.target.value, host: $event.target.value })" placeholder="zk1,zk2,zk3" /></label>
+      <label class="form-field"><span class="form-label">ZK Port</span><input class="input" type="number" :value="conf.zkPort || conf.port || 2181" @input="set('zkPort', Number($event.target.value))" /></label>
+      <label class="form-field"><span class="form-label">命名空间</span><input class="input" :value="conf.namespace || ''" @input="set('namespace', $event.target.value)" placeholder="ns_tag" /></label>
+    </div>
+    <div class="form-grid-2">
+      <label class="form-field">
+        <span class="form-label"><span class="req">*</span>表</span>
+        <input class="input" :value="conf.table" @input="set('table', $event.target.value)" placeholder="user_tag" />
+      </label>
+      <label class="form-field">
+        <span class="form-label">列族</span>
+        <input class="input" :value="conf.columnFamily || 'cf'" @input="set('columnFamily', $event.target.value)" placeholder="cf" />
+      </label>
+      <label class="form-field">
+        <span class="form-label">模式</span>
+        <select class="select" :value="conf.mode || 'normal'" @change="set('mode', $event.target.value)">
+          <option value="normal">normal</option>
+          <option value="multiVersion">multiVersion</option>
+        </select>
+      </label>
+      <label class="form-field">
+        <span class="form-label">编码</span>
+        <input class="input" :value="conf.encoding || 'UTF-8'" @input="set('encoding', $event.target.value)" />
+      </label>
+    </div>
+    <label class="form-field">
+      <span class="form-label">列（可选）</span>
+      <input
+        class="input"
+        :value="conf.column || ''"
+        @input="set('column', $event.target.value)"
+        placeholder="空=rowkey+列族通配；如 rowkey,cf:name,cf:age"
+      />
+    </label>
+  </template>
+
   <!-- ===== clean ===== -->
   <template v-else-if="type === 'clean'">
+    <div class="form-hint">上游为 <code>source_kafka</code> / <code>source_pulsar</code> 时：本节点不单独跑作业，规则折叠进下游汇点 FLINK_STREAM（流式路径会忽略有界 dedup）。</div>
     <div class="sec-title">预设与全局策略</div>
     <label class="form-field">
       <span class="form-label">清洗等级</span>
@@ -1472,7 +1880,7 @@ function onCodeSetPick(v) {
   <!-- ===== sink_ck ===== -->
   <template v-else-if="type === 'sink_ck'">
     <div class="sec-title">ClickHouse 写出</div>
-    <div class="form-hint">人对账走统一查询；此处仅作业服务账号写入。表已存在时以目标表为准</div>
+    <div class="form-hint">热查 ADS：Flink JDBC → ClickHouse（凭证 <code>LH_CK_*</code>）。上游 <code>source_kafka</code> 时折成单作业 FLINK_STREAM。人对账走统一查询；此处仅作业 SA 写入。</div>
     <div class="form-grid-2">
       <label class="form-field"><span class="form-label">Database</span><input class="input" :value="conf.database" @input="set('database', $event.target.value)" /></label>
       <label class="form-field">
@@ -1575,7 +1983,8 @@ function onCodeSetPick(v) {
 
   <!-- ===== sink_kafka ===== -->
   <template v-else-if="type === 'sink_kafka'">
-    <div class="sec-title">Kafka</div>
+    <div class="sec-title">Kafka 扇出</div>
+    <div class="form-hint">Flink Kafka sink：上游 <code>source_kafka</code> 时源 Topic 折叠进本节点，本处 Topic 为<strong>目标</strong> Topic（可同集群不同 Topic）。</div>
     <label class="form-field">
       <span class="form-label">绑定 Kafka 数据源</span>
       <select class="select" :value="conf.dsId || ''" @change="onBindDs($event.target.value)">
@@ -1588,7 +1997,7 @@ function onCodeSetPick(v) {
       <div class="form-hint">Bootstrap 运行时解析</div>
     </div>
     <label v-else class="form-field"><span class="form-label">Bootstrap</span><input class="input" :value="conf.bootstrap" @input="set('bootstrap', $event.target.value)" /></label>
-    <label class="form-field"><span class="form-label">Topic</span><input class="input" :value="conf.topic" @input="set('topic', $event.target.value)" /></label>
+    <label class="form-field"><span class="form-label">目标 Topic</span><input class="input" :value="conf.topic" @input="set('topic', $event.target.value)" placeholder="扇出写入的 Topic" /></label>
     <div class="form-grid-2">
       <label class="form-field">
         <span class="form-label">Key 字段</span>
@@ -1623,6 +2032,15 @@ function onCodeSetPick(v) {
   <!-- ===== sink_object ===== -->
   <template v-else-if="type === 'sink_object'">
     <div class="sec-title">对象存储</div>
+    <div class="form-hint">DataX osswriter / hdfswriter；优先绑定 S3/MinIO/HDFS 数据源。</div>
+    <label class="form-field">
+      <span class="form-label">绑定存储数据源</span>
+      <select class="select" :value="conf.dsId || ''" @change="onBindDs($event.target.value)">
+        <option value="">— 暂不绑定 / 手填 —</option>
+        <option v-for="o in (objectDsOptions.length ? objectDsOptions : dsOptions)" :key="o.value" :value="o.value">{{ o.label }}</option>
+      </select>
+    </label>
+    <div v-if="dsCapabilityHint" class="form-hint">{{ dsCapabilityHint }}</div>
     <div class="form-grid-2">
       <label class="form-field">
         <span class="form-label">存储类型</span>
@@ -1728,9 +2146,11 @@ function onCodeSetPick(v) {
       <span class="form-label">绑定数据源</span>
       <select class="select" :value="conf.dsId || ''" @change="onBindDs($event.target.value)">
         <option value="">— 暂不绑定 / 手填 —</option>
-        <option v-for="o in dsOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
+        <option v-for="o in rdbSinkDsOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
       </select>
-      <div class="form-hint">绑定后库类型与连接由数据源中心解析；节点只配目标表与写入策略</div>
+      <div class="form-hint">
+        方言按数据源 type 选 DataX writer（mysql/pg/oracle/sqlserver；Doris/SR → Stream Load）。
+      </div>
     </label>
     <div v-if="dsBound" class="ds-bound-card">
       <div class="ds-bound-title">已绑定 · 连接只读</div>
@@ -1750,8 +2170,30 @@ function onCodeSetPick(v) {
       </label>
       <label class="form-field">
         <span class="form-label">写入模式</span>
-        <select class="select" :value="conf.writeMode" @change="set('writeMode', $event.target.value)">
-          <option>replace</option><option>insert</option><option>update</option><option>upsert</option>
+        <select class="select" :value="conf.writeMode || (isDorisOrSrSink ? 'stream_load' : 'insert')" @change="set('writeMode', $event.target.value)">
+          <option v-if="isDorisOrSrSink" value="stream_load">stream_load（FE HTTP）</option>
+          <option>insert</option>
+          <option>replace</option>
+          <option>update</option>
+          <option>upsert</option>
+        </select>
+      </label>
+    </div>
+    <div v-if="isDorisOrSrSink" class="form-grid-2">
+      <label class="form-field">
+        <span class="form-label">FE loadUrl（可选）</span>
+        <input
+          class="input"
+          :value="conf.loadUrl || conf.feLoadUrl || ''"
+          @input="setMany({ loadUrl: $event.target.value, feLoadUrl: $event.target.value })"
+          placeholder="fe1:8030,fe2:8030；空则 Vault LH_DORIS_FE_HTTP / LH_SR_FE_HTTP"
+        />
+      </label>
+      <label class="form-field">
+        <span class="form-label">Load 格式</span>
+        <select class="select" :value="conf.format || 'json'" @change="set('format', $event.target.value)">
+          <option value="json">json</option>
+          <option value="csv">csv</option>
         </select>
       </label>
     </div>
@@ -1830,17 +2272,46 @@ function onCodeSetPick(v) {
 
   <!-- ===== sink_search ===== -->
   <template v-else-if="type === 'sink_search'">
-    <div class="sec-title">搜索引擎</div>
+    <div class="sec-title">搜索引擎写出</div>
+    <div class="form-hint">DataX elasticsearchwriter；须出湖申请单号。绑定 Elasticsearch 数据源后 Endpoint 运行时解析。</div>
+    <label class="form-field">
+      <span class="form-label">出湖申请单号 ticketNo</span>
+      <div class="ticket-no-row">
+        <input
+          class="input"
+          :value="conf.ticketNo || ''"
+          @input="set('ticketNo', $event.target.value)"
+          placeholder="如 EXP-001（审批通过后回填）"
+        />
+        <button type="button" class="btn btn-sm btn-primary" @click="goExportApply">去申请</button>
+      </div>
+      <div class="form-hint">
+        合规出湖必填。
+        <button type="button" class="btn-link" @click="goExportApply">打开出湖申请</button>
+        ·
+        <button type="button" class="btn-link" @click="goApplyCenter">查看我的申请</button>
+      </div>
+    </label>
+    <label class="form-field">
+      <span class="form-label">绑定 ES 数据源</span>
+      <select class="select" :value="conf.dsId || ''" @change="onBindDs($event.target.value)">
+        <option value="">— 暂不绑定 / 手填 endpoint —</option>
+        <option v-for="o in (searchDsOptions.length ? searchDsOptions : dsOptions)" :key="o.value" :value="o.value">{{ o.label }}</option>
+      </select>
+    </label>
+    <div v-if="dsCapabilityHint" class="form-hint">{{ dsCapabilityHint }}</div>
     <div class="form-grid-2">
-      <label class="form-field"><span class="form-label">引擎类型</span><select class="select" :value="conf.engineType || 'Elasticsearch'" @change="set('engineType', $event.target.value)"><option>Elasticsearch</option><option>OpenSearch</option><option>Solr</option></select></label>
+      <label class="form-field"><span class="form-label">引擎类型</span><select class="select" :value="conf.engineType || 'Elasticsearch'" @change="set('engineType', $event.target.value)"><option>Elasticsearch</option><option>OpenSearch</option></select></label>
       <label class="form-field"><span class="form-label">Index</span><input class="input" :value="conf.index" @input="set('index', $event.target.value)" /></label>
+      <label class="form-field"><span class="form-label">Endpoint</span><input class="input" :value="conf.endpoint || conf.hosts || ''" @input="set('endpoint', $event.target.value)" placeholder="http://es:9200" :disabled="!!conf.dsId" /></label>
+      <label class="form-field"><span class="form-label">idField</span><input class="input" :value="conf.idField || ''" @input="set('idField', $event.target.value)" placeholder="可选文档 id 字段" /></label>
     </div>
-    <div class="form-hint">写出运行时继承任务主引擎，无需在节点重复选择。</div>
   </template>
 
   <!-- ===== sink_bi ===== -->
   <template v-else-if="type === 'sink_bi'">
     <div class="sec-title">BI / 出湖推送</div>
+    <div class="form-hint">SHELL：登记 ticket + 目标；Superset 且 dataset 为数字 id 时尝试 <code>/api/v1/dataset/&#123;id&#125;/refresh</code>（需 LH_SUPERSET_*）。禁止直连业务库。</div>
     <label class="form-field">
       <span class="form-label">出湖申请单号 ticketNo</span>
       <div class="ticket-no-row">

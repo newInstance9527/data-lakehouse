@@ -4,6 +4,11 @@ export const NODE_TYPES = {
   source: { label: 'CDC / 库表', group: 'source', cls: 'nt-source', color: '#1890ff', ports: ['out'] },
   source_api: { label: 'API 抽取', group: 'source', cls: 'nt-source', color: '#13c2c2', ports: ['out'] },
   source_file: { label: '文件 / FTP', group: 'source', cls: 'nt-source', color: '#fa8c16', ports: ['out'] },
+  source_kafka: { label: 'Kafka 入湖', group: 'source', cls: 'nt-source', color: '#595959', ports: ['out'] },
+  source_pulsar: { label: 'Pulsar 入湖', group: 'source', cls: 'nt-source', color: '#434343', ports: ['out'] },
+  source_rabbitmq: { label: 'RabbitMQ', group: 'source', cls: 'nt-source', color: '#ad6800', ports: ['out'] },
+  source_mongo: { label: 'MongoDB', group: 'source', cls: 'nt-source', color: '#389e0d', ports: ['out'] },
+  source_hbase: { label: 'HBase', group: 'source', cls: 'nt-source', color: '#237804', ports: ['out'] },
   clean: { label: '清洗规则', group: 'process', cls: 'nt-clean', color: '#52c41a', ports: ['in', 'out'] },
   transform: { label: '转换 / SQL', group: 'process', cls: 'nt-transform', color: '#1890ff', ports: ['in', 'out'] },
   mapping: { label: '字段映射', group: 'process', cls: 'nt-mapping', color: '#722ed1', ports: ['in', 'out'] },
@@ -32,6 +37,11 @@ export const NODE_ICONS = {
   source: '▣',
   source_api: '🌐',
   source_file: '📁',
+  source_kafka: 'K',
+  source_pulsar: 'P',
+  source_rabbitmq: 'R',
+  source_mongo: 'M',
+  source_hbase: 'H',
   clean: '✓',
   transform: '⇄',
   mapping: '⇨',
@@ -203,6 +213,41 @@ export function defaultConfFor(type) {
           encoding:'UTF-8', compression:'gzip', // none / gzip / snappy / zip
           schemaInfer:true, failOnCorrupt:true,
           writeMode:'append', fileName:'', multiLine:false
+        };
+      // ===== 数据源 4：Kafka JSON 流（与 sink_iceberg 合成单 FLINK_STREAM） =====
+      case 'source_kafka':
+        return {
+          dsId:'', bootstrap:'', topic:'pc_app_events',
+          groupId:'', startupMode:'latest-offset',
+          valueFormat:'JSON', schemaTemplate:'analytics', // analytics | pc_app | custom
+          security:'PLAINTEXT', saslMech:'PLAIN',
+          user:'', password:'',
+          mode:'stream'
+        };
+      case 'source_pulsar':
+        return {
+          dsId:'', serviceUrl:'', adminUrl:'', topic:'persistent://public/default/pc_app_events',
+          subscription:'', startupMode:'latest',
+          valueFormat:'JSON', schemaTemplate:'analytics',
+          mode:'stream'
+        };
+      case 'source_rabbitmq':
+        return {
+          dsId:'', host:'', port:5672, vhost:'/', queue:'',
+          exchange:'', routingKey:'',
+          valueFormat:'JSON', mode:'stream', engine:'ds_sql'
+        };
+      case 'source_mongo':
+        return {
+          dsId:'', host:'', port:27017, database:'', collection:'', table:'',
+          query:'', column:'', // 逗号分隔；空则 DataX 默认 *
+          mode:'batch', engine:'datax'
+        };
+      case 'source_hbase':
+        return {
+          dsId:'', host:'', zkQuorum:'', zkPort:2181, namespace:'', table:'',
+          columnFamily:'cf', column:'', // rowkey + cf:qualifier，逗号分隔
+          mode:'normal', encoding:'UTF-8', engine:'datax'
         };
       // ===== 清洗规则 =====
       case 'clean':
