@@ -631,6 +631,7 @@ function cellAt(row, col) {
           <span v-else-if="grantChecking" class="tag tag-gray" style="font-size: 10px">鉴权中…</span>
           <span v-else-if="canManage" class="tag tag-green" style="font-size: 10px">{{ manageAuthLabel }}</span>
           <span v-else-if="hasRead" class="tag tag-green" style="font-size: 10px">已授权读</span>
+          <span v-else class="tag tag-orange" style="font-size: 10px" title="目录可见 ≠ 引擎可查">未见 SELECT</span>
           <button
             v-if="canEdit"
             class="btn btn-sm"
@@ -661,6 +662,13 @@ function cellAt(row, col) {
           <span class="std-tab" :class="{ active: tab === 'perm' }" @click="tab = 'perm'">权限 / 脱敏</span>
           <span class="std-tab" :class="{ active: tab === 'info' }" @click="tab = 'info'">基本信息</span>
         </div>
+
+        <p v-if="!grantChecking && !canPreview" class="asset-see-hint tip">
+          看见 ≠ 能查：本目录可打开详情，预览与即席查询须 Owner 或已批准的表级读权限。
+          <button type="button" class="btn-link" @click="applyPerm">申请 SELECT</button>
+          ·
+          <button type="button" class="btn-link" @click="goApplyCenter">申请中心</button>
+        </p>
 
         <div v-show="tab === 'schema'">
           <div class="detail-section-title" style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
@@ -1273,5 +1281,18 @@ function cellAt(row, col) {
   gap: 8px;
   justify-content: flex-end;
   margin-top: 14px;
+}
+.asset-see-hint {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-2);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--warning, #d97706) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warning, #d97706) 28%, var(--border));
+}
+.asset-see-hint .btn-link {
+  font-size: 12px;
 }
 </style>

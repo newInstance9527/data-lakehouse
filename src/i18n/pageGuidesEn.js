@@ -23,6 +23,7 @@ export const PAGE_GUIDES_EN = {
     sections4({
       about: [
         'The overview dashboard summarizes platform health along Ingest → Lake → Govern → Serve.',
+        'Story: define semantics → Metadata; find tables/graphs → Assets; query data → Apply Center → Grav/Trino (visible ≠ queryable). Asset KPIs do not imply query grants.',
         'It aggregates connectivity, assets, jobs, quality trends, and pending applications, with one-click navigation to the owning modules.',
       ],
       ops: [
@@ -100,6 +101,7 @@ export const PAGE_GUIDES_EN = {
     sections4({
       about: [
         'Maintains enterprise business domain codes and names (e.g. trade, user, goods); under Metadata.',
+        'Story: define semantics → Metadata; find tables/graphs → Assets; query data → Apply Center → Grav/Trino (visible ≠ queryable). Catalog is not under Metadata.',
         'Metrics, Catalog, and Standards dropdowns all read from this module for consistent scope.',
       ],
       ops: [
@@ -121,8 +123,9 @@ export const PAGE_GUIDES_EN = {
     'Asset Catalog',
     sections4({
       about: [
-        'Unified registry of lake assets by layer and business domain.',
-        'Lists follow the current workspace. Visibility does not imply query access; preview and read require ownership or an approved grant.',
+        'Unified registry of lake assets by layer and business domain; under Assets (not the Metadata nav group).',
+        'Story: define semantics → Metadata; find tables/graphs → Assets; query data → Apply Center → Grav/Trino (visible ≠ queryable). Catalog visibility ≠ engine ACL.',
+        'Lists follow the current workspace. Preview and read require ownership or an approved grant.',
       ],
       ops: [
         'Filter by source, layer, and domain on the left; browse assets on the right.',
@@ -147,6 +150,7 @@ export const PAGE_GUIDES_EN = {
     sections4({
       about: [
         'Defines enterprise semantics: standard fields, code sets, naming rules, source-to-standard maps, and conformance results; under Metadata.',
+        'Story: define semantics → Metadata; find tables/graphs → Assets; query data → Apply Center → Grav/Trino (visible ≠ queryable).',
         'Fields and codes are referenced by modeling and cleansing; conformance checks verify landed tables remain compliant.',
       ],
       ops: [
@@ -196,7 +200,8 @@ export const PAGE_GUIDES_EN = {
     'Lineage',
     sections4({
       about: [
-        'Shows end-to-end table and field flow, with focus-asset upstream/downstream views and change-impact assessment.',
+        'Shows end-to-end table and field flow, with focus-asset upstream/downstream views and change-impact assessment; under Assets.',
+        'Story: define semantics → Metadata; find tables/graphs → Assets; query data → Apply Center → Grav/Trino (visible ≠ queryable).',
         'Edges primarily come from ETL field maps and can be refreshed on demand for change review, quality tracing, and audit.',
       ],
       ops: [
@@ -317,6 +322,7 @@ export const PAGE_GUIDES_EN = {
     sections4({
       about: [
         'Run temporary SQL on authorized lake assets with catalog pick, edit, governed execution, and export.',
+        'Story: define semantics → Metadata; find tables/graphs → Assets; query data → Apply Center → Grav/Trino (visible ≠ queryable). Finding a table in Catalog does not grant query here.',
         'Results are masked by policy; unconstrained full scans may be blocked. Request access in Apply Center when denied.',
       ],
       ops: [
@@ -414,6 +420,7 @@ export const PAGE_GUIDES_EN = {
     sections4({
       about: [
         'Agreements between producers and consumers on schema, compatibility, and SLA; under Metadata.',
+        'Story: define semantics → Metadata; find tables/graphs → Assets; query data → Apply Center → Grav/Trino (visible ≠ queryable).',
         'Structural changes require review; incompatibilities and breaches are trackable to reduce cross-team conflicts.',
       ],
       ops: [
@@ -847,6 +854,29 @@ export const PAGE_GUIDES_EN = {
         'Link related entries from Standards.',
         'Confirm embedding models in AI Models.',
         'Refresh outdated documents to avoid wrong citations.',
+      ],
+    }),
+  ),
+
+  'sys-oplog': guide(
+    'Operation logs',
+    sections4({
+      about: [
+        'Aggregates write actions annotated with @CommonLog plus login/logout and exceptions into Snowy DEV_LOG.',
+        'Separate from security grant audit, ad-hoc query_exec, and export audit: this page covers who hit which write API in the portal.',
+      ],
+      ops: [
+        'Switch Operate / Exception / Login / Logout categories.',
+        'Search by name keywords (e.g. create domain, register standard field).',
+        'Open detail for URL, params, and response summary.',
+        'Super-admins may clear the current category (use carefully).',
+      ],
+      example:
+        'Scenario: who changed a domain\n1. Select Operate and search for domain\n2. Open detail for actor, IP, and params\n3. Cross-check menu grants and roles if needed',
+      next: [
+        'Grant navId=sys-oplog on the role in Menus.',
+        'Review accounts in Users / Roles.',
+        'Use Security for table-read grant audit (another track).',
       ],
     }),
   ),

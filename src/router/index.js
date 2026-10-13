@@ -141,6 +141,7 @@ const routes = [
   { path: '/sys/users', name: 'sys-users', component: () => import('@/views/SysUserView.vue'), meta: { id: 'sys-users' } },
   { path: '/sys/roles', name: 'sys-roles', component: () => import('@/views/SysRoleView.vue'), meta: { id: 'sys-roles' } },
   { path: '/sys/menus', name: 'sys-menus', component: () => import('@/views/SysMenuView.vue'), meta: { id: 'sys-menus' } },
+  { path: '/sys/oplog', name: 'sys-oplog', component: () => import('@/views/SysOpLogView.vue'), meta: { id: 'sys-oplog' } },
   {
     path: '/usercenter',
     name: 'usercenter',
@@ -184,6 +185,18 @@ router.beforeEach(async (to) => {
     return { path: '/', replace: true }
   }
   return true
+})
+
+router.afterEach((to) => {
+  if (to.meta?.public && to.name === 'login') return
+  try {
+    // 延迟 import，避免未安装 SDK 时阻塞路由
+    import('@/analytics/portalAnalytics')
+      .then((m) => m.trackPageView(to))
+      .catch(() => {})
+  } catch {
+    /* ignore */
+  }
 })
 
 export default router

@@ -1,5 +1,6 @@
 /** 侧栏导航 · 与路由对齐（文案经 i18n，label 为中文兜底）
  * 组序定案：标准先行（元数据 → 集成 → 资产）；契约属元数据；申请紧挨治理；运维基建沉底。
+ * 「元数据管理」= 域/标准/契约（治理口径），≠ 技术 Catalog / 资产目录；见 doc/元数据口径对照.md。
  */
 export const NAV_GROUPS = [
   {
@@ -127,6 +128,7 @@ export const NAV_GROUPS = [
       { id: 'sys-users', label: '用户管理', icon: 'sys-users', path: '/sys/users' },
       { id: 'sys-roles', label: '角色管理', icon: 'sys-roles', path: '/sys/roles' },
       { id: 'sys-menus', label: '菜单管理', icon: 'sys-menus', path: '/sys/menus' },
+      { id: 'sys-oplog', label: '操作日志', icon: 'sys-oplog', path: '/sys/oplog' },
     ],
   },
 ]

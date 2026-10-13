@@ -37,6 +37,12 @@ async function submit() {
       password: password.value,
     })
     await bootstrapSession()
+    try {
+      const { trackFeature } = await import('@/analytics/portalAnalytics')
+      trackFeature('login')
+    } catch {
+      /* optional */
+    }
     await router.replace(redirectTo.value)
   } catch (e) {
     errorMsg.value = e instanceof ApiError ? e.message : e?.message || t('login.fail')

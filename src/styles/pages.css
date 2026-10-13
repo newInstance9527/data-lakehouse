@@ -284,6 +284,19 @@
   border-bottom: 1px solid var(--border);
   flex-wrap: wrap;
 }
+.catalog-acl-hint {
+  margin: 0;
+  padding: 8px 18px 10px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-3);
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--border);
+}
+.catalog-acl-hint .btn-link {
+  font-size: 12px;
+  vertical-align: baseline;
+}
 .catalog-search {
   flex: 1;
   min-width: 240px;

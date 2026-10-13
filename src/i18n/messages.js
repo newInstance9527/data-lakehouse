@@ -140,6 +140,7 @@ const zh = {
   'nav.sys-users': '用户管理',
   'nav.sys-roles': '角色管理',
   'nav.sys-menus': '菜单管理',
+  'nav.sys-oplog': '操作日志',
   'nav.badge.new': '新',
 
   'login.tagline': '湖仓一体 · 看见资产 · 治理可查',
@@ -300,6 +301,7 @@ const en = {
   'nav.sys-users': 'Users',
   'nav.sys-roles': 'Roles',
   'nav.sys-menus': 'Menus',
+  'nav.sys-oplog': 'Operation logs',
   'nav.badge.new': 'New',
 
   'login.tagline': 'Lakehouse · See assets · Govern with trace',

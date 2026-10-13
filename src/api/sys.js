@@ -219,3 +219,24 @@ export function deletePositions(ids) {
 export function detailPosition(id) {
   return http.get('/sys/position/detail', { id })
 }
+
+/** —— 操作 / 访问日志（Snowy DEV_LOG · /dev/log） —— */
+export function pageDevLogs(params = {}) {
+  return http.get('/dev/log/page', {
+    current: params.current ?? 1,
+    size: params.size ?? 20,
+    category: params.category,
+    searchKey: params.searchKey,
+    sortField: params.sortField || 'createTime',
+    sortOrder: params.sortOrder || 'DESCEND',
+  })
+}
+
+export function detailDevLog(id) {
+  return http.get('/dev/log/detail', { id })
+}
+
+/** 按 category 清空（OPERATE / EXCEPTION / LOGIN / LOGOUT） */
+export function clearDevLogs(category) {
+  return http.post('/dev/log/delete', { category })
+}

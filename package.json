@@ -11,6 +11,7 @@
     "tunnel": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/cloudflare-tunnel.ps1"
   },
   "dependencies": {
+    "@lakehouse/web-analytics-sdk": "file:../sdks/web-analytics/js",
     "@superset-ui/embedded-sdk": "^0.1.3",
     "monaco-editor": "^0.55.1",
     "sm-crypto": "^0.5.7",

@@ -72,6 +72,9 @@ const usedSelection = ref(false)
 const showChart = ref(false)
 const chartDimKey = ref('')
 const chartMetricKey = ref('')
+/** 权限拒绝时展示「看见≠能查」条 + 申请深链（保留最近一次 SQL 供申请上下文） */
+const accessDenied = ref(false)
+const accessDeniedSql = ref('')
 const lastMeta = ref({
   queryId: '',
   trinoQueryId: '',
@@ -861,13 +864,28 @@ function resolveApplyTableContext(sql) {
 }
 
 function goApplySelect(sql) {
-  const ctx = resolveApplyTableContext(sql)
+  const raw = typeof sql === 'string' ? sql : accessDeniedSql.value || sqlText.value
+  const ctx = resolveApplyTableContext(raw)
   const query = { type: 'perm', privilege: 'SELECT', from: 'query' }
   if (ctx?.assetId) query.assetId = ctx.assetId
   if (ctx?.assetCode) query.assetCode = ctx.assetCode
   if (ctx?.name) query.name = ctx.name
   if (ctx?.fqn) query.fqn = ctx.fqn
   router.push({ path: '/apply', query })
+}
+
+function markAccessDenied(sql, message) {
+  accessDenied.value = true
+  accessDeniedSql.value = sql || sqlText.value || ''
+  showToast(
+    message || '未授权访问表/列：目录可见 ≠ 能查。请申请 SELECT 后重试。',
+    'warning',
+  )
+}
+
+function clearAccessDenied() {
+  accessDenied.value = false
+  accessDeniedSql.value = ''
 }
 
 function goApplyElevate() {
@@ -940,8 +958,7 @@ function applyExecResult(data, sql) {
       )
       if (go) goApplyElevate()
     } else if (data.errorCode === 'ACCESS_DENIED' || data.applyHint) {
-      const go = window.confirm('未授权访问表/列。是否前往申请中心申请 SELECT？')
-      if (go) goApplySelect(sql)
+      markAccessDenied(sql, data.message || data.applyHint)
     }
     if (data.errorCode === 'CONCURRENCY_LIMIT') {
       showToast(
@@ -952,6 +969,7 @@ function applyExecResult(data, sql) {
   } else if (data.degraded || data.status === 'failed') {
     showToast(data.message || '查询失败', 'error')
   } else {
+    clearAccessDenied()
     const maskN = (data.maskCols || []).length
     const maskNote = maskN
       ? ` · 脱敏 ${maskN} 列(${data.maskSource || 'policy'})`
@@ -1056,8 +1074,7 @@ async function runQuery() {
     if (/cannot impersonate|IMPERSONATION/i.test(msg)) {
       showToast('代执行未开通（无法冒充映射主体），请联系管理员开通身份代执行', 'warning')
     } else if (/未授权|无权限|denied|Forbidden|ACCESS_DENIED/i.test(msg)) {
-      const go = window.confirm('可能未授权。是否前往申请中心？')
-      if (go) goApplySelect(sql)
+      markAccessDenied(sql, msg)
     }
   } finally {
     running.value = false
@@ -1444,6 +1461,24 @@ function cellClass(col, row) {
                 执行 (Ctrl⏎)
               </button>
             </div>
+          </div>
+        </div>
+
+        <div
+          v-if="accessDenied"
+          class="access-denied-banner"
+          role="status"
+        >
+          <div class="access-denied-text">
+            <strong>看见 ≠ 能查</strong>
+            ：资产目录可见或同空间成员不代表已获引擎 SELECT。请先申请表读权限，审批写入
+            <code>sec_auth_grant</code> / Grav ACL 后再执行。
+          </div>
+          <div class="access-denied-acts">
+            <button type="button" class="btn btn-sm btn-primary" @click="goApplySelect()">
+              去申请 SELECT
+            </button>
+            <button type="button" class="btn btn-sm" @click="clearAccessDenied">关闭</button>
           </div>
         </div>
 
@@ -2271,4 +2306,33 @@ function cellClass(col, row) {
   to { background: transparent; }
 }
 .blink-row { animation: blink-in 0.6s ease; }
+.access-denied-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px 16px;
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--warning, #d97706) 35%, var(--border, #e2e8f0));
+  background: color-mix(in srgb, var(--warning, #d97706) 10%, var(--bg-1, #fff));
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-2, #64748b);
+}
+.access-denied-text strong {
+  color: var(--text-1, #0f172a);
+}
+.access-denied-text code {
+  font-size: 11px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--text-1, #0f172a) 6%, transparent);
+}
+.access-denied-acts {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
 </style>

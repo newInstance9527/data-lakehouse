@@ -383,6 +383,12 @@ export function useSession() {
       }
       const raw = await getLoginUser()
       currentUser.value = mapUser(raw)
+      try {
+        const { bindAnalyticsUser } = await import('@/analytics/portalAnalytics')
+        bindAnalyticsUser(currentUser.value?.id || currentUser.value?.account)
+      } catch {
+        /* analytics optional */
+      }
       // 当前协作 ws：以 /lh/workspace/current 为准（软偏好，非 ACL）
       try {
         const cur = await fetchWsCurrent()
@@ -413,6 +419,13 @@ export function useSession() {
   }
 
   async function logout() {
+    try {
+      const { trackFeature, clearAnalyticsUser } = await import('@/analytics/portalAnalytics')
+      trackFeature('logout')
+      clearAnalyticsUser()
+    } catch {
+      /* analytics optional */
+    }
     try {
       await apiLogout()
     } catch {

@@ -572,6 +572,14 @@ async function onPublish() {
       const toastType =
         se.qualityGateBlocked || regFail > 0 ? 'warning' : 'success'
       showToast(`🚀 已发布 ${current.value.name} ${current.value.ver} ${tip}`.trim(), toastType)
+      import('@/analytics/portalAnalytics')
+        .then((m) =>
+          m.trackFeature('etl_publish', {
+            jobId: current.value.id,
+            degraded: !!resp?.degraded,
+          }),
+        )
+        .catch(() => {})
       if (regFail > 0) {
         const err = regPlans.find((p) => p?.create?.registerError)?.create?.registerError
         showToast(

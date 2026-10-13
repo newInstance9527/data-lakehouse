@@ -221,6 +221,9 @@ async function onRegisterSubmit(payload) {
       updateSource(payload.sourceId, { asset: row.id, linkedAssets: linked })
     }
     showToast(`已注册资产 ${row.key} · ${payload.sourceName || ''}`, 'success')
+    import('@/analytics/portalAnalytics')
+      .then((m) => m.trackFeature('asset_register', { assetId: row.id, layer: payload.layer }))
+      .catch(() => {})
     if (payload.sourceName) sourceFilter.value = payload.sourceName
     invalidateMetricBindTables()
     await reload()
@@ -407,6 +410,11 @@ function onAssetUpdated(row) {
             展示 <b>{{ list.length }}</b> 项
           </div>
         </div>
+        <p class="catalog-acl-hint tip">
+          目录可见性 ≠ 引擎 ACL：能搜到资产不代表可预览或即席查询；非 Owner 须经
+          <button type="button" class="btn-link" @click="router.push({ path: '/apply', query: { type: 'perm', privilege: 'SELECT', from: 'catalog' } })">申请中心</button>
+          获 SELECT 后再生效。
+        </p>
 
         <div v-if="!loading && sourceFilter && !list.length" class="ds-empty" style="padding: 48px">
           数据源「{{ sourceFilter }}」暂无关联资产

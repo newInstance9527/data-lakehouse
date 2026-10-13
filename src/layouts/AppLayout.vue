@@ -111,6 +111,11 @@ function go(path) {
   if (!target) return
   if (target === route.path || target === route.fullPath) return
   const hit = filteredNavGroups.value.flatMap((g) => g.items).find((i) => i.path === target)
+  if (hit?.id) {
+    import('@/analytics/portalAnalytics')
+      .then((m) => m.trackFeature('nav_click', { navId: hit.id, path: target }))
+      .catch(() => {})
+  }
   beginRouteLoading(hit?.id || route.meta?.id)
   router.push(target)
 }

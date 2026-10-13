@@ -42,6 +42,7 @@ export const PAGE_SUBTITLES_ZH = {
   'sys-users': '账号 · 角色 · 部门 · 启停',
   'sys-roles': '角色 · 菜单授权 · 数据权限',
   'sys-menus': '资源树 · 增删改 · 对接 /sys/menu',
+  'sys-oplog': '操作 / 异常 / 登录登出 · Snowy DEV_LOG · @CommonLog',
 }
 
 export const PAGE_SUBTITLES_EN = {
@@ -86,4 +87,5 @@ export const PAGE_SUBTITLES_EN = {
   'sys-users': 'Accounts · Roles · Depts · Enable / disable',
   'sys-roles': 'Roles · Menu grants · Data privileges',
   'sys-menus': 'Resource tree · CRUD · /sys/menu',
+  'sys-oplog': 'Operate / exception / login · Snowy DEV_LOG · @CommonLog',
 }

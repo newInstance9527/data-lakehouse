@@ -873,6 +873,9 @@ async function submitApply() {
   const id = `WF${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${String(100 + mine.value.length).padStart(5, '0')}`
   const typeLabel = APPLY_TYPE_OPTIONS.find((o) => o.value === form.value.type)?.label || '申请'
   const now = new Date().toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).replace(/\//g, '-')
+  import('@/analytics/portalAnalytics')
+    .then((m) => m.trackFeature('apply_submit', { type: form.value.type }))
+    .catch(() => {})
 
   if (form.value.type === 'api') {
     const path = form.value.apiPath
