@@ -1956,6 +1956,7 @@ function cellClass(col, row) {
   flex-shrink: 0;
   line-height: 1.5;
 }
+.layer-src { color: #595959; background: rgba(0, 0, 0, 0.06); }
 .layer-ods { color: #ad6800; background: rgba(250, 173, 20, 0.16); }
 .layer-dwd { color: #0958d9; background: rgba(22, 119, 255, 0.12); }
 .layer-dws { color: #08979c; background: rgba(19, 194, 194, 0.14); }

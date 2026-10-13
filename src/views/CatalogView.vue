@@ -8,7 +8,7 @@ import { useAssets } from '@/composables/useAssets'
 import { useDatasources } from '@/composables/useDatasources'
 import { useToast } from '@/composables/useToast'
 import { useSession } from '@/composables/useSession'
-import { ASSET_LAYERS } from '@/data/assetMeta'
+import { ASSET_LAYERS, assetNameLabels } from '@/data/assetMeta'
 import { useDomains } from '@/composables/useDomains'
 import DsTypeIcon from '@/components/datasource/DsTypeIcon.vue'
 import { dsTypeMeta } from '@/data/dsForm'
@@ -34,6 +34,18 @@ const drawerOpen = ref(false)
 const current = ref(null)
 const regOpen = ref(false)
 const registering = ref(false)
+
+const VIEW_KEY = 'lh.catalog.view'
+const view = ref(
+  typeof localStorage !== 'undefined' && localStorage.getItem(VIEW_KEY) === 'list' ? 'list' : 'card',
+)
+watch(view, (v) => {
+  try {
+    localStorage.setItem(VIEW_KEY, v)
+  } catch {
+    /* ignore */
+  }
+})
 
 /** 兼容深链 id → asset */
 function resolveAssetQuery() {
@@ -187,7 +199,7 @@ function openRegister() {
   regOpen.value = true
 }
 
-async function onRegisterSubmit(payload) {
+async function onRegisterSubmit(payload, done) {
   registering.value = true
   try {
     const row = await addAsset({
@@ -228,8 +240,10 @@ async function onRegisterSubmit(payload) {
     invalidateMetricBindTables()
     await reload()
     await openAsset(row.id, false)
+    done?.(true)
   } catch (e) {
     showToast(`注册失败：${e.message || e}`, 'error')
+    done?.(false)
   } finally {
     registering.value = false
   }
@@ -274,6 +288,55 @@ function sourceLabel(asset) {
   if (asset?.sourceName) return asset.sourceName
   if (asset?.sourceSummary) return asset.sourceSummary
   return ''
+}
+
+/** 列表主标题：优先业务名称，便于扫读 */
+function titlePrimary(asset) {
+  const biz = String(asset?.cnName || '').trim()
+  const tech = String(asset?.name || asset?.key || '').trim()
+  return biz || tech || '—'
+}
+
+/** 副标题：有业务名时补技术名；仅技术名时不再重复 */
+function titleSecondary(asset) {
+  const biz = String(asset?.cnName || '').trim()
+  const tech = String(asset?.name || asset?.key || '').trim()
+  if (biz && tech && biz !== tech) return tech
+  return ''
+}
+
+function objectHint(asset) {
+  const obj = String(asset?.objectName || asset?.tableName || '').trim()
+  const tech = String(asset?.name || '').trim()
+  if (obj && obj !== tech && obj !== titlePrimary(asset)) return obj
+  return ''
+}
+
+function kindLabel(asset) {
+  const labels = assetNameLabels(asset)
+  const k = labels.kind || asset?.assetKind || ''
+  if (!k || k === 'table') return ''
+  return labels.tech.replace(/名$/, '') || k
+}
+
+function qualityText(asset) {
+  const q = asset?.quality
+  if (q === '—' || q == null || q === '') return ''
+  const n = Number(q)
+  if (Number.isNaN(n)) return String(q)
+  return `${Math.round(n)}`
+}
+
+function statusLabel(asset) {
+  const s = String(asset?.status || '').toLowerCase()
+  if (!s || s === 'active') return ''
+  const map = {
+    draft: '草稿',
+    syncing: '同步中',
+    degraded: '降级',
+    archived: '已归档',
+  }
+  return map[s] || s
 }
 
 function resolveSource(asset) {
@@ -402,7 +465,11 @@ function onAssetUpdated(row) {
               {{ s.type ? `${s.type} · ${s.name}` : s.name }}
             </option>
           </select>
-          <div style="margin-left: auto; font-size: 12px; color: var(--text-3)">
+          <div class="std-tabs catalog-view-tabs">
+            <span class="std-tab" :class="{ active: view === 'card' }" @click="view = 'card'">卡片视图</span>
+            <span class="std-tab" :class="{ active: view === 'list' }" @click="view = 'list'">列表视图</span>
+          </div>
+          <div class="catalog-toolbar-meta">
             <template v-if="loading">加载中… · </template>
             <template v-if="sourceFilter">
               数据源 <b>{{ sourceFilter }}</b> ·
@@ -430,7 +497,7 @@ function onAssetUpdated(row) {
           </div>
         </div>
 
-        <div v-else class="asset-grid">
+        <div v-else-if="view === 'card'" class="asset-grid">
           <div
             v-for="a in list"
             :key="a.id"
@@ -441,33 +508,54 @@ function onAssetUpdated(row) {
             @keydown.enter="openAsset(a.id)"
           >
             <div class="asset-header">
-              <div class="asset-ds-badge" :style="{ background: sourceTypeVisual(a).bg, color: sourceTypeVisual(a).color }" :title="sourceTypeLabel(a) || '数据源类型'">
-                <DsTypeIcon :type="sourceTypeVisual(a).label" :type-code="sourceTypeVisual(a).typeCode" :size="20" />
+              <div
+                class="asset-ds-badge"
+                :style="{ background: sourceTypeVisual(a).bg, color: sourceTypeVisual(a).color }"
+                :title="sourceTypeLabel(a) || '数据源类型'"
+              >
+                <DsTypeIcon
+                  :type="sourceTypeVisual(a).label"
+                  :type-code="sourceTypeVisual(a).typeCode"
+                  :size="20"
+                />
               </div>
               <div class="asset-header-main">
                 <div class="asset-name">
                   <span class="asset-layer" :class="`layer-${a.layer}`">{{ a.layerLabel }}</span>
-                  <span class="asset-name-text" :title="a.key">{{ a.key }}</span>
+                  <span v-if="kindLabel(a)" class="tag tag-gray asset-kind-tag">{{ kindLabel(a) }}</span>
+                  <span class="asset-name-text" :title="titlePrimary(a)">{{ titlePrimary(a) }}</span>
                 </div>
-                <div class="asset-origin">
-                  <span v-if="sourceLabel(a)" class="asset-source-name" :title="sourceLabel(a)">
+                <div v-if="titleSecondary(a)" class="asset-tech-line" :title="`${assetNameLabels(a).tech}：${titleSecondary(a)}`">
+                  <span class="asset-name-label">{{ assetNameLabels(a).tech }}</span>
+                  <code class="asset-tech-name">{{ titleSecondary(a) }}</code>
+                </div>
+                <div class="asset-meta-line">
+                  <span class="asset-meta-chip">{{ a.domainLabel || a.domain || '未分域' }}</span>
+                  <span v-if="sourceLabel(a)" class="asset-meta-chip" :title="sourceLabel(a)">
                     {{ sourceLabel(a) }}
                   </span>
-                  <span v-if="a.tableName || a.objectName" class="asset-object-name" :title="a.tableName || a.objectName">
-                    {{ a.tableName || a.objectName }}
-                  </span>
-                  <span v-if="!sourceLabel(a)" class="asset-source-name muted">未关联数据源</span>
+                  <span v-else class="asset-meta-chip muted">未关联数据源</span>
+                  <span
+                    v-if="objectHint(a)"
+                    class="asset-meta-chip mono"
+                    :title="`源对象 ${objectHint(a)}`"
+                  >{{ objectHint(a) }}</span>
+                  <span v-if="a.engine" class="asset-meta-chip">{{ a.engine }}</span>
                 </div>
               </div>
             </div>
-            <div class="asset-desc">{{ a.desc || a.cnName || '—' }}</div>
+            <div class="asset-desc" :title="a.desc || ''">{{ a.desc || '暂无描述' }}</div>
             <div class="asset-tags">
-              <span class="tag" :class="a.levelClass">{{ a.level }}</span>
-              <span v-if="a.isGold" class="tag tag-green">⭐ 黄金</span>
-              <span v-if="a.status === 'degraded'" class="tag tag-orange">降级</span>
+              <span class="tag" :class="a.levelClass">{{ a.level || '内部' }}</span>
+              <span v-if="a.isGold" class="tag tag-green">黄金</span>
+              <span v-if="qualityText(a)" class="tag" :class="a.qualityClass === 'qs-high' ? 'tag-green' : a.qualityClass === 'qs-low' ? 'tag-red' : 'tag-orange'">
+                质量 {{ qualityText(a) }}
+              </span>
+              <span v-if="a.cols" class="tag tag-gray">{{ a.cols }} 列</span>
+              <span v-if="statusLabel(a)" class="tag tag-orange">{{ statusLabel(a) }}</span>
               <span v-if="a.linkStatus === 'stale'" class="tag tag-orange">源失效</span>
               <span
-                v-for="(t, i) in (a.tags || []).slice(0, 3)"
+                v-for="(t, i) in (a.tags || []).filter((x) => x?.[0] && x[0] !== a.assetKind && x[0] !== a.status).slice(0, 2)"
                 :key="i"
                 class="tag"
                 :class="t[1] || 'tag-gray'"
@@ -478,17 +566,95 @@ function onAssetUpdated(row) {
                 <span class="owner-avatar">{{ a.ownerAvatar }}</span>
                 <span>{{ ownerLine(a) }}</span>
               </div>
-              <div
-                v-if="sourceTypeLabel(a)"
-                class="asset-type-label"
-                :style="{ background: sourceTypeVisual(a).bg, color: sourceTypeVisual(a).color }"
-                :title="sourceTypeLabel(a)"
-              >
-                {{ sourceTypeLabel(a) }}
+              <div class="asset-footer-right">
+                <span v-if="a.updated" class="asset-updated" :title="a.updated">{{ a.updated }}</span>
+                <div
+                  v-if="sourceTypeLabel(a)"
+                  class="asset-type-label"
+                  :style="{ background: sourceTypeVisual(a).bg, color: sourceTypeVisual(a).color }"
+                  :title="sourceTypeLabel(a)"
+                >
+                  {{ sourceTypeLabel(a) }}
+                </div>
               </div>
-              <div v-else class="asset-type-label muted">—</div>
             </div>
           </div>
+        </div>
+
+        <div v-else class="asset-list-wrap">
+          <table class="std-table asset-list-table">
+            <thead>
+              <tr>
+                <th style="width: 22%">资产</th>
+                <th style="width: 8%">分层</th>
+                <th style="width: 8%">业务域</th>
+                <th style="width: 16%">数据源 / 源对象</th>
+                <th style="width: 8%">敏感级</th>
+                <th style="width: 7%">质量</th>
+                <th style="width: 11%">Owner</th>
+                <th style="width: 10%">更新</th>
+                <th style="width: 10%">类型 / 状态</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="a in list"
+                :key="a.id"
+                class="asset-list-row"
+                @click="openAsset(a.id)"
+              >
+                <td>
+                  <div class="asset-list-title-row">
+                    <span v-if="a.isGold" class="tag tag-green asset-list-gold">黄金</span>
+                    <span class="asset-list-name" :title="titlePrimary(a)">{{ titlePrimary(a) }}</span>
+                  </div>
+                  <div v-if="titleSecondary(a)" class="asset-list-tech" :title="titleSecondary(a)">
+                    {{ assetNameLabels(a).tech }} · {{ titleSecondary(a) }}
+                  </div>
+                  <div v-if="a.desc" class="asset-list-desc" :title="a.desc">{{ a.desc }}</div>
+                </td>
+                <td>
+                  <span class="asset-layer" :class="`layer-${a.layer}`">{{ a.layerLabel }}</span>
+                </td>
+                <td>{{ a.domainLabel || a.domain || '—' }}</td>
+                <td>
+                  <div class="asset-list-ds" :title="sourceLabel(a) || ''">{{ sourceLabel(a) || '—' }}</div>
+                  <div
+                    v-if="a.objectName || a.tableName"
+                    class="asset-list-obj"
+                    :title="a.objectName || a.tableName"
+                  >{{ a.objectName || a.tableName }}</div>
+                </td>
+                <td>
+                  <span class="tag" :class="a.levelClass">{{ a.level || '—' }}</span>
+                </td>
+                <td>
+                  <span
+                    v-if="qualityText(a)"
+                    class="tag"
+                    :class="a.qualityClass === 'qs-high' ? 'tag-green' : a.qualityClass === 'qs-low' ? 'tag-red' : 'tag-orange'"
+                  >{{ qualityText(a) }}</span>
+                  <span v-else class="muted">—</span>
+                </td>
+                <td :title="ownerTitle(a)">{{ ownerLine(a) }}</td>
+                <td>
+                  <span class="asset-list-updated" :title="a.updated || ''">{{ a.updated || '—' }}</span>
+                </td>
+                <td>
+                  <div class="asset-list-status">
+                    <span
+                      v-if="sourceTypeLabel(a)"
+                      class="asset-type-label"
+                      :style="{ background: sourceTypeVisual(a).bg, color: sourceTypeVisual(a).color }"
+                    >{{ sourceTypeLabel(a) }}</span>
+                    <span v-if="kindLabel(a)" class="tag tag-gray">{{ kindLabel(a) }}</span>
+                    <span v-if="statusLabel(a)" class="tag tag-orange">{{ statusLabel(a) }}</span>
+                    <span v-if="a.linkStatus === 'stale'" class="tag tag-orange">源失效</span>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </div>
     </div>

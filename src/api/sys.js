@@ -228,7 +228,8 @@ export function pageDevLogs(params = {}) {
     category: params.category,
     searchKey: params.searchKey,
     sortField: params.sortField || 'createTime',
-    sortOrder: params.sortOrder || 'DESCEND',
+    // Snowy CommonSortOrderEnum 值为小写 ascend/descend
+    sortOrder: String(params.sortOrder || 'descend').toLowerCase(),
   })
 }
 

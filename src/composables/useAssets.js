@@ -7,9 +7,11 @@ import {
   fetchAssetPage,
   fetchAssetPreview,
   fetchAssetSchema,
+  fetchAssetSchemaAssess as apiSchemaAssess,
   refreshAsset as apiRefresh,
   sensitivityToLevel,
   updateAssetMeta as apiUpdateMeta,
+  updateAssetSchemaColumns as apiUpdateSchemaColumns,
 } from '@/api/catalog'
 import { domainMeta, layerMeta, levelClass } from '@/data/assetMeta'
 import { resolveWs } from '@/utils/ws'
@@ -132,6 +134,14 @@ export function useAssets() {
     return res
   }
 
+  async function loadSchemaAssess(id) {
+    return apiSchemaAssess(id)
+  }
+
+  async function updateSchemaColumns(payload) {
+    return apiUpdateSchemaColumns(payload)
+  }
+
   async function loadPreview(id, opts = {}) {
     return fetchAssetPreview(id, opts)
   }
@@ -161,9 +171,11 @@ export function useAssets() {
     removeAsset,
     loadDetail,
     loadSchema,
+    loadSchemaAssess,
     loadPreview,
     refresh,
     updateMeta,
+    updateSchemaColumns,
     replaceLocal,
   }
 }
@@ -232,6 +244,9 @@ export function normalizeAsset(vo) {
     sourceName: vo.primaryDsName || vo.sourceName || null,
     sourceType: vo.primaryDsType || vo.sourceType || null,
     sourceCode: vo.primaryDsCode || vo.sourceCode || null,
+    assetKind: vo.assetKind || vo.kind || '',
+    kind: vo.assetKind || vo.kind || '',
+    objectKind: vo.objectKind || vo.primaryObjectKind || '',
     tableName: vo.objectName || vo.tableName || null,
     objectName: vo.objectName || vo.tableName || null,
     omFqn: vo.omFqn || '',

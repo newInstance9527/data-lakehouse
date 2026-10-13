@@ -74,3 +74,67 @@ export function resolveKbCat(formCat) {
   const hit = KB_FORM_CATS.find((c) => c.value === formCat)
   return hit || KB_FORM_CATS[0]
 }
+
+/** 表单 cat 是否业务术语（Business Glossary SoT） */
+export function isTermFormCat(formCat) {
+  return resolveKbCat(formCat).cat === 'term'
+}
+
+/**
+ * 组装术语/条目 refs_json。
+ * term：metricCode / standardIds / assets / synonyms / broader / related / note / link
+ */
+export function buildKbRefsJson({
+  isTerm,
+  metricCode,
+  standardIds,
+  assets,
+  synonyms,
+  broader,
+  related,
+  note,
+  rel,
+} = {}) {
+  if (isTerm) {
+    const refs = {}
+    const mc = String(metricCode || '').trim()
+    if (mc) {
+      refs.metricCode = mc
+      refs.link = `/metric?code=${encodeURIComponent(mc)}`
+    }
+    const std = splitCsv(standardIds)
+    if (std.length) refs.standardIds = std
+    const as = splitCsv(assets)
+    if (as.length) refs.assets = as
+    const syn = splitCsv(synonyms)
+    if (syn.length) refs.synonyms = syn
+    const br = splitCsv(broader)
+    if (br.length) refs.broader = br
+    const relIds = splitCsv(related)
+    if (relIds.length) refs.related = relIds
+    const n = String(note || '').trim()
+    if (n) refs.note = n
+    return Object.keys(refs).length ? JSON.stringify(refs) : undefined
+  }
+  const text = String(rel || note || '').trim()
+  return text ? JSON.stringify({ note: text, label: text }) : undefined
+}
+
+export function splitCsv(raw) {
+  if (Array.isArray(raw)) {
+    return raw.map((x) => String(x || '').trim()).filter(Boolean)
+  }
+  return String(raw || '')
+    .split(/[,，;；\n]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+}
+
+export const TERM_EDGE_LABEL = {
+  synonym: '同义',
+  broader: '上位',
+  related: '相关',
+  implements_metric: '实现指标',
+  maps_column: '映射列',
+  governed_by_std: '受标准约束',
+}

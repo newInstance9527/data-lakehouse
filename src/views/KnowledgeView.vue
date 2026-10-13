@@ -5,6 +5,7 @@ import PageHeader from '@/components/common/PageHeader.vue'
 import ListPager from '@/components/common/ListPager.vue'
 import KnowledgeCreateDrawer from '@/components/knowledge/KnowledgeCreateDrawer.vue'
 import KnowledgeDetailDrawer from '@/components/knowledge/KnowledgeDetailDrawer.vue'
+import GlossaryGraphPanel from '@/components/knowledge/GlossaryGraphPanel.vue'
 import { useToast } from '@/composables/useToast'
 import { usePager } from '@/composables/usePager'
 import { useKnowledge } from '@/composables/useKnowledge'
@@ -21,10 +22,14 @@ const api = useKnowledge()
 const { currentWs } = useSession()
 
 const activeCat = ref('all')
+/** list | glossary */
+const viewMode = ref('list')
 const search = ref('')
 const createOpen = ref(false)
+const glossaryRef = ref(null)
 const createSaving = ref(false)
 const editEntry = ref(null)
+const createPrefill = ref(null)
 const detailOpen = ref(false)
 const detailEntryId = ref('')
 const detailRef = ref(null)
@@ -67,17 +72,36 @@ function applyOverview(ov) {
     kpiCards.value = [
       { icon: '📖', color: 'blue', value: String(items.value.length), unit: '篇', label: '知识条目', trend: items.value.length ? '' : '暂无' },
       { icon: '🏷️', color: 'purple', value: '—', unit: '', label: '业务术语', trend: '暂无' },
-      { icon: '📘', color: 'green', value: '—', unit: '', label: '平台手册', trend: '暂无' },
-      { icon: '❓', color: 'orange', value: '—', unit: '', label: 'FAQ', trend: '暂无' },
+      { icon: '📈', color: 'green', value: '—', unit: '', label: '指标术语覆盖', trend: '暂无' },
+      { icon: '⚠️', color: 'orange', value: '—', unit: '', label: '术语断链率', trend: '暂无' },
       { icon: '🔗', color: 'red', value: '—', unit: '', label: 'AI 引用次数', trend: '暂无' },
     ]
     return
   }
+  const gloss = ov.glossary || {}
+  const cov = ov.metricTermCoveragePct ?? gloss.metricTermCoveragePct
+  const brk = ov.brokenEdgeRatePct ?? gloss.brokenEdgeRatePct
   kpiCards.value = [
     { icon: '📖', color: 'blue', value: String(ov.total ?? items.value.length), unit: '篇', label: '知识条目', trend: '', trendUp: true },
     { icon: '🏷️', color: 'purple', value: String(ov.termCount ?? 0), unit: '条', label: '业务术语', trend: '', trendUp: true },
-    { icon: '📘', color: 'green', value: String(ov.manualCount ?? 0), unit: '部', label: '平台手册', trend: '', trendUp: true },
-    { icon: '❓', color: 'orange', value: String(ov.faqCount ?? 0), unit: '条', label: 'FAQ', trend: '', trendUp: true },
+    {
+      icon: '📈',
+      color: 'green',
+      value: cov != null ? String(cov) : '—',
+      unit: cov != null ? '%' : '',
+      label: '指标术语覆盖',
+      trend: gloss.activeMetricCount != null ? `${gloss.metricWithTermCount ?? 0}/${gloss.activeMetricCount}` : '',
+      trendUp: true,
+    },
+    {
+      icon: '⚠️',
+      color: 'orange',
+      value: brk != null ? String(brk) : '—',
+      unit: brk != null ? '%' : '',
+      label: '术语断链率',
+      trend: gloss.brokenEdgeCount != null ? `${gloss.brokenEdgeCount} 断边` : '',
+      trendUp: false,
+    },
     { icon: '🔗', color: 'red', value: String(ov.citeTotal ?? ov.citeCnt ?? 0), unit: '', label: 'AI 引用次数', trend: '累计', trendUp: true },
   ]
 }
@@ -138,7 +162,9 @@ onMounted(async () => {
     loadError.value = e?.message || '知识库加载失败'
     showToast(loadError.value, 'warning')
   }
+  if (route.query.view === 'glossary') viewMode.value = 'glossary'
   openFromQuery()
+  openCreateFromQuery()
 })
 
 watch(
@@ -156,12 +182,21 @@ watch(
   },
 )
 
+watch(
+  () => [route.query.create, route.query.metricCode, route.query.view],
+  () => {
+    if (route.query.view === 'glossary') viewMode.value = 'glossary'
+    openCreateFromQuery()
+  },
+)
+
 function setCat(id) {
   activeCat.value = id
 }
 
 function newEntry() {
   editEntry.value = null
+  createPrefill.value = null
   createOpen.value = true
 }
 
@@ -169,10 +204,40 @@ function closeCreate() {
   const reopenId = editEntry.value?.id ? detailEntryId.value || editEntry.value.id : ''
   createOpen.value = false
   editEntry.value = null
+  createPrefill.value = null
+  clearCreateQuery()
   if (reopenId) {
     detailEntryId.value = String(reopenId)
     detailOpen.value = true
   }
+}
+
+function clearCreateQuery() {
+  const q = { ...route.query }
+  let dirty = false
+  for (const k of ['create', 'metricCode', 'cat']) {
+    if (q[k] != null) {
+      delete q[k]
+      dirty = true
+    }
+  }
+  if (dirty) router.replace({ query: q })
+}
+
+function openCreateFromQuery() {
+  const create = route.query.create
+  if (create !== '1' && create !== 'true') return
+  const metricCode =
+    typeof route.query.metricCode === 'string' ? route.query.metricCode.trim() : ''
+  const cat = typeof route.query.cat === 'string' ? route.query.cat.trim() : '业务术语'
+  editEntry.value = null
+  createPrefill.value = {
+    cat: cat || '业务术语',
+    metricCode,
+    title: metricCode ? `${metricCode} 口径` : '',
+    note: metricCode ? `关联指标 ${metricCode}` : '',
+  }
+  createOpen.value = true
 }
 
 async function onCreateEntry(payload) {
@@ -183,6 +248,8 @@ async function onCreateEntry(payload) {
     syncItemsFromApi()
     createOpen.value = false
     editEntry.value = null
+    createPrefill.value = null
+    clearCreateQuery()
     resetPage()
     applyOverview(api.overview.value)
     const chunks = n?.chunks ?? n?.chunkCount
@@ -192,6 +259,7 @@ async function onCreateEntry(payload) {
       (isEdit ? `已更新：${payload.title}` : `已入库：${payload.title}`) + chunkHint + modeHint,
       'success',
     )
+    glossaryRef.value?.reload?.()
     if (n?.id) {
       openDetail(n.id)
       await nextTick()
@@ -266,6 +334,18 @@ function goLink(to, e) {
         class="input input-sm kb-search"
         placeholder="🔍 搜索知识库…"
       />
+      <button
+        type="button"
+        class="btn btn-sm"
+        :class="{ 'btn-primary': viewMode === 'list' }"
+        @click="viewMode = 'list'"
+      >列表</button>
+      <button
+        type="button"
+        class="btn btn-sm"
+        :class="{ 'btn-primary': viewMode === 'glossary' }"
+        @click="viewMode = 'glossary'"
+      >术语图谱</button>
       <button type="button" class="btn btn-sm" @click="newEntry">＋ 新建条目</button>
       <button type="button" class="btn btn-sm btn-primary" @click="goAi">🤖 去 AI 问答</button>
     </PageHeader>
@@ -286,6 +366,7 @@ function goLink(to, e) {
     <KnowledgeCreateDrawer
       :open="createOpen"
       :entry="editEntry"
+      :prefill="createPrefill"
       :saving="createSaving"
       @close="closeCreate"
       @submit="onCreateEntry"
@@ -302,7 +383,13 @@ function goLink(to, e) {
       </div>
     </div>
 
-    <div class="card kb-main-card">
+    <div v-if="viewMode === 'glossary'" class="card kb-main-card">
+      <div class="card-body">
+        <GlossaryGraphPanel ref="glossaryRef" @open-term="openDetail" />
+      </div>
+    </div>
+
+    <div v-else class="card kb-main-card">
       <div class="card-header">
         <div class="card-title">📚 知识分类</div>
         <div class="flex gap-8 kb-tabs">

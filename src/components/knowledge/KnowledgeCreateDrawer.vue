@@ -12,12 +12,15 @@ import {
   estimateCharsFromFile,
   estimateChunkCount,
   formatFileSize,
+  isTermFormCat,
 } from '@/data/knowledge'
 
 const props = defineProps({
   open: { type: Boolean, default: false },
   /** 编辑时传入条目详情（含 id / body / cat 等） */
   entry: { type: Object, default: null },
+  /** 新建预填：{ cat, metricCode, title, synonyms, note } */
+  prefill: { type: Object, default: null },
   /** workspace | platform */
   scope: { type: String, default: 'workspace' },
   /** 父组件入库/解析中 */
@@ -38,6 +41,11 @@ const form = reactive({
   title: '',
   cat: 'FAQ',
   rel: '',
+  metricCode: '',
+  standardIds: '',
+  assets: '',
+  synonyms: '',
+  note: '',
   source: 'manual', // manual | upload
   body: '',
   fileName: '',
@@ -51,23 +59,35 @@ const form = reactive({
   embedModel: 'bge-small-zh',
 })
 
+const isTermCat = computed(() => isTermFormCat(form.cat))
+
 function formCatFromApi(cat) {
   const hit = KB_FORM_CATS.find((c) => c.cat === cat)
   return hit?.value || 'FAQ'
 }
 
-function relFromEntry(entry) {
-  const refs = entry?.refs
-  if (refs && typeof refs === 'object') {
-    return refs.note || refs.link || refs.metricCode || refs.asset || ''
-  }
+function parseRefsObject(entry) {
+  let refs = entry?.refs
+  if (refs && typeof refs === 'object') return refs
   if (typeof entry?.refsJson === 'string') {
     try {
-      const o = JSON.parse(entry.refsJson)
-      return o?.note || o?.link || ''
+      return JSON.parse(entry.refsJson)
     } catch {
-      return ''
+      return null
     }
+  }
+  return null
+}
+
+function joinList(v) {
+  if (Array.isArray(v)) return v.filter(Boolean).join(', ')
+  return v ? String(v) : ''
+}
+
+function relFromEntry(entry) {
+  const refs = parseRefsObject(entry)
+  if (refs) {
+    return refs.note || refs.link || refs.metricCode || refs.asset || ''
   }
   return ''
 }
@@ -76,6 +96,11 @@ function resetForm() {
   form.title = ''
   form.cat = 'FAQ'
   form.rel = ''
+  form.metricCode = ''
+  form.standardIds = ''
+  form.assets = ''
+  form.synonyms = ''
+  form.note = ''
   form.source = 'manual'
   form.body = ''
   form.fileName = ''
@@ -99,6 +124,12 @@ function fillFromEntry(entry) {
   form.title = entry.title || ''
   form.cat = formCatFromApi(entry.cat)
   form.rel = relFromEntry(entry)
+  const refs = parseRefsObject(entry) || {}
+  form.metricCode = refs.metricCode || ''
+  form.standardIds = joinList(refs.standardIds)
+  form.assets = joinList(refs.assets) || refs.asset || ''
+  form.synonyms = joinList(refs.synonyms)
+  form.note = refs.note || ''
   form.source = entry.source === 'upload' ? 'upload' : 'manual'
   form.body = entry.body || entry.desc || ''
   form.fileName = entry.fileName || ''
@@ -116,12 +147,30 @@ function fillFromEntry(entry) {
   if (form.source === 'upload') chunkAdvanced.value = true
 }
 
+function applyPrefill(p) {
+  if (!p || typeof p !== 'object') return
+  if (p.cat) {
+    const hit = KB_FORM_CATS.find((c) => c.value === p.cat || c.cat === p.cat)
+    if (hit) form.cat = hit.value
+  }
+  if (p.metricCode) form.metricCode = String(p.metricCode)
+  if (p.title) form.title = String(p.title)
+  if (p.synonyms) form.synonyms = String(p.synonyms)
+  if (p.note) form.note = String(p.note)
+  if (p.standardIds) form.standardIds = String(p.standardIds)
+  if (p.assets) form.assets = String(p.assets)
+  if (p.body) form.body = String(p.body)
+}
+
 watch(
-  () => [props.open, props.entry?.id],
+  () => [props.open, props.entry?.id, props.prefill?.metricCode, props.prefill?.cat],
   ([open]) => {
     if (!open) return
     if (props.entry?.id) fillFromEntry(props.entry)
-    else resetForm()
+    else {
+      resetForm()
+      applyPrefill(props.prefill)
+    }
   },
 )
 
@@ -227,13 +276,23 @@ function submit() {
     showToast('请上传文档', 'warning')
     return
   }
+  const termPayload = isTermCat.value
+    ? {
+        metricCode: form.metricCode.trim(),
+        standardIds: form.standardIds.trim(),
+        assets: form.assets.trim(),
+        synonyms: form.synonyms.trim(),
+        note: form.note.trim(),
+      }
+    : { rel: form.rel.trim() }
+
   if (isUpload && selectedFile.value) {
     // 走后端真实解析；禁止用文件名占位正文
     emit('submit', {
       id: props.entry?.id || undefined,
       title: form.title.trim(),
       cat: form.cat,
-      rel: form.rel.trim(),
+      ...termPayload,
       source: 'upload',
       file: selectedFile.value,
       fileName: form.fileName || selectedFile.value.name,
@@ -259,7 +318,7 @@ function submit() {
     id: props.entry?.id || undefined,
     title: form.title.trim(),
     cat: form.cat,
-    rel: form.rel.trim(),
+    ...termPayload,
     source: form.source,
     body,
     fileName: form.fileName || '',
@@ -307,11 +366,40 @@ function submit() {
             <option v-for="c in KB_FORM_CATS" :key="c.value" :value="c.value">{{ c.value }}</option>
           </select>
         </label>
-        <label class="form-field">
+        <label v-if="!isTermCat" class="form-field">
           <span class="form-label">关联资产/指标</span>
-          <input v-model="form.rel" class="input" placeholder="逗号分隔，可选" />
+          <input v-model="form.rel" class="input" placeholder="可选备注" />
         </label>
       </div>
+
+      <template v-if="isTermCat">
+        <div class="detail-section-title">业务术语关联（Glossary SoT）</div>
+        <p class="kb-hint" style="margin: 0 0 8px">
+          知识库术语为业务口径唯一写入口；OM Glossary 仅作标准/指标镜像，勿在 OM 维护业务术语。
+        </p>
+        <div class="kb-form-grid">
+          <label class="form-field">
+            <span class="form-label">指标编码 metric_code</span>
+            <input v-model="form.metricCode" class="input" placeholder="如 gmv" />
+          </label>
+          <label class="form-field">
+            <span class="form-label">标准 ID / 字段名</span>
+            <input v-model="form.standardIds" class="input" placeholder="逗号分隔，可深链标准模块" />
+          </label>
+          <label class="form-field wide">
+            <span class="form-label">资产列 FQN</span>
+            <input v-model="form.assets" class="input" placeholder="catalog.schema.table.column，逗号分隔" />
+          </label>
+          <label class="form-field wide">
+            <span class="form-label">同义词</span>
+            <input v-model="form.synonyms" class="input" placeholder="成交总额, GMV" />
+          </label>
+          <label class="form-field wide">
+            <span class="form-label">备注</span>
+            <input v-model="form.note" class="input" placeholder="可选" />
+          </label>
+        </div>
+      </template>
 
       <div class="detail-section-title">内容来源</div>
       <div class="kb-source-tabs">

@@ -120,6 +120,9 @@ export function normalizeMetric(row) {
     ws: row.ws || '',
     createTime: row.createTime || null,
     updateTime: row.updateTime,
+    hasTerm: row.hasTerm === true || row.hasTerm === false ? row.hasTerm : null,
+    termGateStatus: row.termGateStatus || null,
+    termGateMessage: row.termGateMessage || null,
   }
 }
 
@@ -296,6 +299,9 @@ export function useMetrics() {
     const enabled = ov?.activeCount ?? all.filter((r) => r.status === 'active').length
     const matOk = ov?.materializeReconOk
     const matBlocked = ov?.materializeBlocked
+    const cov = ov?.metricTermCoveragePct
+    const withTerm = ov?.metricWithTermCount
+    const activeForTerm = ov?.activeMetricCount ?? enabled
     return [
       {
         icon: '📊',
@@ -325,15 +331,6 @@ export function useMetrics() {
         trendUp: true,
       },
       {
-        icon: '🧩',
-        color: 'cyan',
-        value: String(composite),
-        unit: '个',
-        label: '复合指标',
-        trend: '',
-        trendUp: true,
-      },
-      {
         icon: matBlocked > 0 ? '⚠️' : '✅',
         color: matBlocked > 0 ? 'orange' : 'green',
         value: String(enabled),
@@ -344,6 +341,25 @@ export function useMetrics() {
             ? `看板就绪物化 ${matOk} · 未对账 ${matBlocked ?? 0}`
             : '可被报表 / API 引用',
         trendUp: !(matBlocked > 0),
+      },
+      {
+        icon: '🏷️',
+        color:
+          ov?.termCoverageBelowWarn || (cov != null && Number(cov) < Number(ov?.termCoverageWarnPct ?? 80))
+            ? 'orange'
+            : cov != null && Number(cov) < 100
+              ? 'cyan'
+              : 'green',
+        value: cov != null ? String(cov) : '—',
+        unit: cov != null ? '%' : '',
+        label: '指标术语覆盖',
+        trend:
+          withTerm != null
+            ? `${withTerm}/${activeForTerm} · 闸门 ${ov?.termGateMode || 'soft'} · 预警线 ${ov?.termCoverageWarnPct ?? 80}%`
+            : 'KB Business Glossary',
+        trendUp:
+          cov == null ||
+          Number(cov) >= Number(ov?.termCoverageWarnPct ?? 80),
       },
     ]
   })

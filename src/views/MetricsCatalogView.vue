@@ -39,6 +39,7 @@ import {
   rerunMetricSample,
 } from '@/api/metric'
 import { publishMetricDataset } from '@/api/bi'
+import { ensureGlossaryTerm } from '@/api/ai'
 import MetricDimFilterBar from '@/components/metrics/MetricDimFilterBar.vue'
 import {
   ensureMetricDimOptions,
@@ -833,6 +834,22 @@ async function submitPublishApply(row, kind = 'create') {
   })
 }
 
+async function ensureTermForActive() {
+  const code = active.value?.id
+  if (!code) return
+  try {
+    const r = await ensureGlossaryTerm(code)
+    showToast(
+      r?.created ? `已创建术语：${r.title || code}` : `术语已存在：${r?.title || code}`,
+      'success',
+    )
+    await reloadMetrics()
+    if (detailOpen.value) openDetail(code)
+  } catch (e) {
+    showToast(e?.message || '补术语失败', 'error')
+  }
+}
+
 async function runAction(row, action) {
   if (action === 'detail') {
     openDetail(row.id)
@@ -1140,6 +1157,31 @@ async function refresh() {
             {{ s.label }}
           </div>
         </div>
+
+        <p
+          v-if="active.hasTerm === false"
+          class="met-banner warn"
+          style="margin: 8px 0"
+        >
+          尚未挂业务术语（KB Glossary）。启用闸门默认 soft 仍可发布；hard 模式下将被阻断。
+          <button
+            type="button"
+            class="btn-link"
+            @click="
+              $router.push({
+                path: '/knowledge',
+                query: { create: '1', cat: '业务术语', metricCode: active.id },
+              })
+            "
+          >去补术语</button>
+          ·
+          <button type="button" class="btn-link" @click="ensureTermForActive">
+            一键补术语
+          </button>
+        </p>
+        <p v-else-if="active.hasTerm === true" class="tip" style="margin: 8px 0">
+          已关联业务术语（implements_metric）
+        </p>
 
         <div class="met-kv">
           <div class="met-kv-row"><span>业务口径</span><div>{{ active.caliber }}</div></div>

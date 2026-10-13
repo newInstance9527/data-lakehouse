@@ -239,3 +239,28 @@ export function searchKnowledge(payload) {
 export function fetchKbStats(range = '7d', ws) {
   return http.get(`${KB}/stats`, { range, ws })
 }
+
+/** 业务术语只读图谱 */
+export function fetchGlossaryGraph({ root, depth } = {}) {
+  return http.get(`${KB}/glossary/graph`, { root, depth })
+}
+
+/** 术语覆盖率 / 断链率 KPI */
+export function fetchGlossaryStats() {
+  return http.get(`${KB}/glossary/stats`)
+}
+
+/** 从 refs_json 全量重建术语边 */
+export function rebuildGlossaryEdges() {
+  return http.post(`${KB}/glossary/rebuild-edges`, {})
+}
+
+/** 幂等为指标补业务术语 */
+export function ensureGlossaryTerm(metricCode) {
+  return http.post(`${KB}/glossary/ensure-term`, { metricCode })
+}
+
+/** 批量补未覆盖已启用指标术语 */
+export function ensureGlossaryTermsBatch() {
+  return http.post(`${KB}/glossary/ensure-terms-batch`, {})
+}

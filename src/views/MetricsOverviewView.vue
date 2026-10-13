@@ -20,6 +20,7 @@ import { pageMyTickets } from '@/api/apply'
 import { fetchDatasourcePage } from '@/api/datasource'
 import { fetchEtlDags } from '@/api/etl'
 import { queryMetricBoard } from '@/api/metric'
+import { ensureGlossaryTerm, ensureGlossaryTermsBatch } from '@/api/ai'
 import MetricDimFilterBar from '@/components/metrics/MetricDimFilterBar.vue'
 import '@/styles/metrics-page.css'
 
@@ -29,7 +30,9 @@ const { showToast } = useToast()
 const { currentWs } = useSession()
 const guide = pageGuideOf('metrics')
 
-const { catalog, liveKpis, loading, lastError, loadAll } = useMetrics()
+const { catalog, liveKpis, overview, loading, lastError, loadAll } = useMetrics()
+const ensuringCode = ref('')
+const batchEnsuring = ref(false)
 const publishTickets = ref({})
 const prepOpen = ref(true)
 const prep = ref({
@@ -195,6 +198,63 @@ function goCreate(id) {
   })
 }
 
+const uncoveredCodes = computed(() => {
+  const list = overview.value?.uncoveredMetricCodes
+  return Array.isArray(list) ? list : []
+})
+
+const termCoverageBelowWarn = computed(() => {
+  if (overview.value?.termCoverageBelowWarn === true) return true
+  const cov = overview.value?.metricTermCoveragePct
+  if (cov == null) return false
+  const warn = Number(overview.value?.termCoverageWarnPct ?? 80)
+  return Number(cov) < warn
+})
+
+function goEnsureTermManual(code) {
+  router.push({
+    path: '/knowledge',
+    query: { create: '1', cat: '业务术语', metricCode: code },
+  })
+}
+
+async function onEnsureTerm(code) {
+  if (!code || ensuringCode.value) return
+  ensuringCode.value = code
+  try {
+    const r = await ensureGlossaryTerm(code)
+    showToast(
+      r?.created ? `已创建术语：${r.title || code}` : `术语已存在：${r?.title || code}`,
+      'success',
+    )
+    await loadAll({ ws: currentWs.value || 'default', scope: 'workspace' })
+  } catch (e) {
+    showToast(e?.message || '补术语失败', 'error')
+  } finally {
+    ensuringCode.value = ''
+  }
+}
+
+async function onEnsureTermsBatch() {
+  if (batchEnsuring.value) return
+  batchEnsuring.value = true
+  try {
+    const r = await ensureGlossaryTermsBatch()
+    const created = r?.created ?? 0
+    const existed = r?.existed ?? 0
+    const failed = r?.failed ?? 0
+    showToast(
+      `批量补术语：新建 ${created} · 已有 ${existed}${failed ? ` · 失败 ${failed}` : ''}`,
+      failed ? 'warning' : 'success',
+    )
+    await loadAll({ ws: currentWs.value || 'default', scope: 'workspace' })
+  } catch (e) {
+    showToast(e?.message || '批量补术语失败', 'error')
+  } finally {
+    batchEnsuring.value = false
+  }
+}
+
 function pendingStatusLabel(row) {
   const hit = publishTickets.value[row.id]
   if (!hit) return row.statusLabel
@@ -338,6 +398,55 @@ function formatBoardValue(v) {
           {{ k.value }}<span class="kpi-unit">{{ k.unit }}</span>
         </div>
         <div v-if="k.trend" class="kpi-trend" :class="k.trendUp ? 'up' : 'down'">{{ k.trend }}</div>
+      </div>
+    </div>
+
+    <p
+      v-if="termCoverageBelowWarn"
+      class="met-banner warn"
+      style="margin-bottom: 12px"
+    >
+      指标术语覆盖 {{ overview?.metricTermCoveragePct ?? '—' }}% 低于预警线
+      {{ overview?.termCoverageWarnPct ?? 80 }}%（闸门 {{ overview?.termGateMode || 'soft' }}）。
+      建议批量补术语或前往知识库维护。
+    </p>
+
+    <div v-if="uncoveredCodes.length" class="card" style="margin-bottom: 16px">
+      <div class="card-header">
+        <div class="card-title">
+          未挂业务术语的已启用指标
+          <span class="tip">· 闸门 {{ overview?.termGateMode || 'soft' }} · 最多列 50</span>
+        </div>
+        <button
+          type="button"
+          class="btn btn-sm btn-primary"
+          :disabled="batchEnsuring"
+          @click="onEnsureTermsBatch"
+        >
+          {{ batchEnsuring ? '批量补齐中…' : '批量补术语' }}
+        </button>
+        <button type="button" class="btn btn-sm" @click="router.push('/knowledge?view=glossary')">
+          术语图谱
+        </button>
+      </div>
+      <div class="card-body">
+        <div
+          v-for="code in uncoveredCodes"
+          :key="code"
+          style="display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--border)"
+        >
+          <button type="button" class="btn-link" @click="goCatalog({ q: code })">{{ code }}</button>
+          <span style="flex: 1" />
+          <button
+            type="button"
+            class="btn btn-sm btn-primary"
+            :disabled="ensuringCode === code || batchEnsuring"
+            @click="onEnsureTerm(code)"
+          >
+            {{ ensuringCode === code ? '补齐中…' : '一键补术语' }}
+          </button>
+          <button type="button" class="btn btn-sm" @click="goEnsureTermManual(code)">手动填写</button>
+        </div>
       </div>
     </div>
 

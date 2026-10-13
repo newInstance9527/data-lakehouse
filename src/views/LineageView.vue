@@ -578,6 +578,7 @@ watch(currentWs, async () => {
               </span>
             </div>
             <div class="flex align-center gap-8">
+              <span class="tag layer-src" style="border: none">原始业务库</span>
               <span class="tag layer-ods" style="border: none">ODS</span>
               <span class="tag layer-dwd" style="border: none">DWD</span>
               <span class="tag layer-dws" style="border: none">DWS</span>

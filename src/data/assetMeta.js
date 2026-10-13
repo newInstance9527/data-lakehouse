@@ -1,6 +1,7 @@
 /** 资产分层 / 业务域等枚举 */
 
 export const ASSET_LAYERS = [
+  { value: 'src', label: 'SRC', full: '原始业务库' },
   { value: 'ods', label: 'ODS', full: 'ODS 原始层' },
   { value: 'dwd', label: 'DWD', full: 'DWD 明细层' },
   { value: 'dim', label: 'DIM', full: 'DIM 维度' },
@@ -35,6 +36,70 @@ export function domainMeta(domain) {
 
 export function levelClass(level) {
   return ASSET_LEVELS.find((l) => l.value === level)?.class || 'tag-gray'
+}
+
+/** 数据源 type → 清单 objectKind（与后端 LhInventoryObjectKinds.ofType 对齐） */
+export function objectKindFromDsType(typeCode) {
+  const t = String(typeCode || '').toLowerCase().trim()
+  if (!t) return ''
+  if (/kafka|pulsar/.test(t)) return 'topic'
+  if (/rabbit/.test(t)) return 'queue'
+  if (/elastic|opensearch/.test(t)) return 'index'
+  if (/redis/.test(t)) return 'key_prefix'
+  if (/^(s3|minio|s3_minio)$/.test(t) || t.includes('minio')) return 'bucket'
+  if (/hdfs|ftp|sftp|^file$/.test(t)) return 'path'
+  if (/mongo/.test(t)) return 'collection'
+  if (/http|rest|openapi|tableau|superset|airflow/.test(t)) return 'endpoint'
+  if (/hive|iceberg|hbase|mysql|mariadb|postgres|pg|oracle|sqlserver|clickhouse|doris|starrocks|trino|presto/.test(t)) {
+    return 'table'
+  }
+  return 'object'
+}
+
+/**
+ * 资产名称字段 UI 文案（`name`=技术侧标识，`cnName`=业务侧名称）。
+ * - 卡片/详情：按 assetKind（缺省再按数据源 type 推断）用专名，如表名 / Topic 名
+ * - 列表表头混排：统一「技术名称 / 业务名称」
+ */
+export function assetNameLabels(assetOrKind) {
+  let kind = ''
+  if (typeof assetOrKind === 'string') {
+    kind = assetOrKind
+  } else if (assetOrKind && typeof assetOrKind === 'object') {
+    kind =
+      assetOrKind.assetKind ||
+      assetOrKind.kind ||
+      assetOrKind.objectKind ||
+      objectKindFromDsType(assetOrKind.sourceType || assetOrKind.type) ||
+      'table'
+  } else {
+    kind = 'table'
+  }
+  kind = String(kind).toLowerCase().trim()
+  const map = {
+    table: { tech: '表名', biz: '表中文名' },
+    topic: { tech: 'Topic 名', biz: 'Topic 中文名' },
+    index: { tech: '索引名', biz: '索引中文名' },
+    searchindex: { tech: '索引名', biz: '索引中文名' },
+    container: { tech: '容器名', biz: '容器中文名' },
+    bucket: { tech: '桶名', biz: '桶中文名' },
+    queue: { tech: '队列名', biz: '队列中文名' },
+    path: { tech: '路径名', biz: '路径中文名' },
+    fileset: { tech: '文件集名', biz: '文件集中文名' },
+    collection: { tech: '集合名', biz: '集合中文名' },
+    key: { tech: '键名', biz: '键中文名' },
+    key_prefix: { tech: '键前缀', biz: '业务名称' },
+    endpoint: { tech: '接口名', biz: '接口中文名' },
+    object: { tech: '对象名', biz: '业务名称' },
+  }
+  const hit = map[kind] || map.object
+  return {
+    ...hit,
+    kind,
+    /** 列表表头（混类型）：治理口径 */
+    techCol: '技术名称',
+    bizCol: '业务名称',
+  }
 }
 
 function compactSeg(raw, max = 24) {

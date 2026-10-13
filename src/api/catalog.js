@@ -44,6 +44,19 @@ export function fetchAssetSchema(id) {
   return http.get(`${CAT}/assets/schema`, { id })
 }
 
+/** 列可改性评估（人读/结构意图 + 下游计数） */
+export function fetchAssetSchemaAssess(id) {
+  return http.get(`${CAT}/assets/schema/assess`, { id })
+}
+
+/** 写 OM 列人读（cnName / description） */
+export function updateAssetSchemaColumns(payload) {
+  return http.post(`${CAT}/assets/schema/columns`, {
+    id: payload.id,
+    columns: payload.columns,
+  })
+}
+
 export function fetchCatalogMetaOptions() {
   return http.get(`${CAT}/metaOptions`)
 }

@@ -20,6 +20,7 @@ import {
   filterChatPickerModels,
 } from '@/data/ai'
 import { fetchAiModels } from '@/api/ai'
+import { useAiChatInputHeight } from '@/composables/useAiChatInputHeight'
 
 const router = useRouter()
 const { showToast } = useToast()
@@ -36,6 +37,7 @@ const inputText = ref('')
 /** 快捷芯片选中的 scene，用户确认发送时带上；清空对话/发送后复位 */
 const pendingScene = ref(undefined)
 const inputEl = ref(null)
+useAiChatInputHeight(inputEl, 'lh.ai.pageInputHeight', { defaultPx: 104, minPx: 64, maxPx: 480 })
 const messages = assistant.messages
 const chatBody = ref(null)
 const sending = assistant.sending
@@ -608,6 +610,8 @@ function onBubbleClick(e, msg) {
           <textarea
             ref="inputEl"
             v-model="inputText"
+            rows="4"
+            title="拖拽右下角可调整输入框高度"
             placeholder="直接提问（默认只读智能体）；生成 SQL / 脚本请点上方芯片 · 可粘贴图片"
             @paste="onChatPaste"
             @keydown.enter.exact.prevent="sendMessage()"
@@ -1263,8 +1267,9 @@ function onBubbleClick(e, msg) {
   border-top: 1px solid var(--border);
   display: flex;
   gap: 10px;
-  align-items: center;
+  align-items: flex-end;
   background: var(--bg-1);
+  flex-shrink: 0;
 }
 .ai-chat-input textarea {
   flex: 1;
@@ -1272,10 +1277,13 @@ function onBubbleClick(e, msg) {
   border-radius: 8px;
   padding: 8px 12px;
   font-size: 13px;
-  resize: none;
+  resize: vertical;
   outline: none;
-  height: 40px;
+  min-height: 64px;
+  max-height: min(480px, 45vh);
+  line-height: 1.45;
   font-family: inherit;
+  box-sizing: border-box;
 }
 .ai-chat-input textarea:focus {
   border-color: var(--primary);

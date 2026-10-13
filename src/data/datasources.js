@@ -1180,6 +1180,7 @@ export function findDataSource(id) {
 export function statusMeta(status) {
   if (status === 'online') return { label: '● 在线', tag: 'tag-green', short: '在线' }
   if (status === 'warn') return { label: '⚠ 告警', tag: 'tag-orange', short: '告警' }
+  if (status === 'draft') return { label: '📝 草稿', tag: 'tag-gray', short: '草稿' }
   return { label: '⏸ 停用', tag: 'tag-gray', short: '停用' }
 }
 

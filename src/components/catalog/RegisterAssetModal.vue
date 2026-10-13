@@ -4,7 +4,9 @@ import SearchSelect from '@/components/common/SearchSelect.vue'
 import {
   ASSET_LAYERS,
   ASSET_LEVELS,
+  assetNameLabels,
   buildAssetIdentity,
+  objectKindFromDsType,
 } from '@/data/assetMeta'
 import { useDomains } from '@/composables/useDomains'
 import { ensureWorkspaceUserOptions, workspaceUserById, workspaceUserOptions } from '@/data/workspaceUsers'
@@ -28,11 +30,12 @@ const { sources, getSource, ensureTables } = useDatasources()
 const { user, currentWs } = useSession()
 const { domainOptions, ensureDomains } = useDomains()
 const dupChecking = ref(false)
+const saving = ref(false)
 
 const form = reactive({
   sourceId: '',
   tableName: '',
-  layer: 'ods',
+  layer: 'src',
   domain: 'trade',
   key: '',
   id: '',
@@ -84,6 +87,11 @@ const sourceSelectOptions = computed(() =>
 )
 
 const selectedSource = computed(() => getSource(form.sourceId))
+
+/** 登记时按源类型推断对象称呼（表 / Topic / …） */
+const regNameLabels = computed(() =>
+  assetNameLabels(objectKindFromDsType(selectedSource.value?.type) || 'table'),
+)
 
 const allTables = computed(() => {
   const s = selectedSource.value
@@ -175,6 +183,19 @@ function resolveOwnerId(raw, { allowEmpty = false } = {}) {
   return hit?.value || v
 }
 
+/** JDBC 业务库默认「原始业务库」；湖表（Iceberg/Hive）默认 ODS */
+function defaultLayerForSource(s) {
+  const t = String(s?.type || '').toLowerCase()
+  if (t.includes('iceberg') || t === 'hive' || t.includes('lake')) return 'ods'
+  if (
+    /mysql|postgres|doris|starrocks|clickhouse|oracle|sqlserver|mariadb|tidb/.test(t) ||
+    t.startsWith('jdbc')
+  ) {
+    return 'src'
+  }
+  return 'ods'
+}
+
 async function resetForm() {
   await ensureWorkspaceUserOptions()
   ownerOptionsTick.value += 1
@@ -187,7 +208,7 @@ async function resetForm() {
   Object.assign(form, {
     sourceId: preset?.id || '',
     tableName: '',
-    layer: 'ods',
+    layer: defaultLayerForSource(preset),
     domain: 'trade',
     key: '',
     id: '',
@@ -226,6 +247,7 @@ watch(
     form.key = ''
     form.id = ''
     form.name = ''
+    form.layer = defaultLayerForSource(id ? getSource(id) : null)
     identityTouched.value = false
     if (id) {
       ensureTables(id)
@@ -281,7 +303,15 @@ function onKeyInput() {
 }
 
 function close() {
+  if (saving.value) return
   emit('close')
+}
+
+/** 等父组件注册接口结束；成功才关弹窗，失败保留表单 */
+function waitSubmit(payload) {
+  return new Promise((resolve) => {
+    emit('submit', payload, (ok) => resolve(!!ok))
+  })
 }
 
 function defaultEngine(type) {
@@ -296,6 +326,7 @@ function defaultEngine(type) {
 }
 
 async function submit() {
+  if (saving.value || dupChecking.value) return
   if (!form.sourceId) {
     showToast('请选择数据源', 'warning')
     return
@@ -344,7 +375,7 @@ async function submit() {
   }
   const s = selectedSource.value
   const t = selectedTable.value
-  emit('submit', {
+  const payload = {
     id: form.id,
     key: form.key,
     name: form.name,
@@ -363,8 +394,14 @@ async function submit() {
     cnName: form.cnName || t?.cnName || '',
     encoding: t?.encoding || '',
     ws: currentWs.value || 'default',
-  })
-  close()
+  }
+  saving.value = true
+  try {
+    const ok = await waitSubmit(payload)
+    if (ok) emit('close')
+  } finally {
+    saving.value = false
+  }
 }
 </script>
 
@@ -465,8 +502,13 @@ async function submit() {
                 />
               </label>
               <label class="form-field">
-                <span class="form-label">中文名</span>
-                <input v-model="form.cnName" class="input" style="width: 100%" placeholder="如 订单表" />
+                <span class="form-label">{{ regNameLabels.biz }}</span>
+                <input
+                  v-model="form.cnName"
+                  class="input"
+                  style="width: 100%"
+                  :placeholder="`如 ${regNameLabels.biz === '表中文名' ? '订单主表' : regNameLabels.biz}`"
+                />
               </label>
               <label class="form-field">
                 <span class="form-label">安全等级</span>
@@ -510,9 +552,9 @@ async function submit() {
         <div class="modal-footer">
           <span v-if="form.key" class="tag tag-blue">将注册：{{ form.key }}</span>
           <span style="flex: 1" />
-          <button class="btn btn-sm" @click="close">取消</button>
-          <button class="btn btn-sm btn-primary" :disabled="dupChecking" @click="submit">
-            {{ dupChecking ? '查重中…' : '注册入库' }}
+          <button class="btn btn-sm" :disabled="saving" @click="close">取消</button>
+          <button class="btn btn-sm btn-primary" :disabled="dupChecking || saving" @click="submit">
+            {{ saving ? '注册中…' : dupChecking ? '查重中…' : '注册入库' }}
           </button>
         </div>
       </div>

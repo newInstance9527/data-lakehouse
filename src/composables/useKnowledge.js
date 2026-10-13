@@ -11,7 +11,7 @@ import {
   updateKbEntry,
   uploadKbEntry,
 } from '@/api/ai'
-import { resolveKbCat } from '@/data/knowledge'
+import { buildKbRefsJson, isTermFormCat, resolveKbCat } from '@/data/knowledge'
 import { resolveWs } from '@/utils/ws'
 import { fetchAllPages } from '@/utils/pageFetch'
 
@@ -76,9 +76,28 @@ function buildMeta(row, chunks, refs) {
   parts.push(`${chunks} 分片`)
   if (row.strategy) parts.push(row.strategy)
   parts.push(row.status === 'ready' ? '已索引' : row.status || '')
-  if (refs?.metricCode) parts.push(`关联 ${refs.metricCode}`)
+  if (refs?.metricCode) parts.push(`指标 ${refs.metricCode}`)
+  else if (refs?.assets?.length) parts.push(`资产 ${refs.assets[0]}`)
   else if (refs?.asset) parts.push(`关联 ${refs.asset}`)
+  else if (refs?.standardIds?.length) parts.push(`标准 ${refs.standardIds[0]}`)
+  else if (refs?.synonyms?.length) parts.push(`同义 ${refs.synonyms[0]}`)
   return parts.filter(Boolean).join(' · ')
+}
+
+function refsJsonFromPayload(payload) {
+  if (payload.refsJson) return payload.refsJson
+  const resolved = resolveKbCat(payload.cat)
+  return buildKbRefsJson({
+    isTerm: resolved.cat === 'term' || isTermFormCat(payload.cat),
+    metricCode: payload.metricCode,
+    standardIds: payload.standardIds,
+    assets: payload.assets,
+    synonyms: payload.synonyms,
+    broader: payload.broader,
+    related: payload.related,
+    note: payload.note,
+    rel: payload.rel,
+  })
 }
 
 function linkLabel(to) {
@@ -147,7 +166,7 @@ export function useKnowledge() {
         overlap: payload.overlap,
         separator: payload.separator === 'custom' ? payload.customSep : payload.separator,
         embedModelId: payload.embedModel,
-        refsJson: payload.rel ? JSON.stringify({ note: payload.rel }) : undefined,
+        refsJson: refsJsonFromPayload({ ...payload, cat: resolved.cat }),
         ws: resolveWs(payload.ws),
         scope: 'workspace',
         entryId: payload.id || undefined,
@@ -173,7 +192,7 @@ export function useKnowledge() {
       overlap: payload.overlap,
       separator: payload.separator === 'custom' ? payload.customSep : payload.separator,
       embedModelId: payload.embedModel,
-      refsJson: payload.rel ? JSON.stringify({ note: payload.rel }) : undefined,
+      refsJson: refsJsonFromPayload({ ...payload, cat: resolved.cat }),
       ws: resolveWs(payload.ws),
       scope: 'workspace',
     })
@@ -198,7 +217,7 @@ export function useKnowledge() {
       overlap: payload.overlap,
       separator: payload.separator === 'custom' ? payload.customSep : payload.separator,
       embedModelId: payload.embedModel,
-      refsJson: payload.rel ? JSON.stringify({ note: payload.rel }) : undefined,
+      refsJson: refsJsonFromPayload({ ...payload, cat: resolved.cat }),
       ws: resolveWs(payload.ws),
       scope: payload.scope || 'workspace',
     }

@@ -403,6 +403,57 @@ function resolvedEngineHint() {
   return '随任务默认引擎'
 }
 
+/** 批处理中间表命名：与后端 LhStagingTables 对齐 */
+function stagingBareFromSource() {
+  const t = String(props.conf?.table || props.conf?.src || '').trim()
+  if (!t) return 'staging'
+  const bare = t.includes('.') ? t.split('.').pop() : t
+  return String(bare || 'staging')
+    .toLowerCase()
+    .replace(/[^a-z0-9_]/g, '_')
+    .replace(/^(lh_ods_|lh_clean_)/, '') || 'staging'
+}
+
+const stagingPreview = computed(() => {
+  const db = String(props.conf?.database || props.conf?.schema || '').trim()
+  const bare = stagingBareFromSource()
+  const landCustom = String(props.conf?.landingTable || '').trim()
+  const cleanCustom = String(props.conf?.cleanTable || '').trim()
+  const landBare = landCustom
+    ? landCustom.includes('.')
+      ? landCustom.split('.').pop()
+      : landCustom
+    : `lh_ods_${bare}`
+  const cleanBare = cleanCustom
+    ? cleanCustom.includes('.')
+      ? cleanCustom.split('.').pop()
+      : cleanCustom
+    : `lh_clean_${bare}`
+  const q = (t) => (db ? `${db}.${t}` : t)
+  return {
+    landing: q(landBare),
+    clean: q(cleanBare),
+    landBare,
+    cleanBare,
+    ddlHint: [
+      `-- DBA 预建（关闭「自动创建中间表」时）`,
+      `CREATE TABLE IF NOT EXISTS \`${landBare}\` (...对齐源表列...);`,
+      `CREATE TABLE IF NOT EXISTS \`${cleanBare}\` (...对齐源表列...);`,
+    ].join('\n'),
+  }
+})
+
+const stagingAutoCreate = computed(() => {
+  const v = props.conf?.stagingAutoCreate
+  if (v === false || v === 'false' || v === 0 || v === '0') return false
+  return true
+})
+
+const stagingCleanup = computed(() => {
+  const m = String(props.conf?.stagingCleanup || 'none').toLowerCase()
+  return m === 'truncate' || m === 'drop' ? m : 'none'
+})
+
 function onBindDs(id) {
   if (!id) {
     set('dsId', '')
@@ -804,6 +855,67 @@ function onCodeSetPick(v) {
       </select>
     </label>
     <div class="form-hint">运行引擎：{{ resolvedEngineHint() }} · 本节点只负责抽取，写出请接下游 sink</div>
+
+    <div v-if="conf.mode === 'batch' || conf.mode === 'incremental'" class="staging-box">
+      <div class="sec-title">批处理中间表（有下游时）</div>
+      <div class="form-hint">
+        多算子链在源库落 <code>{{ stagingPreview.landing }}</code> →
+        <code>{{ stagingPreview.clean }}</code> 串联；非会话 TEMP，默认不会自动删表。
+      </div>
+      <div class="form-grid-2">
+        <label class="form-field">
+          <span class="form-label">ODS 中间表</span>
+          <input
+            class="input"
+            :value="conf.landingTable || ''"
+            placeholder="空=约定 lh_ods_&lt;表&gt;"
+            @input="set('landingTable', $event.target.value)"
+          />
+        </label>
+        <label class="form-field">
+          <span class="form-label">清洗中间表</span>
+          <input
+            class="input"
+            :value="conf.cleanTable || ''"
+            placeholder="空=约定 lh_clean_&lt;表&gt;"
+            @input="set('cleanTable', $event.target.value)"
+          />
+        </label>
+      </div>
+      <div class="form-grid-2">
+        <label class="form-field">
+          <span class="form-label">自动创建中间表</span>
+          <select
+            class="select"
+            :value="String(stagingAutoCreate)"
+            @change="set('stagingAutoCreate', $event.target.value === 'true')"
+          >
+            <option value="true">开启（发布/试跑 CREATE IF NOT EXISTS）</option>
+            <option value="false">关闭（须 DBA 预建，缺表阻断发布）</option>
+          </select>
+        </label>
+        <label class="form-field">
+          <span class="form-label">成功后清理</span>
+          <select
+            class="select"
+            :value="stagingCleanup"
+            @change="set('stagingCleanup', $event.target.value)"
+          >
+            <option value="none">不清理（默认）</option>
+            <option value="truncate">TRUNCATE 数据</option>
+            <option value="drop">DROP 表（慎用）</option>
+          </select>
+        </label>
+      </div>
+      <div v-if="stagingCleanup === 'drop'" class="form-hint form-warn">
+        DROP 会删除中间表结构；失败运行不会清理。样例库可用，生产请谨慎。
+      </div>
+      <div v-if="!stagingAutoCreate" class="form-hint form-warn">
+        已关闭自动创建：请将下方 DDL 交给 DBA 预建，否则发布/试跑会被阻断。
+      </div>
+      <pre class="staging-ddl">{{ stagingPreview.ddlHint }}</pre>
+    </div>
+
     <div v-if="conf.mode === 'incremental'" class="form-grid-2">
       <label class="form-field">
         <span class="form-label">水位列</span>
@@ -1388,6 +1500,17 @@ function onCodeSetPick(v) {
   <!-- ===== clean ===== -->
   <template v-else-if="type === 'clean'">
     <div class="form-hint">上游为 <code>source_kafka</code> / <code>source_pulsar</code> 时：本节点不单独跑作业，规则折叠进下游汇点 FLINK_STREAM（流式路径会忽略有界 dedup）。</div>
+    <div class="sec-title">清洗落表（批处理链）</div>
+    <label class="form-field">
+      <span class="form-label">清洗中间表名</span>
+      <input
+        class="input"
+        :value="conf.cleanTable || ''"
+        placeholder="空=由上游 source 约定 lh_clean_*；可覆盖"
+        @input="set('cleanTable', $event.target.value)"
+      />
+    </label>
+    <div class="form-hint">中间表自动创建/清理策略在上游 <code>source</code>（batch/incremental）节点配置。</div>
     <div class="sec-title">预设与全局策略</div>
     <label class="form-field">
       <span class="form-label">清洗等级</span>
@@ -2525,5 +2648,29 @@ function onCodeSetPick(v) {
 }
 .btn-link:hover {
   opacity: 0.85;
+}
+.staging-box {
+  margin: 10px 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-2, #fafafa);
+}
+.staging-ddl {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-all;
+  border-radius: 6px;
+  border: 1px dashed var(--border);
+  background: var(--bg-1, #fff);
+  color: var(--text-2, #595959);
+  max-height: 120px;
+  overflow: auto;
+}
+.form-warn {
+  color: var(--warning, #d48806);
 }
 </style>

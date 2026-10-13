@@ -1,5 +1,5 @@
 ﻿<script setup>
-import { computed, onMounted, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
 import NavIcon from '@/components/common/NavIcon.vue'
@@ -8,11 +8,13 @@ import { useOverview } from '@/composables/useOverview'
 import { OVERVIEW_MODULES, OV_PALETTE as P, OV_PIPELINE } from '@/data/overview'
 import { pageGuideOf } from '@/data/pageGuides'
 import { useSession } from '@/composables/useSession'
+import { fetchGoldenPath } from '@/api/meta'
 
 const router = useRouter()
 const { currentWs } = useSession()
 const { showToast } = useToast()
 const guide = pageGuideOf('overview')
+const goldenPath = ref(null)
 
 const {
   loading,
@@ -33,9 +35,17 @@ const {
   refresh: reloadOverview,
 } = useOverview()
 
+async function loadGoldenPath() {
+  try {
+    goldenPath.value = await fetchGoldenPath(currentWs.value || 'default')
+  } catch {
+    goldenPath.value = null
+  }
+}
+
 async function mountReload() {
   try {
-    await reloadOverview()
+    await Promise.all([reloadOverview(), loadGoldenPath()])
   } catch (e) {
     showToast(`总览加载失败：${e?.message || e}`, 'error')
   }
@@ -260,7 +270,7 @@ function go(to) {
 
 async function refresh() {
   try {
-    await reloadOverview()
+    await Promise.all([reloadOverview(), loadGoldenPath()])
     showToast('已刷新总览统计', 'success')
   } catch (e) {
     showToast(`刷新失败：${e?.message || e}`, 'error')
@@ -365,6 +375,35 @@ const attentionItems = computed(() => {
         </span>
       </button>
     </nav>
+
+    <div v-if="goldenPath" class="card" style="margin-bottom: 16px">
+      <div class="card-header">
+        <div class="card-title">
+          金路径软探针
+          <span class="tip">
+            · {{ goldenPath.passed ?? 0 }}/{{ goldenPath.total ?? 0 }}
+            · {{ goldenPath.ready ? '仓内就绪' : '尚有缺口' }}
+          </span>
+        </div>
+        <button type="button" class="btn btn-sm" @click="loadGoldenPath">↻</button>
+      </div>
+      <div class="card-body">
+        <p class="tip" style="margin: 0 0 10px">{{ goldenPath.hint }}</p>
+        <div style="display: grid; gap: 6px">
+          <div
+            v-for="it in goldenPath.items || []"
+            :key="it.id"
+            style="display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap"
+          >
+            <span :style="{ color: it.ok ? 'var(--success)' : 'var(--warning)', fontWeight: 700 }">
+              {{ it.ok ? '✓' : '○' }}
+            </span>
+            <strong>{{ it.label }}</strong>
+            <span class="tip">{{ it.detail }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <!-- KPI 非对称 bento：质量趋势主格 + 三侧栏 -->
     <div class="ov-bento" v-if="featuredKpi">

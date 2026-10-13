@@ -1,5 +1,6 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import AppDrawer from '@/components/common/AppDrawer.vue'
 import { fetchKbEntry, rebuildKbIndex } from '@/api/ai'
 import { KB_CATS } from '@/data/knowledge'
@@ -15,6 +16,7 @@ const props = defineProps({
 
 const emit = defineEmits(['close', 'edit', 'deleted', 'updated'])
 const { showToast } = useToast()
+const router = useRouter()
 
 const loading = ref(false)
 const rebuilding = ref(false)
@@ -57,6 +59,38 @@ const bodyText = computed(() => {
   if (!d) return ''
   return String(d.body || d.desc || '').trim()
 })
+
+const refsObj = computed(() => {
+  const d = detail.value
+  if (!d) return null
+  let refs = d.refs
+  if (refs && typeof refs === 'object') return refs
+  if (typeof d.refsJson === 'string') {
+    try {
+      return JSON.parse(d.refsJson)
+    } catch {
+      return null
+    }
+  }
+  return null
+})
+
+const isTerm = computed(() => detail.value?.cat === 'term')
+
+function goMetric(code) {
+  if (!code) return
+  router.push({ path: '/metric', query: { code } })
+}
+
+function goStandard(id) {
+  if (!id) return
+  router.push({ path: '/standard', query: { q: id } })
+}
+
+function goCatalog(fqn) {
+  if (!fqn) return
+  router.push({ path: '/catalog', query: { q: fqn } })
+}
 
 async function load() {
   const id = props.entryId
@@ -227,6 +261,54 @@ defineExpose({ reload: load })
         <p v-if="detail.indexError" class="kb-detail-tip warn">
           索引错误：{{ detail.indexError }}
         </p>
+
+        <template v-if="isTerm && refsObj">
+          <div class="detail-section-title">术语关联</div>
+          <div class="info-grid kb-detail-meta">
+            <div v-if="refsObj.metricCode">
+              <div class="info-label">指标</div>
+              <div class="info-value">
+                <button type="button" class="btn-link" @click="goMetric(refsObj.metricCode)">
+                  {{ refsObj.metricCode }}
+                </button>
+              </div>
+            </div>
+            <div v-if="refsObj.standardIds?.length">
+              <div class="info-label">标准</div>
+              <div class="info-value">
+                <button
+                  v-for="sid in refsObj.standardIds"
+                  :key="sid"
+                  type="button"
+                  class="btn-link"
+                  style="margin-right: 8px"
+                  @click="goStandard(sid)"
+                >{{ sid }}</button>
+              </div>
+            </div>
+            <div v-if="refsObj.assets?.length || refsObj.asset">
+              <div class="info-label">资产列</div>
+              <div class="info-value">
+                <button
+                  v-for="a in (refsObj.assets || [refsObj.asset]).filter(Boolean)"
+                  :key="a"
+                  type="button"
+                  class="btn-link"
+                  style="margin-right: 8px"
+                  @click="goCatalog(a)"
+                >{{ a }}</button>
+              </div>
+            </div>
+            <div v-if="refsObj.synonyms?.length">
+              <div class="info-label">同义词</div>
+              <div class="info-value">{{ refsObj.synonyms.join(' · ') }}</div>
+            </div>
+            <div v-if="refsObj.note">
+              <div class="info-label">备注</div>
+              <div class="info-value">{{ refsObj.note }}</div>
+            </div>
+          </div>
+        </template>
 
         <div class="detail-section-title kb-body-head">
           <span>正文</span>

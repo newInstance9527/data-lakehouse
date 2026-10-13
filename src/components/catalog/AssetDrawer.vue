@@ -1,17 +1,23 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import AppDrawer from '@/components/common/AppDrawer.vue'
+import SearchSelect from '@/components/common/SearchSelect.vue'
 import { createApplyTicket, approveTicket } from '@/api/apply'
+import { fetchLineageImpact, postChangeEval, postBlockDdl } from '@/api/lineage'
 import { useAssets } from '@/composables/useAssets'
 import { useDatasources } from '@/composables/useDatasources'
+import { useDomains } from '@/composables/useDomains'
 import { useSession, isNeedOwnerApplyError } from '@/composables/useSession'
 import { useToast } from '@/composables/useToast'
 import { confirmDelete } from '@/composables/useConfirmDelete'
 import { APPLY_EXPIRE_OPTIONS } from '@/data/apply'
+import { ASSET_LAYERS, ASSET_LEVELS, assetNameLabels } from '@/data/assetMeta'
 import { formatDataType, yesNo } from '@/utils/fieldSchema'
 import { lineagePath, qualityPath, standardMapping, lifecyclePath, metricsPath } from '@/utils/moduleLinks'
 import { displayUser } from '@/utils/displayUser'
+import { ensureWorkspaceUserOptions, workspaceUserById, workspaceUserOptions } from '@/data/workspaceUsers'
+import { levelToSensitivity, sensitivityToLevel } from '@/api/catalog'
 
 const props = defineProps({
   asset: { type: Object, default: null },
@@ -22,15 +28,60 @@ const emit = defineEmits(['close', 'updated', 'deleted'])
 const router = useRouter()
 const { showToast } = useToast()
 const { sources, getSource } = useDatasources()
-const { loadSchema, loadDetail, refresh, updateMeta, loadPreview, removeAsset } = useAssets()
+const {
+  loadSchema,
+  loadSchemaAssess,
+  loadDetail,
+  refresh,
+  updateMeta,
+  updateSchemaColumns,
+  editAsset,
+  loadPreview,
+  removeAsset,
+} = useAssets()
+const { domainOptions, ensureDomains } = useDomains()
 const { user, isSuperAdmin, canPreviewAsset, hasTableReadGrant, isAssetOwner, canEditAsset, canDeleteAsset, canManageAsset, refreshGrant, refreshManageGrant } = useSession()
-const tab = ref('schema')
+const tab = ref('info')
 const schemaLoading = ref(false)
 const schemaHint = ref('')
 const schemaSource = ref('')
 const localFields = ref(null)
+const schemaEditing = ref(false)
+const schemaAssessing = ref(false)
+const schemaSaving = ref(false)
+const columnAssess = ref({})
+const assessHint = ref('')
+const assessFocusTable = ref('')
 const busy = ref(false)
 const metaSaving = ref(false)
+const infoEditing = ref(false)
+const infoSaving = ref(false)
+const infoForm = reactive({
+  name: '',
+  cnName: '',
+  description: '',
+  layer: '',
+  domain: '',
+  techOwner: '',
+  bizOwner: '',
+  level: '内部',
+  engine: '',
+  isGold: false,
+  revision: null,
+})
+const ownerOptionsTick = ref(0)
+const ownerOptions = computed(() => {
+  void ownerOptionsTick.value
+  const list = [...workspaceUserOptions()]
+  const push = (raw, sub) => {
+    const cur = String(raw || '').trim()
+    if (!cur || list.some((o) => String(o.value) === cur)) return
+    list.unshift({ value: cur, label: cur, sub, account: '', name: cur })
+  }
+  push(infoForm.techOwner, '技术 Owner')
+  push(infoForm.bizOwner, '业务 Owner')
+  return list
+})
 const previewLoading = ref(false)
 const previewLive = ref(null)
 const previewHint = ref('')
@@ -60,6 +111,7 @@ const failRules = computed(() => qualityExtra.value?.failRules || [])
 const goldExtra = computed(() => props.asset?.extras?.gold || null)
 const omMeta = computed(() => props.asset?.extras?.omMeta || null)
 const canEditOmMeta = computed(() => !!props.asset?.omFqn)
+const nameLabels = computed(() => assetNameLabels(props.asset))
 const lifecycleTags = computed(() =>
   Array.isArray(lifecycleExtra.value?.tags) ? lifecycleExtra.value.tags : [],
 )
@@ -97,6 +149,98 @@ function syncMetaEditFromAsset() {
   }
 }
 
+function syncInfoFormFromAsset() {
+  const a = props.asset
+  if (!a) return
+  infoForm.name = a.name || ''
+  infoForm.cnName = a.cnName || ''
+  infoForm.description = a.desc || a.description || ''
+  infoForm.layer = a.layer || 'ods'
+  infoForm.domain = a.domain || a.domainCode || ''
+  infoForm.techOwner = a.techOwner || a.owner || ''
+  infoForm.bizOwner = a.bizOwner || ''
+  infoForm.level = a.level || sensitivityToLevel(a.sensitivity) || '内部'
+  infoForm.engine = a.engine || ''
+  infoForm.isGold = !!a.isGold
+  infoForm.revision = a.revision ?? null
+}
+
+function resolveOwnerId(raw, { allowEmpty = false } = {}) {
+  const v = String(raw || '').trim()
+  if (!v) return allowEmpty ? '' : user.value?.id || ''
+  if (workspaceUserById(v)) return v
+  const hit = workspaceUserOptions().find(
+    (o) => o.account === v || o.name === v || o.label === v,
+  )
+  return hit?.value || v
+}
+
+function startInfoEdit() {
+  if (!canEdit.value) {
+    showToast('无编辑权，请申请操作权限', 'warning')
+    goApplyManage()
+    return
+  }
+  syncInfoFormFromAsset()
+  ensureDomains().catch(() => {})
+  ensureWorkspaceUserOptions().then(() => {
+    ownerOptionsTick.value += 1
+  })
+  infoEditing.value = true
+}
+
+function cancelInfoEdit() {
+  infoEditing.value = false
+  syncInfoFormFromAsset()
+}
+
+async function saveInfoEdit() {
+  if (!props.asset?.id || infoSaving.value) return
+  if (!canEdit.value) {
+    showToast('无编辑权，请申请操作权限', 'warning')
+    goApplyManage()
+    return
+  }
+  if (!infoForm.layer || !infoForm.domain) {
+    showToast('请选择分层与业务域', 'warning')
+    return
+  }
+  infoSaving.value = true
+  try {
+    const row = await editAsset({
+      id: props.asset.id,
+      name: infoForm.name,
+      cnName: infoForm.cnName,
+      description: infoForm.description,
+      layer: infoForm.layer,
+      domain: infoForm.domain,
+      techOwner: resolveOwnerId(infoForm.techOwner),
+      bizOwner: resolveOwnerId(infoForm.bizOwner, { allowEmpty: true }),
+      sensitivity: levelToSensitivity(infoForm.level),
+      engine: infoForm.engine,
+      isGold: infoForm.isGold,
+      revision: infoForm.revision,
+    })
+    emit('updated', row)
+    infoEditing.value = false
+    syncInfoFormFromAsset()
+    showToast('基本信息已保存', 'success')
+  } catch (e) {
+    if (isNeedOwnerApplyError(e)) {
+      showToast(e.message || '无编辑权', 'warning')
+      goApplyManage()
+    } else {
+      showToast(`保存失败：${e.message || e}`, 'error')
+    }
+  } finally {
+    infoSaving.value = false
+  }
+}
+
+function assessOf(enName) {
+  return columnAssess.value[String(enName || '').toLowerCase()] || null
+}
+
 function goLineage() {
   const a = props.asset
   const path =
@@ -124,9 +268,15 @@ watch(
       grantFetchedFor = null
       previewLive.value = null
       applyOpen.value = false
+      schemaEditing.value = false
+      infoEditing.value = false
+      columnAssess.value = {}
+      assessHint.value = ''
       return
     }
     syncMetaEditFromAsset()
+    syncInfoFormFromAsset()
+    ensureDomains().catch(() => {})
     if (grantFetchedFor !== id) {
       grantChecking.value = true
       grantFetchedFor = id
@@ -137,10 +287,13 @@ watch(
       }
     }
     if (schemaFetchedFor === id) return
-    tab.value = 'schema'
+    tab.value = 'info'
     localFields.value = null
     schemaHint.value = ''
     schemaSource.value = ''
+    schemaEditing.value = false
+    columnAssess.value = {}
+    assessHint.value = ''
     schemaFetchedFor = id
     previewFetchedFor = null
     previewLive.value = null
@@ -361,17 +514,165 @@ async function doRefresh() {
     emit('updated', detail)
     schemaFetchedFor = props.asset.id
     syncMetaEditFromAsset()
+    syncInfoFormFromAsset()
     await ensureSchema(props.asset.id)
-    showToast('已刷新对齐', 'success')
+    showToast('已同步字段 Schema 并对齐', 'success')
   } catch (e) {
     if (isNeedOwnerApplyError(e)) {
       showToast(e.message || '无编辑权，请申请操作权限', 'warning')
       goApplyManage()
     } else {
-      showToast(`刷新失败：${e.message || e}`, 'error')
+      showToast(`同步失败：${e.message || e}`, 'error')
     }
   } finally {
     busy.value = false
+  }
+}
+
+async function runSchemaAssess() {
+  if (!props.asset?.id || schemaAssessing.value) return
+  schemaAssessing.value = true
+  try {
+    const res = await loadSchemaAssess(props.asset.id)
+    const map = {}
+    for (const c of res?.columns || []) {
+      if (c?.enName) map[String(c.enName).toLowerCase()] = c
+    }
+    columnAssess.value = map
+    assessFocusTable.value = res?.focusTable || ''
+    assessHint.value = res?.hint || ''
+    if (schemaEditing.value && localFields.value?.length) {
+      localFields.value = localFields.value.map((f) => {
+        const a = map[String(f.enName || '').toLowerCase()]
+        if (!a) return f
+        return {
+          ...f,
+          cnName: f.cnName || a.cnName || f.enName,
+          desc: f.desc || a.description || '',
+          _origCn: f._origCn ?? (a.cnName || f.cnName || ''),
+          _origDesc: f._origDesc ?? (a.description || f.desc || ''),
+          _origType: f._origType ?? (f.dataType || ''),
+        }
+      })
+    }
+    showToast(`已评估 ${res?.columnCount ?? 0} 列 · 表下游 ${res?.tableDownstreamCount ?? 0}`, 'success')
+  } catch (e) {
+    showToast(`评估失败：${e.message || e}`, 'error')
+  } finally {
+    schemaAssessing.value = false
+  }
+}
+
+async function startSchemaEdit() {
+  if (!canEdit.value) {
+    showToast('无编辑权，请申请操作权限', 'warning')
+    goApplyManage()
+    return
+  }
+  if (isNonTableAsset.value) {
+    showToast('非表资产无字段编辑', 'warning')
+    return
+  }
+  schemaEditing.value = true
+  localFields.value = (localFields.value || []).map((f) => ({
+    ...f,
+    _origCn: f.cnName || '',
+    _origDesc: f.desc || '',
+    _origType: f.dataType || '',
+    _draftType: f.dataType || '',
+  }))
+  await runSchemaAssess()
+}
+
+function cancelSchemaEdit() {
+  schemaEditing.value = false
+  if (props.asset?.id) ensureSchema(props.asset.id)
+}
+
+async function saveSchemaMeta() {
+  if (!props.asset?.id || schemaSaving.value) return
+  if (!canEdit.value) {
+    showToast('无编辑权', 'warning')
+    return
+  }
+  const dirty = (localFields.value || [])
+    .filter((f) => {
+      const cn = String(f.cnName ?? '')
+      const desc = String(f.desc ?? '')
+      return cn !== String(f._origCn ?? '') || desc !== String(f._origDesc ?? '')
+    })
+    .map((f) => ({
+      enName: f.enName,
+      cnName: f.cnName,
+      description: f.desc,
+    }))
+  if (!dirty.length) {
+    showToast('无人读字段变更', 'info')
+    return
+  }
+  const warned = dirty.filter((d) => (assessOf(d.enName)?.downstreamCount || 0) > 0)
+  if (warned.length) {
+    showToast(`有 ${warned.length} 列存在下游边（人读仍可保存，请确认口径）`, 'warning')
+  }
+  schemaSaving.value = true
+  try {
+    await updateSchemaColumns({ id: props.asset.id, columns: dirty })
+    showToast(`已保存 ${dirty.length} 列人读到 OM`, 'success')
+    schemaEditing.value = false
+    schemaFetchedFor = null
+    await ensureSchema(props.asset.id)
+    await runSchemaAssess()
+  } catch (e) {
+    if (isNeedOwnerApplyError(e)) {
+      showToast(e.message || '无编辑权', 'warning')
+      goApplyManage()
+    } else {
+      showToast(`保存失败：${e.message || e}`, 'error')
+    }
+  } finally {
+    schemaSaving.value = false
+  }
+}
+
+async function evalStructIntent(field) {
+  if (!field?.enName) return
+  const a = assessOf(field.enName)
+  const toType = String(field._draftType || field.dataType || '').trim()
+  if (!toType) {
+    showToast('请填写拟改类型', 'warning')
+    return
+  }
+  if (a && a.structWritable === false && (a.downstreamCount || 0) > 0) {
+    showToast(a.reason || '有下游且未批准，不可登记结构变更意图', 'warning')
+  }
+  const table =
+    assessFocusTable.value ||
+    props.asset?.objectName ||
+    props.asset?.tableName ||
+    props.asset?.key
+  try {
+    const r = await postChangeEval({
+      table,
+      field: field.enName,
+      toType,
+    })
+    const ok = r?.passed === true || r?.status === 'approved'
+    showToast(
+      ok
+        ? `评估通过 · 下游 ${r.impactCount ?? 0}（门户不执行 DDL，请外置变更后同步）`
+        : `评估待审 · 下游 ${r.impactCount ?? 0} · ${r.ticketId || ''}`,
+      ok ? 'success' : 'warning',
+    )
+    if (!ok) {
+      await postBlockDdl({
+        table,
+        field: field.enName,
+        reason: '目录结构变更评估未通过',
+      }).catch(() => {})
+    }
+    await runSchemaAssess()
+  } catch (e) {
+    showToast(`变更评估失败：${e.message || e}`, 'error')
   }
 }
 
@@ -430,9 +731,28 @@ async function onDeleteAsset() {
     goApplyManage()
     return
   }
+  let impactLine = ''
+  try {
+    const focus = a.objectName || a.tableName || a.key || a.name
+    const impact = await fetchLineageImpact({
+      focus,
+      omFqn: a.omFqn,
+      upDepth: 1,
+      downDepth: 3,
+      ws: a.ws,
+    })
+    const down = impact?.downCount ?? 0
+    if (down > 0) {
+      impactLine = `\n表级下游约 ${down} 个对象；删除仅软删门户登记，不清理底层表与血缘边。`
+    } else {
+      impactLine = '\n暂无表级下游对象（或血缘未同步）。'
+    }
+  } catch {
+    impactLine = '\n（下游影响查询失败，仍可软删门户登记）'
+  }
   const ok = await confirmDelete({
     title: `删除资产「${a.cnName || a.name || a.key || a.id}」`,
-    message: '将软删门户资产登记与源绑定；不物理删除 OM/底层表数据。',
+    message: `将软删门户资产登记与源绑定；不物理删除 OM/底层表数据。${impactLine}`,
     confirmLabel: '确认删除',
   })
   if (!ok) return
@@ -636,9 +956,9 @@ function cellAt(row, col) {
             v-if="canEdit"
             class="btn btn-sm"
             :disabled="busy"
-            title="刷新对齐"
+            title="同步字段 Schema 并刷新对齐"
             @click="doRefresh"
-          >↻ 刷新</button>
+          >↻ 同步 Schema</button>
           <button class="btn btn-sm" @click="goLineage">🔗 血缘</button>
           <button v-if="canPreview" class="btn btn-sm btn-primary" @click="openPreviewTab">👁 数据预览</button>
           <button v-else class="btn btn-sm btn-primary" :disabled="grantChecking" @click="applyPerm">🔐 申请查询</button>
@@ -656,11 +976,11 @@ function cellAt(row, col) {
 
       <div class="drawer-body">
         <div class="std-tabs">
+          <span class="std-tab" :class="{ active: tab === 'info' }" @click="tab = 'info'">基本信息</span>
           <span class="std-tab" :class="{ active: tab === 'schema' }" @click="tab = 'schema'">字段 Schema</span>
           <span class="std-tab" :class="{ active: tab === 'quality' }" @click="tab = 'quality'">质量</span>
           <span class="std-tab" :class="{ active: tab === 'preview' }" @click="tab = 'preview'">数据预览</span>
           <span class="std-tab" :class="{ active: tab === 'perm' }" @click="tab = 'perm'">权限 / 脱敏</span>
-          <span class="std-tab" :class="{ active: tab === 'info' }" @click="tab = 'info'">基本信息</span>
         </div>
 
         <p v-if="!grantChecking && !canPreview" class="asset-see-hint tip">
@@ -670,6 +990,211 @@ function cellAt(row, col) {
           <button type="button" class="btn-link" @click="goApplyCenter">申请中心</button>
         </p>
 
+        <div v-show="tab === 'info'">
+          <div class="detail-section-title" style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
+            基本信息
+            <span style="flex: 1" />
+            <button
+              v-if="canEdit && !infoEditing"
+              type="button"
+              class="btn btn-sm btn-primary"
+              @click="startInfoEdit"
+            >编辑基本信息</button>
+            <template v-if="infoEditing">
+              <button type="button" class="btn btn-sm" :disabled="infoSaving" @click="cancelInfoEdit">取消</button>
+              <button type="button" class="btn btn-sm btn-primary" :disabled="infoSaving" @click="saveInfoEdit">
+                {{ infoSaving ? '保存中…' : '保存' }}
+              </button>
+            </template>
+          </div>
+          <div v-if="!canEdit" style="font-size: 12px; color: var(--text-3); margin: 8px 0">
+            仅<strong>资产拥有者</strong>（或已授 EDIT/MANAGE）可改分层/域与门户资产信息。
+            <button type="button" class="btn-link" @click="goApplyManage">去申请操作权限</button>
+          </div>
+
+          <div v-if="infoEditing" class="om-meta-form" style="margin-top: 10px">
+            <div class="info-grid">
+              <div><div class="info-label">物理名 / 编码</div><div class="info-value" style="font-family: monospace">{{ asset.key }}</div></div>
+              <div>
+                <div class="info-label">关联数据源</div>
+                <div class="info-value">{{ linkedSource?.name || asset.sourceName || '—' }} · {{ sourceType }}</div>
+              </div>
+              <div><div class="info-label">源对象</div><div class="info-value" style="font-family: monospace">{{ asset.tableName || asset.objectName || '—' }}</div></div>
+              <div><div class="info-label">OM FQN</div><div class="info-value" style="font-family: monospace; font-size: 11px">{{ asset.omFqn || '—' }}</div></div>
+            </div>
+            <label class="form-field" style="margin-top: 10px">
+              <span class="form-label">分层</span>
+              <select v-model="infoForm.layer" class="select" style="width: 100%">
+                <option v-for="l in ASSET_LAYERS" :key="l.value" :value="l.value">{{ l.full }}</option>
+              </select>
+            </label>
+            <label class="form-field">
+              <span class="form-label">业务域</span>
+              <select v-model="infoForm.domain" class="select" style="width: 100%">
+                <option v-for="d in domainOptions" :key="d.value" :value="d.value">{{ d.label }}</option>
+              </select>
+            </label>
+            <label class="form-field">
+              <span class="form-label">{{ nameLabels.tech }}</span>
+              <input v-model="infoForm.name" class="input" :placeholder="nameLabels.tech" />
+            </label>
+            <label class="form-field">
+              <span class="form-label">{{ nameLabels.biz }}</span>
+              <input v-model="infoForm.cnName" class="input" :placeholder="nameLabels.biz" />
+            </label>
+            <label class="form-field">
+              <span class="form-label">描述草稿</span>
+              <textarea v-model="infoForm.description" class="textarea" rows="2" />
+            </label>
+            <label class="form-field">
+              <span class="form-label">敏感级</span>
+              <select v-model="infoForm.level" class="select" style="width: 100%">
+                <option v-for="lv in ASSET_LEVELS" :key="lv.value" :value="lv.value">{{ lv.value }}</option>
+              </select>
+            </label>
+            <label class="form-field">
+              <span class="form-label">引擎</span>
+              <input v-model="infoForm.engine" class="input" />
+            </label>
+            <div class="form-field">
+              <span class="form-label">技术 Owner</span>
+              <SearchSelect
+                v-model="infoForm.techOwner"
+                :options="ownerOptions"
+                placeholder="搜索姓名 / 账号"
+                sub-key="sub"
+                :search-keys="['name', 'account', 'label', 'sub']"
+              />
+            </div>
+            <div class="form-field">
+              <span class="form-label">业务 Owner</span>
+              <SearchSelect
+                v-model="infoForm.bizOwner"
+                :options="ownerOptions"
+                placeholder="可选"
+                sub-key="sub"
+                :search-keys="['name', 'account', 'label', 'sub']"
+              />
+            </div>
+            <label class="check-row" style="margin-top: 8px">
+              <input v-model="infoForm.isGold" type="checkbox" />
+              <span>门户黄金认证标记</span>
+            </label>
+          </div>
+
+          <div v-else class="info-grid" style="margin-top: 10px">
+            <div><div class="info-label">物理名 / 编码</div><div class="info-value" style="font-family: monospace">{{ asset.key }}</div></div>
+            <div>
+              <div class="info-label">分层 / 域</div>
+              <div class="info-value">
+                <span class="asset-layer" :class="`layer-${asset.layer}`">{{ asset.layerLabel }}</span>
+                · {{ asset.domainLabel }}
+              </div>
+            </div>
+            <div>
+              <div class="info-label">{{ nameLabels.tech }}</div>
+              <div class="info-value">{{ asset.name || '—' }}</div>
+            </div>
+            <div>
+              <div class="info-label">{{ nameLabels.biz }}</div>
+              <div class="info-value">{{ asset.cnName || '—' }}</div>
+            </div>
+            <div>
+              <div class="info-label">描述草稿</div>
+              <div class="info-value">{{ asset.desc || '—' }}</div>
+            </div>
+            <div>
+              <div class="info-label">关联数据源</div>
+              <div class="info-value">
+                <template v-if="linkedSource || asset.sourceName">
+                  <button class="btn-link" @click="goDatasource">
+                    {{ linkedSource?.name || asset.sourceName }} · {{ sourceType }}
+                  </button>
+                </template>
+                <template v-else>—</template>
+              </div>
+            </div>
+            <div><div class="info-label">源对象</div><div class="info-value" style="font-family: monospace">{{ asset.tableName || asset.objectName || '—' }}</div></div>
+            <div><div class="info-label">引擎</div><div class="info-value">{{ asset.engine || '—' }}</div></div>
+            <div><div class="info-label">状态 / 同步</div><div class="info-value">{{ asset.status || '—' }} · {{ asset.lastSyncStatus || '—' }}</div></div>
+            <div><div class="info-label">OM FQN</div><div class="info-value" style="font-family: monospace; font-size: 11px">{{ asset.omFqn || '—' }}</div></div>
+            <div><div class="info-label">Owner</div><div class="info-value">{{ displayUser(asset.ownerName || asset.techOwnerName, asset.owner || asset.techOwner) || '—' }} / {{ displayUser(asset.bizOwnerName, asset.bizOwner) || '—' }}</div></div>
+            <div>
+              <div class="info-label">黄金对账</div>
+              <div class="info-value">
+                <span class="tag" :class="asset.isGold ? 'tag-green' : 'tag-gray'">
+                  门户 {{ asset.isGold ? '已认证' : '未认证' }}
+                </span>
+                <span
+                  v-if="goldExtra?.omHasGold != null"
+                  class="tag"
+                  :class="goldExtra.aligned ? 'tag-green' : 'tag-orange'"
+                  style="margin-left: 4px"
+                >
+                  OM {{ goldExtra.omHasGold ? '有金标' : '无金标' }}
+                  · {{ goldExtra.aligned ? '已对齐' : '漂移' }}
+                </span>
+                <span v-else class="muted" style="margin-left: 6px; font-size: 11px">OM 暂不可用</span>
+              </div>
+            </div>
+            <div><div class="info-label">更新时间</div><div class="info-value">{{ asset.updated || '—' }}</div></div>
+          </div>
+
+          <div class="detail-section-title" style="margin-top: 18px; display: flex; align-items: center; gap: 8px">
+            OM 人读元数据
+            <span v-if="omMeta?.available" class="tag tag-blue">可编辑</span>
+            <span v-else class="tag tag-gray">需 omFqn</span>
+          </div>
+          <div v-if="!canEdit" style="font-size: 12px; color: var(--text-3); margin: 8px 0">
+            仅<strong>资产拥有者</strong>（或已授 EDIT/MANAGE）可写外部元数据 / 刷新对齐。
+            <button type="button" class="btn-link" @click="goApplyManage">去申请操作权限</button>
+          </div>
+          <div v-else-if="!canEditOmMeta" style="font-size: 12px; color: var(--text-3); margin: 8px 0">
+            资产尚未对齐外部目录。请先点「刷新」完成门户清单同步，再编辑描述与标签。
+          </div>
+          <div v-else class="om-meta-form" style="margin-top: 10px">
+            <label class="form-field">
+              <span class="form-label">展示名</span>
+              <input v-model="metaEdit.displayName" class="input" placeholder="OM displayName" />
+            </label>
+            <label class="form-field">
+              <span class="form-label">描述</span>
+              <textarea
+                v-model="metaEdit.description"
+                class="textarea"
+                rows="3"
+                placeholder="OM description（人读说明）"
+              />
+            </label>
+            <label class="form-field">
+              <span class="form-label">标签 FQN</span>
+              <input
+                v-model="metaEdit.tagsText"
+                class="input"
+                placeholder="逗号分隔，如 Tier.Gold, PII.None"
+              />
+            </label>
+            <div class="om-meta-checks">
+              <label class="check-row">
+                <input v-model="metaEdit.gold" type="checkbox" />
+                <span>黄金认证（写入 {{ (goldExtra?.goldTagFqns || ['Tier.Gold'])[0] }}）</span>
+              </label>
+              <label class="check-row">
+                <input v-model="metaEdit.syncPortalDraft" type="checkbox" />
+                <span>同步回写门户 description 草稿</span>
+              </label>
+            </div>
+            <div style="margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap">
+              <button class="btn btn-sm btn-primary" :disabled="metaSaving" @click="saveOmMeta">
+                {{ metaSaving ? '保存中…' : '保存到 OM' }}
+              </button>
+              <button class="btn btn-sm" :disabled="busy || metaSaving" @click="doRefresh">↻ 刷新并对齐黄金</button>
+            </div>
+            <div v-if="goldExtra?.hint" style="font-size: 11px; color: var(--text-3); margin-top: 8px">
+              {{ goldExtra.hint }}
+            </div>
+          </div>
+        </div>
         <div v-show="tab === 'schema'">
           <div class="detail-section-title" style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
             {{ isNonTableAsset ? '对象 / 消息结构' : '字段定义' }} · {{ fields.length }} 列
@@ -677,9 +1202,40 @@ function cellAt(row, col) {
             <span v-else-if="schemaSource" class="tag tag-blue">来源 {{ schemaSource }}</span>
             <span v-else-if="isNonTableAsset" class="tag tag-orange">非表</span>
             <span v-else class="tag tag-gray">待加载</span>
+            <span class="tag tag-gray">结构 DDL 门户不可执行</span>
+            <span style="flex: 1" />
+            <button
+              v-if="canEdit && !isNonTableAsset"
+              type="button"
+              class="btn btn-sm"
+              :disabled="busy || schemaLoading"
+              @click="doRefresh"
+            >同步字段 Schema</button>
+            <button
+              v-if="canEdit && !isNonTableAsset"
+              type="button"
+              class="btn btn-sm"
+              :disabled="schemaAssessing"
+              @click="runSchemaAssess"
+            >{{ schemaAssessing ? '评估中…' : '评估可改性' }}</button>
+            <button
+              v-if="canEdit && !isNonTableAsset && !schemaEditing"
+              type="button"
+              class="btn btn-sm btn-primary"
+              @click="startSchemaEdit"
+            >编辑字段</button>
+            <template v-if="schemaEditing">
+              <button type="button" class="btn btn-sm" :disabled="schemaSaving" @click="cancelSchemaEdit">取消</button>
+              <button type="button" class="btn btn-sm btn-primary" :disabled="schemaSaving" @click="saveSchemaMeta">
+                {{ schemaSaving ? '保存中…' : '保存人读' }}
+              </button>
+            </template>
           </div>
           <div v-if="schemaHint" style="font-size: 12px; color: var(--text-3); margin-top: 6px">
             {{ schemaHint }}
+          </div>
+          <div v-if="assessHint" style="font-size: 12px; color: var(--text-3); margin-top: 4px">
+            {{ assessHint }}
           </div>
           <div style="overflow: auto; max-height: 460px; margin-top: 8px">
             <table class="std-table field-meta-table" style="font-size: 12px">
@@ -693,22 +1249,49 @@ function cellAt(row, col) {
                   <th style="width: 64px">小数位</th>
                   <th style="width: 72px">是否可空</th>
                   <th style="width: 72px">是否主键</th>
+                  <th style="min-width: 120px">可改性</th>
+                  <th v-if="schemaEditing" style="min-width: 100px">结构意图</th>
                 </tr>
               </thead>
               <tbody>
-                  <tr v-if="!fields.length">
-                  <td colspan="8" style="text-align: center; color: var(--text-3)">
+                <tr v-if="!fields.length">
+                  <td :colspan="schemaEditing ? 10 : 9" style="text-align: center; color: var(--text-3)">
                     {{ isNonTableAsset ? '无表字段（对象存储/消息等请看数据预览）' : '暂无字段结构' }}
                   </td>
                 </tr>
                 <tr v-for="c in fields" :key="c.enName">
-                  <td>{{ c.cnName }}</td>
+                  <td>
+                    <input
+                      v-if="schemaEditing && assessOf(c.enName)?.metaWritable !== false"
+                      v-model="c.cnName"
+                      class="input input-sm"
+                      style="width: 100%; min-width: 72px"
+                    />
+                    <template v-else>{{ c.cnName }}</template>
+                  </td>
                   <td style="font-family: monospace; font-weight: 500">
                     <span v-if="c.pk">🔑 </span>{{ c.enName }}
                   </td>
-                  <td style="color: var(--text-2)">{{ c.desc || '—' }}</td>
+                  <td style="color: var(--text-2)">
+                    <input
+                      v-if="schemaEditing && assessOf(c.enName)?.metaWritable !== false"
+                      v-model="c.desc"
+                      class="input input-sm"
+                      style="width: 100%; min-width: 100px"
+                    />
+                    <template v-else>{{ c.desc || '—' }}</template>
+                  </td>
                   <td style="font-family: monospace; font-size: 11px; color: var(--primary)">
-                    {{ formatDataType(c) }}
+                    <template v-if="schemaEditing">
+                      <input
+                        v-model="c._draftType"
+                        class="input input-sm"
+                        style="width: 100%; min-width: 80px; font-family: monospace"
+                        :title="assessOf(c.enName)?.reason || '拟改类型仅用于评估，不落 DDL'"
+                        :placeholder="c.dataType"
+                      />
+                    </template>
+                    <template v-else>{{ formatDataType(c) }}</template>
                   </td>
                   <td>{{ fmtCell(c.length) }}</td>
                   <td>{{ fmtCell(c.scale) }}</td>
@@ -717,6 +1300,35 @@ function cellAt(row, col) {
                   </td>
                   <td>
                     <span :class="c.pk ? 'tag tag-blue' : 'tag tag-gray'">{{ yesNo(c.pk) }}</span>
+                  </td>
+                  <td>
+                    <template v-if="assessOf(c.enName)">
+                      <span
+                        class="tag"
+                        :class="assessOf(c.enName).metaWritable ? 'tag-green' : 'tag-gray'"
+                        :title="assessOf(c.enName).reason"
+                      >人读{{ assessOf(c.enName).metaWritable ? '可改' : '不可' }}</span>
+                      <span
+                        class="tag"
+                        :class="assessOf(c.enName).structWritable ? 'tag-blue' : 'tag-orange'"
+                        style="margin-left: 4px"
+                        :title="assessOf(c.enName).reason"
+                      >结构{{ assessOf(c.enName).structWritable ? '可评估' : '阻断' }}</span>
+                      <span
+                        v-if="assessOf(c.enName).downstreamCount"
+                        class="tag tag-orange"
+                        style="margin-left: 4px"
+                      >↓{{ assessOf(c.enName).downstreamCount }}</span>
+                    </template>
+                    <span v-else class="tag tag-gray">未评估</span>
+                  </td>
+                  <td v-if="schemaEditing">
+                    <button
+                      type="button"
+                      class="btn-link btn-sm"
+                      :disabled="!c._draftType || c._draftType === (c._origType || c.dataType)"
+                      @click="evalStructIntent(c)"
+                    >登记评估</button>
                   </td>
                 </tr>
               </tbody>
@@ -1039,109 +1651,6 @@ function cellAt(row, col) {
           </div>
         </div>
 
-        <div v-show="tab === 'info'">
-          <div class="detail-section-title">基本信息</div>
-          <div class="info-grid" style="margin-top: 10px">
-            <div><div class="info-label">物理名 / 编码</div><div class="info-value" style="font-family: monospace">{{ asset.key }}</div></div>
-            <div>
-              <div class="info-label">分层 / 域</div>
-              <div class="info-value">
-                <span class="asset-layer" :class="`layer-${asset.layer}`">{{ asset.layerLabel }}</span>
-                · {{ asset.domainLabel }}
-              </div>
-            </div>
-            <div>
-              <div class="info-label">关联数据源</div>
-              <div class="info-value">
-                <template v-if="linkedSource || asset.sourceName">
-                  <button class="btn-link" @click="goDatasource">
-                    {{ linkedSource?.name || asset.sourceName }} · {{ sourceType }}
-                  </button>
-                </template>
-                <template v-else>—</template>
-              </div>
-            </div>
-            <div><div class="info-label">源对象</div><div class="info-value" style="font-family: monospace">{{ asset.tableName || asset.objectName || '—' }}</div></div>
-            <div><div class="info-label">引擎</div><div class="info-value">{{ asset.engine || '—' }}</div></div>
-            <div><div class="info-label">状态 / 同步</div><div class="info-value">{{ asset.status || '—' }} · {{ asset.lastSyncStatus || '—' }}</div></div>
-            <div><div class="info-label">OM FQN</div><div class="info-value" style="font-family: monospace; font-size: 11px">{{ asset.omFqn || '—' }}</div></div>
-            <div><div class="info-label">Owner</div><div class="info-value">{{ displayUser(asset.ownerName || asset.techOwnerName, asset.owner || asset.techOwner) || '—' }} / {{ displayUser(asset.bizOwnerName, asset.bizOwner) || '—' }}</div></div>
-            <div>
-              <div class="info-label">黄金对账</div>
-              <div class="info-value">
-                <span class="tag" :class="asset.isGold ? 'tag-green' : 'tag-gray'">
-                  门户 {{ asset.isGold ? '已认证' : '未认证' }}
-                </span>
-                <span
-                  v-if="goldExtra?.omHasGold != null"
-                  class="tag"
-                  :class="goldExtra.aligned ? 'tag-green' : 'tag-orange'"
-                  style="margin-left: 4px"
-                >
-                  OM {{ goldExtra.omHasGold ? '有金标' : '无金标' }}
-                  · {{ goldExtra.aligned ? '已对齐' : '漂移' }}
-                </span>
-                <span v-else class="muted" style="margin-left: 6px; font-size: 11px">OM 暂不可用</span>
-              </div>
-            </div>
-            <div><div class="info-label">更新时间</div><div class="info-value">{{ asset.updated || '—' }}</div></div>
-          </div>
-
-          <div class="detail-section-title" style="margin-top: 18px; display: flex; align-items: center; gap: 8px">
-            OM 人读元数据
-            <span v-if="omMeta?.available" class="tag tag-blue">可编辑</span>
-            <span v-else class="tag tag-gray">需 omFqn</span>
-          </div>
-          <div v-if="!canEdit" style="font-size: 12px; color: var(--text-3); margin: 8px 0">
-            仅<strong>资产拥有者</strong>（或已授 EDIT/MANAGE）可写外部元数据 / 刷新对齐。
-            <button type="button" class="btn-link" @click="goApplyManage">去申请操作权限</button>
-          </div>
-          <div v-else-if="!canEditOmMeta" style="font-size: 12px; color: var(--text-3); margin: 8px 0">
-            资产尚未对齐外部目录。请先点「刷新」完成门户清单同步，再编辑描述与标签。
-          </div>
-          <div v-else class="om-meta-form" style="margin-top: 10px">
-            <label class="form-field">
-              <span class="form-label">展示名</span>
-              <input v-model="metaEdit.displayName" class="input" placeholder="OM displayName" />
-            </label>
-            <label class="form-field">
-              <span class="form-label">描述</span>
-              <textarea
-                v-model="metaEdit.description"
-                class="textarea"
-                rows="3"
-                placeholder="OM description（人读说明）"
-              />
-            </label>
-            <label class="form-field">
-              <span class="form-label">标签 FQN</span>
-              <input
-                v-model="metaEdit.tagsText"
-                class="input"
-                placeholder="逗号分隔，如 Tier.Gold, PII.None"
-              />
-            </label>
-            <div class="om-meta-checks">
-              <label class="check-row">
-                <input v-model="metaEdit.gold" type="checkbox" />
-                <span>黄金认证（写入 {{ (goldExtra?.goldTagFqns || ['Tier.Gold'])[0] }}）</span>
-              </label>
-              <label class="check-row">
-                <input v-model="metaEdit.syncPortalDraft" type="checkbox" />
-                <span>同步回写门户 description 草稿</span>
-              </label>
-            </div>
-            <div style="margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap">
-              <button class="btn btn-sm btn-primary" :disabled="metaSaving" @click="saveOmMeta">
-                {{ metaSaving ? '保存中…' : '保存到 OM' }}
-              </button>
-              <button class="btn btn-sm" :disabled="busy || metaSaving" @click="doRefresh">↻ 刷新并对齐黄金</button>
-            </div>
-            <div v-if="goldExtra?.hint" style="font-size: 11px; color: var(--text-3); margin-top: 8px">
-              {{ goldExtra.hint }}
-            </div>
-          </div>
-        </div>
       </div>
     </template>
   </AppDrawer>

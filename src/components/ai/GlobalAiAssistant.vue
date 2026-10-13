@@ -12,6 +12,7 @@ import {
   FAB_SIZE,
   useGlobalAiFab,
 } from '@/composables/useGlobalAiFab'
+import { useAiChatInputHeight } from '@/composables/useAiChatInputHeight'
 import { handleAiSqlAction, openQueryWithSql } from '@/composables/useAiSqlActions'
 import AiMarkdownBody from '@/components/ai/AiMarkdownBody.vue'
 import AiIcon from '@/components/ai/AiIcon.vue'
@@ -43,6 +44,8 @@ const {
 } = fab
 
 const inputText = ref('')
+const inputEl = ref(null)
+useAiChatInputHeight(inputEl, 'lh.ai.fabInputHeight', { defaultPx: 80, minPx: 48, maxPx: 320 })
 const pendingFiles = ref([])
 const chatBody = ref(null)
 const panelEl = ref(null)
@@ -448,8 +451,10 @@ function onBubbleClick(e, msg) {
             @change="onFileChange"
           />
           <textarea
+            ref="inputEl"
             v-model="inputText"
-            rows="2"
+            rows="3"
+            title="拖拽右下角可调整输入框高度"
             placeholder="输入问题，或粘贴图片…"
             @keydown.enter.exact.prevent="onSend"
             @paste="onPaste"
@@ -818,17 +823,19 @@ function onBubbleClick(e, msg) {
 }
 .gai-input textarea {
   flex: 1;
-  min-height: 40px;
-  max-height: 96px;
+  min-height: 48px;
+  max-height: min(320px, 40vh);
   resize: vertical;
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 6px 10px;
   font-size: 12px;
+  line-height: 1.45;
   font-family: inherit;
   outline: none;
   background: var(--bg-1);
   color: var(--text-1);
+  box-sizing: border-box;
 }
 .gai-input textarea:focus {
   border-color: var(--primary);

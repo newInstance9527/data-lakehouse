@@ -189,6 +189,10 @@ function normalizeGold(rows) {
 
 export function useQuality() {
   const metrics = computed(() => buildMetrics(overview.value))
+  const dimensionScorecard = computed(() => {
+    const rows = overview.value?.dimensionScorecard
+    return Array.isArray(rows) ? rows : []
+  })
   const streamSummary = computed(() => {
     const s = overview.value?.stream
     if (!s || typeof s !== 'object') {
@@ -387,6 +391,7 @@ export function useQuality() {
   return {
     overview,
     metrics,
+    dimensionScorecard,
     streamSummary,
     trendPoints,
     typeDistView,

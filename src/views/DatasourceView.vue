@@ -209,6 +209,7 @@ const kpis = computed(() => {
     { label: '数据源总数', value: remote?.total ?? all.length, sub: '已注册', icon: '📚', color: 'var(--primary)' },
     { label: '● 在线', value: remote?.online ?? all.filter((s) => s.status === 'online').length, sub: '正常可用', icon: '✅', color: 'var(--primary)' },
     { label: '⚠ 告警', value: remote?.warn ?? all.filter((s) => s.status === 'warn').length, sub: '需处理', icon: '⚠', color: 'var(--primary)' },
+    { label: '📝 草稿', value: remote?.draft ?? all.filter((s) => s.status === 'draft').length, sub: '未测连', icon: '📝', color: 'var(--primary)' },
     { label: '⏸ 停用', value: remote?.paused ?? all.filter((s) => s.status === 'paused').length, sub: '维护中', icon: '⏸', color: 'var(--primary)' },
     { label: '覆盖类型', value: remote?.typeCount ?? types.size, sub: '种异构源', icon: '🧩', color: 'var(--primary)' },
   ]
@@ -358,7 +359,7 @@ async function onDeleteSource(id) {
   })
 }
 
-async function onRegisterSubmit(payload) {
+async function onRegisterSubmit(payload, done) {
   const body = {
     ...payload,
     ws: payload.ws || currentWs.value || 'default',
@@ -368,6 +369,7 @@ async function onRegisterSubmit(payload) {
     const s = getSource(body.id)
     if (s && !assertEditOrGuide(s, '更新')) {
       goApplyManageDs(s)
+      done?.(false)
       return
     }
   }
@@ -376,9 +378,11 @@ async function onRegisterSubmit(payload) {
     // 新建时前端曾带临时 id，以服务端返回为准
     if (!existed && saved?.id) page.value = 1
     if (existed) showToast(`✅ 已更新数据源 ${body.name}`, 'success')
+    else if (body.status === 'draft') showToast(`📝 已保存草稿 ${body.name}（可稍后测连并正式注册）`, 'success')
     else showToast(`✅ 已注册 ${body.name}（门户已保存；元数据按类型尽力同步）`, 'success')
     await reloadSources()
     kpiRemote.value = await fetchDatasourceKpi(currentWs.value || 'default')
+    done?.(true)
   } catch (e) {
     if (isNeedOwnerApplyError(e)) {
       showToast(e.message || '非拥有者不可保存', 'warning')
@@ -387,6 +391,7 @@ async function onRegisterSubmit(payload) {
     } else {
       showToast(`保存失败：${e.message || e}`, 'error')
     }
+    done?.(false)
   }
 }
 
@@ -449,6 +454,7 @@ function goPage(p) {
         <option value="">全部状态</option>
         <option value="online">● 在线</option>
         <option value="warn">⚠ 告警</option>
+        <option value="draft">📝 草稿</option>
         <option value="paused">⏸ 停用</option>
       </select>
       <select v-model="filters.cat" class="select">

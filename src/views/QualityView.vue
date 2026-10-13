@@ -50,6 +50,7 @@ function onGateTableChange(v) {
 
 const {
   metrics,
+  dimensionScorecard,
   streamSummary,
   trendPoints,
   typeDistView,
@@ -408,6 +409,31 @@ const trendAxisLabels = computed(() => {
       </div>
     </div>
 
+    <div v-if="dimensionScorecard.length" class="card" style="margin-bottom: 16px">
+      <div class="card-header">
+        <div class="card-title">
+          质量维度分数卡
+          <span class="tip">· DAMA 六维 · 近窗运行均分</span>
+        </div>
+      </div>
+      <div class="card-body" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px">
+        <div
+          v-for="d in dimensionScorecard"
+          :key="d.dimension"
+          style="padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px"
+        >
+          <div class="tip" style="margin-bottom: 4px">{{ d.label || d.dimension }}</div>
+          <div style="font-size: 20px; font-weight: 700">
+            {{ d.empty || d.score == null ? '—' : Math.round(Number(d.score)) }}
+            <span v-if="!d.empty && d.score != null" class="tip" style="font-size: 12px; font-weight: 500">分</span>
+          </div>
+          <div class="tip" style="margin-top: 4px">
+            规则 {{ d.ruleCount ?? 0 }} · 运行 {{ d.runCount ?? 0 }}
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div class="qual-om-strip" :class="{ down: streamSummary.runCount === 0 }">
       <div class="qual-om-title">流式探针</div>
       <div class="qual-om-body">
@@ -494,6 +520,7 @@ const trendAxisLabels = computed(() => {
         <div class="qual-gate-form">
           <select v-model="gateForm.layer" class="select input-sm">
             <option value="">层级（可选）</option>
+            <option value="SRC">原始业务库</option>
             <option value="ODS">ODS</option>
             <option value="DWD">DWD</option>
             <option value="DWS">DWS</option>
@@ -549,6 +576,7 @@ const trendAxisLabels = computed(() => {
           <input v-model="ruleKw" class="input input-sm qual-rule-kw" placeholder="表 / 字段 / 规则…" />
           <select v-model="layerFilter" class="select input-sm">
             <option value="">全部层级</option>
+            <option value="SRC">原始业务库</option>
             <option value="ODS">ODS</option>
             <option value="DWD">DWD</option>
             <option value="DWS">DWS</option>

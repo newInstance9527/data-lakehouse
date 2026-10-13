@@ -114,7 +114,7 @@ function layerText(n) {
 function layerClass(n) {
   if (n.type === 'report') return 'tag-purple'
   if (n.type === 'metric') return 'tag-red'
-  const map = { ods: 'layer-ods', dwd: 'layer-dwd', dws: 'layer-dws', ads: 'layer-ads', dim: 'layer-dim', src: 'layer-ods' }
+  const map = { src: 'layer-src', ods: 'layer-ods', dwd: 'layer-dwd', dws: 'layer-dws', ads: 'layer-ads', dim: 'layer-dim' }
   return map[n.layer] || 'tag-blue'
 }
 

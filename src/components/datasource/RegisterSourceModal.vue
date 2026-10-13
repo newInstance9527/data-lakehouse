@@ -28,6 +28,7 @@ const { user } = useSession()
 const form = reactive({})
 const tested = ref(false)
 const testing = ref(false)
+const saving = ref(false)
 /** 编辑回填期间跳过 type watch，避免清空连接参数 */
 const hydrating = ref(false)
 const ownerOptionsTick = ref(0)
@@ -202,7 +203,15 @@ watch(
 )
 
 function close() {
+  if (saving.value) return
   emit('close')
+}
+
+/** 等父组件 upsert 结束；成功才关弹窗，失败保留表单 */
+function waitSubmit(payload) {
+  return new Promise((resolve) => {
+    emit('submit', payload, (ok) => resolve(!!ok))
+  })
 }
 
 function fieldFilled(name) {
@@ -278,13 +287,8 @@ async function discoverInventory() {
   return res
 }
 
-/** 从 Base URL 解析 hostname / port（HTTPS 默认 443，HTTP 默认 80） */
-function submit() {
-  if (!validate()) return
-  if (!tested.value && !isEdit.value) {
-    showToast('请先测试连通性', 'warning')
-    return
-  }
+/** 组装登记/草稿 payload（不含 status） */
+function buildPayload() {
   const meta = dsTypeMeta(form.type)
   const baseURL = form.baseURL || form.httpUrl || ''
   const parsed = baseURL ? parseHttpBaseUrl(baseURL) : null
@@ -328,8 +332,41 @@ function submit() {
     ),
   }
   if (baseURL) payload.baseURL = baseURL
-  emit('submit', payload)
-  close()
+  return payload
+}
+
+/** 保存草稿：不要求连通测试，status=draft */
+async function submitDraft() {
+  if (!validate() || saving.value) return
+  const payload = buildPayload()
+  payload.status = 'draft'
+  saving.value = true
+  try {
+    const ok = await waitSubmit(payload)
+    if (ok) emit('close')
+  } finally {
+    saving.value = false
+  }
+}
+
+/** 注册入库：新建须先测连通过；等接口完成后再关弹窗 */
+async function submit() {
+  if (!validate() || saving.value) return
+  if (!tested.value && !isEdit.value) {
+    showToast('请先测试连通性；若暂时不通可「保存草稿」', 'warning')
+    return
+  }
+  const payload = buildPayload()
+  if (props.editSource?.status === 'draft' && tested.value) {
+    payload.status = 'online'
+  }
+  saving.value = true
+  try {
+    const ok = await waitSubmit(payload)
+    if (ok) emit('close')
+  } finally {
+    saving.value = false
+  }
 }
 </script>
 
@@ -340,9 +377,9 @@ function submit() {
         <div class="modal-header">
           <div>
             <div class="modal-title">{{ isEdit ? '编辑数据源' : '＋ 注册数据源' }}</div>
-            <div class="modal-sub">选类型 → 按类型填连接参数 → 测试连通 → 同步清单 → 注册入目录</div>
+            <div class="modal-sub">选类型 → 填连接参数 → 测试连通后注册；不通时可先保存草稿</div>
           </div>
-          <button class="btn btn-sm" @click="close">✕</button>
+          <button class="btn btn-sm" :disabled="saving" @click="close">✕</button>
         </div>
 
         <div class="modal-body">
@@ -462,14 +499,24 @@ function submit() {
         </div>
 
         <div class="modal-footer">
-          <span v-if="tested" class="tag tag-green">已通过连通测试</span>
+          <span v-if="saving" class="tag tag-gray">保存中…</span>
+          <span v-else-if="tested" class="tag tag-green">已通过连通测试</span>
+          <span v-else-if="!isEdit" class="tag tag-gray">未测连可先存草稿</span>
           <span style="flex: 1" />
-          <button class="btn btn-sm" @click="close">取消</button>
-          <button class="btn btn-sm" :disabled="testing" @click="testConn">
+          <button class="btn btn-sm" :disabled="saving" @click="close">取消</button>
+          <button class="btn btn-sm" :disabled="testing || saving" @click="testConn">
             {{ testing ? '测试中…' : '🧪 测试连通' }}
           </button>
-          <button class="btn btn-sm btn-primary" @click="submit">
-            {{ isEdit ? '保存修改' : '注册入库' }}
+          <button
+            v-if="!isEdit || editSource?.status === 'draft'"
+            class="btn btn-sm"
+            :disabled="testing || saving"
+            @click="submitDraft"
+          >
+            {{ saving ? '保存中…' : '保存草稿' }}
+          </button>
+          <button class="btn btn-sm btn-primary" :disabled="testing || saving" @click="submit">
+            {{ saving ? '保存中…' : isEdit ? '保存修改' : '注册入库' }}
           </button>
         </div>
       </div>

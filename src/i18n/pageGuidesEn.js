@@ -372,11 +372,13 @@ export const PAGE_GUIDES_EN = {
     sections4({
       about: [
         'Configure quality rules, review inspection runs, and alert or block downstream jobs on failure.',
+        'Org-level dimension scorecard aggregates DAMA six dimensions over recent runs.',
         'Rules bind to tables registered in Catalog and may align with Standards conformance results.',
       ],
       ops: [
         'Confirm the target table exists in Catalog.',
         'Create a rule: choose type, bind table/columns, set thresholds and action, then submit.',
+        'Use the dimension scorecard for per-dimension averages and rule/run counts.',
         'Review pass/fail details in run history.',
         'Sync external quality profiles when needed.',
       ],
