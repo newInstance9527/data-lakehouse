@@ -519,7 +519,11 @@ export function mapServerTicket(t, sideHint) {
     expire: expireLabel,
     remark: rejectRemark,
     columns: payload.columns || '',
-    permMode: payload.privilege === 'SELECT' ? 'read' : payload.privilege || 'read',
+    rowFilter: payload.rowFilter || '',
+    permMode:
+      !payload.privilege || payload.privilege === 'SELECT' || payload.privilege === 'read'
+        ? 'read'
+        : payload.privilege || 'read',
     permLevel: sensitivity || undefined,
     applicant: t.applicant || '我',
     titleHtml:

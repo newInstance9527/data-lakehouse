@@ -12,6 +12,7 @@ import {
   fetchSecOverview,
   fetchSecGrants,
   fetchSecMasks,
+  syncSecMasksFromOm,
   fetchSecClassification,
   fetchSecAudit,
   fetchSecSa,
@@ -53,6 +54,24 @@ const vaultStatusText = ref('')
 const pathAllow = ref(SEC_PATH_ALLOW)
 const pathForbid = ref(SEC_PATH_FORBID)
 const auditHint = ref('')
+const maskObs = ref(null)
+const maskSyncBusy = ref(false)
+
+async function onSyncMasksFromOm(dryRun) {
+  maskSyncBusy.value = true
+  try {
+    const res = await syncSecMasksFromOm({ dryRun: !!dryRun, ws: listWsParams().ws })
+    const msg = dryRun
+      ? `预览：扫描 ${res?.scanned ?? 0} · 将写入 ${res?.upserted ?? 0}`
+      : `已同步：扫描 ${res?.scanned ?? 0} · 写入 ${res?.upserted ?? 0}`
+    showToast(msg, 'success')
+    await loadBoard()
+  } catch (e) {
+    showToast(e?.message || 'OM→mask 同步失败', 'danger')
+  } finally {
+    maskSyncBusy.value = false
+  }
+}
 
 const {
   page: saPage,
@@ -108,7 +127,9 @@ const kpis = computed(() => {
       label: '审计日志(24h)',
       value: dash(o.auditLast24h),
       unit: '',
-      trend: '出湖审计片段',
+      trend: o.auditQueryRisk24h != null
+        ? `出湖${dash(o.auditExport24h)}·即席${dash(o.auditQueryRisk24h)}·授权${dash(o.auditGrantTouch24h)}`
+        : '出湖+即席+授权',
     },
   ]
 })
@@ -130,6 +151,7 @@ async function loadBoard() {
     overview.value = ov || {}
     classification.value = Array.isArray(cls?.items) ? cls.items : []
     masks.value = Array.isArray(maskPage?.records) ? maskPage.records : []
+    maskObs.value = maskPage?.observability || null
     grants.value = Array.isArray(grantPage?.records) ? grantPage.records : []
     auditRows.value = Array.isArray(auditPage?.records) ? auditPage.records : []
     auditHint.value = auditPage?.hint || ''
@@ -156,6 +178,7 @@ async function loadBoard() {
     overview.value = null
     classification.value = []
     masks.value = []
+    maskObs.value = null
     grants.value = []
     auditRows.value = []
   } finally {
@@ -346,8 +369,22 @@ watchListScope(() => loadBoard())
       <div class="card">
         <div class="card-header">
           <div class="card-title">🎭 动态脱敏策略（查询侧）</div>
+          <div style="display: flex; gap: 6px">
+            <button type="button" class="btn btn-sm" :disabled="maskSyncBusy" @click="onSyncMasksFromOm(true)">
+              预览 OM 同步
+            </button>
+            <button type="button" class="btn btn-sm btn-primary" :disabled="maskSyncBusy" @click="onSyncMasksFromOm(false)">
+              {{ maskSyncBusy ? '同步中…' : '从 OM 同步脱敏' }}
+            </button>
+          </div>
         </div>
         <div class="card-body" style="padding: 0">
+          <p v-if="maskObs" class="tip" style="margin: 10px 12px 0; font-size: 12px">
+            策略 {{ maskObs.policyRows ?? 0 }} · 明文豁免 grant {{ maskObs.plainExemptGrants ?? 0 }}
+            · 24h 已脱敏执行 {{ maskObs.maskedExec24h ?? 0 }}
+            · 24h 无策略降级 {{ maskObs.maskDegraded24h ?? 0 }}
+            <span v-if="maskObs.hint" class="muted"> · {{ maskObs.hint }}</span>
+          </p>
           <table class="table">
             <thead>
               <tr>
@@ -355,17 +392,19 @@ watchListScope(() => loadBoard())
                 <th>列</th>
                 <th>敏感度</th>
                 <th>算法</th>
+                <th>来源</th>
               </tr>
             </thead>
             <tbody>
               <tr v-if="!masks.length">
-                <td colspan="4" class="sec-empty">暂无脱敏策略</td>
+                <td colspan="5" class="sec-empty">暂无脱敏策略</td>
               </tr>
               <tr v-for="m in masks" :key="m.id">
                 <td><code>{{ m.gravAssetId || '—' }}</code></td>
                 <td>{{ m.columnName || '—' }}</td>
                 <td>{{ m.sensitivity || '—' }}</td>
                 <td>{{ m.maskAlgo || '—' }}</td>
+                <td>{{ m.source || (m.omTagFqn ? 'om_tag' : 'policy_proj') }}</td>
               </tr>
             </tbody>
           </table>
@@ -378,10 +417,12 @@ watchListScope(() => loadBoard())
         <div class="card-title">📜 审计日志 · 高风险记录</div>
       </div>
       <div class="card-body" style="padding: 0">
+        <p v-if="auditHint" class="tip" style="margin: 10px 12px 0; font-size: 12px">{{ auditHint }}</p>
         <table class="table">
           <thead>
             <tr>
               <th>时间</th>
+              <th>通道</th>
               <th>事件</th>
               <th>单号/资源</th>
               <th>风险</th>
@@ -389,11 +430,12 @@ watchListScope(() => loadBoard())
           </thead>
           <tbody>
             <tr v-if="!auditRows.length">
-              <td colspan="4" class="sec-empty">{{ auditHint || '暂无审计日志' }}</td>
+              <td colspan="5" class="sec-empty">{{ auditHint || '暂无审计日志' }}</td>
             </tr>
             <tr v-for="a in auditRows" :key="a.id">
               <td style="font-size: 11px">{{ a.time || '—' }}</td>
-              <td>{{ a.eventType || '—' }}</td>
+              <td><span class="tag tag-gray">{{ a.channel || '—' }}</span></td>
+              <td :title="a.purpose || a.maskSource || ''">{{ a.eventType || '—' }}</td>
               <td><code>{{ a.ticketNo || a.src || '—' }}</code></td>
               <td>{{ a.risk || '—' }}</td>
             </tr>
@@ -413,17 +455,23 @@ watchListScope(() => loadBoard())
               <th>主体</th>
               <th>资源</th>
               <th>权限</th>
+              <th>行/列</th>
               <th>状态</th>
             </tr>
           </thead>
           <tbody>
             <tr v-if="!grants.length">
-              <td colspan="4" class="sec-empty">暂无授权策略</td>
+              <td colspan="5" class="sec-empty">暂无授权策略</td>
             </tr>
             <tr v-for="g in grants" :key="g.id">
               <td>{{ g.subjectId || '—' }}</td>
               <td><code>{{ g.resourceId || g.assetId || '—' }}</code></td>
               <td>{{ g.privilege || '—' }}</td>
+              <td style="font-size: 11px">
+                <span v-if="g.rowFilter" :title="g.rowFilter">行滤</span>
+                <span v-if="g.allowedColumns" :title="g.allowedColumns">{{ g.rowFilter ? ' · ' : '' }}列白</span>
+                <span v-if="!g.rowFilter && !g.allowedColumns">—</span>
+              </td>
               <td>{{ g.status || '—' }}</td>
             </tr>
           </tbody>

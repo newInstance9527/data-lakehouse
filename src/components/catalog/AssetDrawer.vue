@@ -3,7 +3,7 @@ import { computed, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import AppDrawer from '@/components/common/AppDrawer.vue'
 import SearchSelect from '@/components/common/SearchSelect.vue'
-import { createApplyTicket, approveTicket } from '@/api/apply'
+import { createApplyTicket, approveTicket, fetchTableReadPrefill } from '@/api/apply'
 import { fetchLineageImpact, postChangeEval, postBlockDdl } from '@/api/lineage'
 import { useAssets } from '@/composables/useAssets'
 import { useDatasources } from '@/composables/useDatasources'
@@ -88,7 +88,7 @@ const previewHint = ref('')
 const grantChecking = ref(false)
 const applyOpen = ref(false)
 const applyBusy = ref(false)
-const applyForm = ref({ purpose: '', expire: '30天' })
+const applyForm = ref({ purpose: '', expire: '30天', rowFilter: '', columns: '' })
 const metaEdit = ref({
   description: '',
   displayName: '',
@@ -793,8 +793,18 @@ function openApplyModal() {
     showToast(tip, 'info')
     return
   }
-  applyForm.value = { purpose: '', expire: '30天' }
+  applyForm.value = { purpose: '', expire: '30天', rowFilter: '', columns: '' }
   applyOpen.value = true
+  const aid = props.asset?.id
+  if (aid) {
+    fetchTableReadPrefill(aid)
+      .then((p) => {
+        if (p?.suggestedColumns?.length && !applyForm.value.columns) {
+          applyForm.value.columns = p.suggestedColumns.join(',')
+        }
+      })
+      .catch(() => {})
+  }
 }
 
 async function submitApply(activate) {
@@ -817,6 +827,8 @@ async function submitApply(activate) {
       assetId,
       privilege: 'SELECT',
       expireLabel: applyForm.value.expire,
+      rowFilter: applyForm.value.rowFilter.trim() || null,
+      columns: applyForm.value.columns.trim() || null,
     })
     if (activate && isSuperAdmin.value && ticket?.id) {
       await approveTicket(ticket.id, '目录抽屉自助生效')
@@ -1670,6 +1682,24 @@ function cellAt(row, col) {
         <select v-model="applyForm.expire" class="select" style="width: 100%">
           <option v-for="e in APPLY_EXPIRE_OPTIONS" :key="e" :value="e">{{ e }}</option>
         </select>
+      </label>
+      <label class="form-field">
+        <span class="form-label">申请列（可选）</span>
+        <input
+          v-model="applyForm.columns"
+          class="input"
+          placeholder="逗号分隔；留空=不限制列"
+          style="width: 100%"
+        />
+      </label>
+      <label class="form-field">
+        <span class="form-label">行过滤（可选）</span>
+        <input
+          v-model="applyForm.rowFilter"
+          class="input"
+          placeholder="如 region = '华东'"
+          style="width: 100%"
+        />
       </label>
       <label class="form-field">
         <span class="form-label">申请事由</span>

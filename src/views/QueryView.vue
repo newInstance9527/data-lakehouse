@@ -95,6 +95,9 @@ const lastMeta = ref({
   rowFilterDegraded: false,
   rowFilterMessage: '',
   rowFilterPredicates: [],
+  columnGateApplied: false,
+  columnGateDenied: false,
+  columnGateMessage: '',
   authHint: '',
   message: '',
   stages: [],
@@ -932,6 +935,9 @@ function applyExecResult(data, sql) {
     rowFilterDegraded: !!data.rowFilterDegraded,
     rowFilterMessage: data.rowFilterMessage || '',
     rowFilterPredicates: Array.isArray(data.rowFilterPredicates) ? data.rowFilterPredicates : [],
+    columnGateApplied: !!data.columnGateApplied,
+    columnGateDenied: !!data.columnGateDenied || data.errorCode === 'COLUMN_ALLOWLIST_DENIED',
+    columnGateMessage: data.columnGateMessage || (data.errorCode === 'COLUMN_ALLOWLIST_DENIED' ? data.message : '') || '',
     elevated: !!data.elevated,
     authHint: data.authHint || '',
     message: data.message || '',
@@ -1527,6 +1533,16 @@ function cellClass(col, row) {
                 class="tag tag-orange"
                 :title="lastMeta.rowFilterMessage || '无生效的行级策略，查询未强制过滤'"
               >策略降级 · 无行级过滤</span>
+              <span
+                v-if="lastMeta.columnGateApplied && !lastMeta.columnGateDenied"
+                class="tag tag-blue"
+                :title="lastMeta.columnGateMessage || '列白名单校验通过'"
+              >列白名单</span>
+              <span
+                v-else-if="lastMeta.columnGateDenied"
+                class="tag tag-red"
+                :title="lastMeta.columnGateMessage || '列白名单拒绝'"
+              >列权限拒绝</span>
               <a
                 v-if="lastMeta.trinoUiUrl"
                 class="btn btn-sm"

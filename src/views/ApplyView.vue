@@ -31,7 +31,14 @@ import {
   permModeLabel,
   tableKindLabel,
 } from '@/data/apply'
-import { createApplyTicket, approveTicket as apiApproveTicket, rejectTicket as apiRejectTicket, fetchApplyKpi, pagePendingTickets } from '@/api/apply'
+import {
+  createApplyTicket,
+  approveTicket as apiApproveTicket,
+  rejectTicket as apiRejectTicket,
+  fetchApplyKpi,
+  pagePendingTickets,
+  fetchTableReadPrefill,
+} from '@/api/apply'
 import { fetchDatasourcePage } from '@/api/datasource'
 import { fetchDataapiApis, fetchDataapiDetail } from '@/api/dataapi'
 import { fetchEtlDags } from '@/api/etl'
@@ -215,6 +222,7 @@ function emptyForm() {
     permMode: 'read',
     permLevel: '内部',
     columns: '',
+    rowFilter: '',
     tableKind: 'read',
     tableNameNew: '',
     releasePkg: RELEASE_OPTIONS.value[0]?.value || '',
@@ -233,6 +241,44 @@ const activeTab = ref('all')
 const creating = ref(false)
 const showKpis = ref(true)
 const form = ref(emptyForm())
+const permPrefill = ref(null)
+const permPrefillLoading = ref(false)
+
+async function loadPermPrefill(assetId) {
+  if (!assetId) {
+    permPrefill.value = null
+    return
+  }
+  permPrefillLoading.value = true
+  try {
+    permPrefill.value = await fetchTableReadPrefill(assetId)
+  } catch {
+    permPrefill.value = null
+  } finally {
+    permPrefillLoading.value = false
+  }
+}
+
+function applySuggestedColumns() {
+  const cols = permPrefill.value?.suggestedColumns
+  if (!Array.isArray(cols) || !cols.length) return
+  form.value.columns = cols.join(',')
+  if (form.value.permMode === 'read') form.value.permMode = 'column'
+}
+
+function applyRowFilterTemplate(tpl) {
+  if (!tpl?.predicate) return
+  form.value.rowFilter = tpl.predicate
+}
+
+watch(
+  () => [form.value.type, form.value.asset],
+  ([type, assetId]) => {
+    if (type === 'perm' && assetId) loadPermPrefill(assetId)
+    else permPrefill.value = null
+  },
+)
+
 const METRIC_OPTIONS = computed(() =>
   buildApplyMetricOptions(metricCatalog.value, {
     kind: form.value?.metricKind || 'query',
@@ -960,6 +1006,7 @@ async function submitApply() {
         privilege: form.value.permMode === 'read' ? 'SELECT' : form.value.permMode,
         expireLabel: form.value.expire,
         columns: form.value.columns.trim() || null,
+        rowFilter: form.value.rowFilter.trim() || null,
         ws: resolveWs(),
       })
       const sid = server?.id || server?.ticketNo || id
@@ -1091,12 +1138,13 @@ function submitPermApply(id, now, purpose, meta = {}) {
   const asset = form.value.asset
   const level = form.value.permLevel
   const cols = form.value.columns.trim()
+  const rowFilter = form.value.rowFilter.trim()
   const modeLabel = permModeLabel(mode)
   const levelCls = PERM_LEVEL_CLS[level] || 'tag-blue'
   const needSecurity = mode === 'plain' || level === '机密'
-  const scope =
-    mode === 'read' ? '全列只读' : cols ? `列：${cols}` : '指定列'
-  const desc = `模式：${modeLabel} · ${scope} · 时效 ${form.value.expire} · ${purpose}`
+  const scope = cols ? `列：${cols}` : mode === 'read' ? '全列只读' : '指定列'
+  const rfNote = rowFilter ? ` · 行过滤 ${rowFilter}` : ''
+  const desc = `模式：${modeLabel} · ${scope}${rfNote} · 时效 ${form.value.expire} · ${purpose}`
   const base = {
     id,
     type: 'perm',
@@ -1105,6 +1153,7 @@ function submitPermApply(id, now, purpose, meta = {}) {
     permMode: mode,
     permLevel: level,
     columns: cols,
+    rowFilter,
     expire: form.value.expire,
     purpose,
     applicant: '我',
@@ -2129,6 +2178,45 @@ function displayToken() {
             <span>申请列（逗号分隔）</span>
             <input v-model="form.columns" class="input" placeholder="如 user_id,mobile,dt" />
           </label>
+          <label v-else class="wide">
+            <span>申请列（可选，逗号分隔；留空=不限制列）</span>
+            <input v-model="form.columns" class="input" placeholder="如 user_id,dt；留空则全表列可读" />
+          </label>
+          <label class="wide">
+            <span>行过滤条件（可选）</span>
+            <input
+              v-model="form.rowFilter"
+              class="input"
+              placeholder="如 region = '华东'；落门户 sec_auth_grant，执行时注入"
+            />
+            <span class="muted" style="font-size: 11px; margin-top: 4px">
+              不写 Grav；审批通过后即席 / BI / DataAPI 强制注入。禁止分号与 DDL 关键词。
+            </span>
+          </label>
+          <div v-if="permPrefillLoading" class="wide muted" style="font-size: 12px">加载敏感列 / 行过滤建议…</div>
+          <div v-else-if="permPrefill" class="wide" style="font-size: 12px">
+            <div class="muted" style="margin-bottom: 6px">{{ permPrefill.hint || '预填建议' }}</div>
+            <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px">
+              <button
+                v-if="permPrefill.suggestedColumns?.length"
+                type="button"
+                class="btn btn-sm"
+                @click="applySuggestedColumns"
+              >
+                填入建议列（{{ permPrefill.suggestedColumns.length }}）
+              </button>
+              <button
+                v-for="tpl in permPrefill.rowFilterTemplates || []"
+                :key="tpl.id"
+                type="button"
+                class="btn btn-sm"
+                :title="tpl.predicate"
+                @click="applyRowFilterTemplate(tpl)"
+              >
+                {{ tpl.label }}
+              </button>
+            </div>
+          </div>
         </template>
 
         <template v-else-if="form.type === 'table'">
@@ -2548,6 +2636,7 @@ function displayToken() {
             <div><span class="tag" :class="PERM_LEVEL_CLS[detail.permLevel] || 'tag-gray'">{{ detail.permLevel }}</span></div>
           </div>
           <div v-if="detail.columns" class="wide"><span>字段 / 列</span><div><code>{{ detail.columns }}</code></div></div>
+          <div v-if="detail.rowFilter" class="wide"><span>行过滤</span><div><code>{{ detail.rowFilter }}</code></div></div>
           <div v-if="detail.type === 'table'"><span>表申请场景</span><div>{{ tableKindLabel(detail.tableKind) }}</div></div>
           <div v-if="detail.releasePkg"><span>发布包</span><div><code>{{ detail.releasePkg }}</code> {{ detail.releaseTag || '' }}</div></div>
           <div v-if="detail.publishEnv && detail.type === 'publish' && !detail.apiBindingId"><span>目标环境</span><div>{{ detail.publishEnv }}</div></div>

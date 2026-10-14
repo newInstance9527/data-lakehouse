@@ -28,6 +28,14 @@ export function fetchSecMasks(params = {}) {
   })
 }
 
+/** OM 列敏感标签 → sec_mask_policy_proj；body: { assetId?, ws?, dryRun? } */
+export function syncSecMasksFromOm(body = {}) {
+  return http.post(`${BASE}/masks/sync-from-om`, {
+    ...body,
+    ws: resolveWs(body.ws),
+  })
+}
+
 export function fetchSecClassification(params = {}) {
   return http.get(`${BASE}/classification`, { ws: resolveWs(params.ws) })
 }

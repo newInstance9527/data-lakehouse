@@ -61,3 +61,8 @@ export function approveTicket(id, remark) {
 export function rejectTicket(id, remark) {
   return http.post(`${BASE}/tickets/reject`, { id, remark })
 }
+
+/** 表读申请预填：建议列 / 行过滤模板 */
+export function fetchTableReadPrefill(assetId) {
+  return http.get(`${BASE}/prefills/table-read`, { assetId })
+}
